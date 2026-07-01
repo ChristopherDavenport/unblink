@@ -264,10 +264,11 @@ const preludeJS = `
       get length() { return Object.keys(m).length; }
     };
   }
-  // A Go-installed persistent localStorage (session-scoped) wins; the in-memory
-  // fallback covers one-shot renders. sessionStorage is always per-render.
+  // Go-installed persistent stores (session-scoped: a session is a tab, and both
+  // areas survive navigations within it) win; the in-memory fallbacks cover
+  // one-shot stateless renders.
   if (!window.localStorage) window.localStorage = makeStorage();
-  window.sessionStorage = makeStorage();
+  if (!window.sessionStorage) window.sessionStorage = makeStorage();
 
   // structuredClone: a real recursive clone for the object graphs apps actually
   // clone (JSON-ish + Date/RegExp/Map/Set/typed arrays, cycles included).

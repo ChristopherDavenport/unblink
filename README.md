@@ -62,8 +62,9 @@ request budget applies (`--js-no-network`, `--js-allow-private`,
 (`--js-prewarm`, `0` disables); the per-render budget defaults to 5s (`--js-timeout`).
 With a session, `interact` keeps a **live runtime**
 alive for the page so JS state persists across calls (a true browser-tab session);
-live runtimes are capped (`--js-max-live`, LRU torn down) and `window.localStorage`
-persists per session, so SPA auth/state flows survive across calls. Common globals
+live runtimes are capped (`--js-max-live`, LRU torn down) and both
+`window.localStorage` and `window.sessionStorage` persist per session (a session
+is a tab), so SPA auth/state flows survive across calls. Common globals
 that bundles use without feature-detection are covered: `structuredClone`, a
 connection-less `WebSocket` stub (error→close), inert `Worker`, append-mode
 `document.write`, and `hashchange`.

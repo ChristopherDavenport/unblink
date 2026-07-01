@@ -42,13 +42,14 @@ type Session struct {
 	client *fetch.Client
 	cfg    Config // injected credentials; immutable after creation
 
-	mu       sync.Mutex
-	history  []*page.Page
-	pos      int            // index of the current page; -1 when empty
-	live     js.LiveContext // persistent JS runtime for the current page; nil when none
-	livePos  int            // history index live is bound to; -1 when none
-	storage  *js.MemStorage // persistent window.localStorage backing; lazily created
-	lastUsed time.Time
+	mu          sync.Mutex
+	history     []*page.Page
+	pos         int            // index of the current page; -1 when empty
+	live        js.LiveContext // persistent JS runtime for the current page; nil when none
+	livePos     int            // history index live is bound to; -1 when none
+	storage     *js.MemStorage // persistent window.localStorage backing; lazily created
+	sessStorage *js.MemStorage // persistent window.sessionStorage backing; lazily created
+	lastUsed    time.Time
 }
 
 func newSession(id string, client *fetch.Client, cfg Config) *Session {
@@ -68,6 +69,18 @@ func (s *Session) Storage() *js.MemStorage {
 		s.storage = js.NewMemStorage()
 	}
 	return s.storage
+}
+
+// SessionStorage returns the session's persistent sessionStorage backing store,
+// created on first use. In the browser model a session is a tab: sessionStorage
+// survives navigations within the tab and dies with it (session close/eviction).
+func (s *Session) SessionStorage() *js.MemStorage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessStorage == nil {
+		s.sessStorage = js.NewMemStorage()
+	}
+	return s.sessStorage
 }
 
 // Config returns the session's credential configuration (set at creation).

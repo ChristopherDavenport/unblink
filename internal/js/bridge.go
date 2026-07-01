@@ -19,15 +19,16 @@ import (
 // Object identity (el === el) is preserved via a node→wrapper cache. It also owns
 // the event-listener registry and the async fetch machinery for a single render.
 type bridge struct {
-	vm         *goja.Runtime
-	loop       *eventloop.EventLoop
-	doc        *html.Node
-	base       *url.URL
-	transport  Transport // nil when JS networking is disabled
-	cookies    CookieJar // nil when document.cookie is unavailable
-	storage    Storage   // backs window.localStorage; nil → per-render prelude fallback
-	ctx        context.Context
-	reqTimeout time.Duration
+	vm          *goja.Runtime
+	loop        *eventloop.EventLoop
+	doc         *html.Node
+	base        *url.URL
+	transport   Transport // nil when JS networking is disabled
+	cookies     CookieJar // nil when document.cookie is unavailable
+	storage     Storage   // backs window.localStorage; nil → per-render prelude fallback
+	sessStorage Storage   // backs window.sessionStorage; nil → per-render prelude fallback
+	ctx         context.Context
+	reqTimeout  time.Duration
 
 	cache   map[*html.Node]*goja.Object
 	objNode map[*goja.Object]*html.Node
@@ -114,7 +115,7 @@ type bridge struct {
 	pending atomic.Int32
 }
 
-func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage Storage, ctx context.Context, reqTimeout time.Duration) *bridge {
+func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration) *bridge {
 	return &bridge{
 		vm:                   vm,
 		loop:                 loop,
@@ -123,6 +124,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		transport:            transport,
 		cookies:              cookies,
 		storage:              storage,
+		sessStorage:          sessStorage,
 		ctx:                  ctx,
 		reqTimeout:           reqTimeout,
 		cache:                make(map[*html.Node]*goja.Object),

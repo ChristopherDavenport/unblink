@@ -94,7 +94,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 	modules := collectModuleScripts(doc)
 	err := c.run(ctx, true, nil, nil, func(vm *goja.Runtime) {
 		c.vm.Store(vm)
-		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, c.ctx, e.timeout)
+		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, c.ctx, e.timeout)
 		b.install()
 		_, _ = vm.RunString(preludeJS)
 		b.runScripts(scripts)

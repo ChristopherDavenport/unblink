@@ -379,10 +379,12 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     `Worker`/`SharedWorker`, append-mode `document.write`/`writeln`, and
     `hashchange` on fragment navigation. `href`/`src` are now real reflected
     properties (getter returns the absolute URL) instead of wrapper-only.
-  - **Session-persistent `localStorage`** (`js.Storage`/`MemStorage`, wired via
-    `Env.Storage`): a session's renders, live runtime, click/submit renders all
-    share one mutex-guarded store, so SPA auth/state flows survive across calls
-    like a real tab. One-shot stateless renders keep the fresh per-render map.
+  - **Session-persistent `localStorage` + `sessionStorage`** (`js.Storage`/
+    `MemStorage`, wired via `Env.Storage`/`Env.SessionStorage`): a session is a
+    tab, so both areas survive navigations within it (separate keyspaces) and die
+    with it — a session's renders, live runtime, and click/submit renders share
+    the same mutex-guarded stores, so SPA auth/state flows survive across calls.
+    One-shot stateless renders keep the fresh per-render maps.
   - *Deliberately deferred*: pruning the live-context DOM wrapper maps on node
     removal — JS legitimately holds detached nodes (React vnodes), so pruning
     risks correctness; the live-runtime cap + session TTL now bound that memory.

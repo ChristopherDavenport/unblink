@@ -79,36 +79,41 @@ const (
 	maxStorageValueLen = 64 << 10
 )
 
-// installStorage backs window.localStorage with the supplied session-scoped
-// store so values persist across renders and interacts (SPA auth/state flows
-// depend on this). A no-op when Env.Storage was nil — the prelude's per-render
-// in-memory fallback then applies (it checks `if (!window.localStorage)`).
+// installStorage backs window.localStorage and window.sessionStorage with the
+// supplied session-scoped stores so values persist across renders and interacts
+// (SPA auth/state flows depend on this). A nil store is skipped — the prelude's
+// per-render in-memory fallback then applies (it checks `if (!window.X)`).
 func (b *bridge) installStorage() {
-	if b.storage == nil {
+	b.installStorageArea("localStorage", b.storage)
+	b.installStorageArea("sessionStorage", b.sessStorage)
+}
+
+func (b *bridge) installStorageArea(global string, store Storage) {
+	if store == nil {
 		return
 	}
 	vm := b.vm
 	o := vm.NewObject()
 	_ = o.Set("getItem", func(call goja.FunctionCall) goja.Value {
-		if v, ok := b.storage.Get(call.Argument(0).String()); ok {
+		if v, ok := store.Get(call.Argument(0).String()); ok {
 			return vm.ToValue(v)
 		}
 		return goja.Null()
 	})
 	_ = o.Set("setItem", func(call goja.FunctionCall) goja.Value {
-		b.storage.Set(call.Argument(0).String(), call.Argument(1).String())
+		store.Set(call.Argument(0).String(), call.Argument(1).String())
 		return goja.Undefined()
 	})
 	_ = o.Set("removeItem", func(call goja.FunctionCall) goja.Value {
-		b.storage.Remove(call.Argument(0).String())
+		store.Remove(call.Argument(0).String())
 		return goja.Undefined()
 	})
 	_ = o.Set("clear", func(goja.FunctionCall) goja.Value {
-		b.storage.Clear()
+		store.Clear()
 		return goja.Undefined()
 	})
 	_ = o.Set("key", func(call goja.FunctionCall) goja.Value {
-		keys := b.storage.Keys()
+		keys := store.Keys()
 		sort.Strings(keys) // map order is random; key(i) must be stable within a call
 		if i := int(call.Argument(0).ToInteger()); i >= 0 && i < len(keys) {
 			return vm.ToValue(keys[i])
@@ -116,9 +121,9 @@ func (b *bridge) installStorage() {
 		return goja.Null()
 	})
 	_ = o.DefineAccessorProperty("length",
-		vm.ToValue(func(goja.FunctionCall) goja.Value { return vm.ToValue(len(b.storage.Keys())) }),
+		vm.ToValue(func(goja.FunctionCall) goja.Value { return vm.ToValue(len(store.Keys())) }),
 		nil, goja.FLAG_FALSE, goja.FLAG_TRUE)
-	// window IS the global object here, so one Set covers window.localStorage,
-	// self.localStorage, and the bare localStorage global.
-	_ = vm.Set("localStorage", o)
+	// window IS the global object here, so one Set covers window.X, self.X, and
+	// the bare X global.
+	_ = vm.Set(global, o)
 }

@@ -372,10 +372,11 @@ func originOfURL(rawURL string) string {
 // renderOpts carries a request's JavaScript-render intent down to fetchPage: whether
 // to render at all, an optional wait condition, and a per-render budget override.
 type renderOpts struct {
-	render  bool
-	wait    *js.WaitCondition
-	timeout time.Duration
-	storage js.Storage // session-scoped localStorage backing; nil for stateless fetches
+	render      bool
+	wait        *js.WaitCondition
+	timeout     time.Duration
+	storage     js.Storage // session-scoped localStorage backing; nil for stateless fetches
+	sessStorage js.Storage // session-scoped sessionStorage backing; nil for stateless fetches
 }
 
 // renderOpts derives the render intent from a Request. A wait condition implies a
@@ -414,7 +415,7 @@ func (b *Browser) resolve(ctx context.Context, req Request) (*page.Page, *sessio
 			return cur, sess, nil
 		}
 		ro := req.renderOpts()
-		ro.storage = sess.Storage()
+		ro.storage, ro.sessStorage = sess.Storage(), sess.SessionStorage()
 		p, err := b.fetchPage(ctx, sess.Client(), req.URL, ro)
 		if err != nil {
 			return nil, sess, err
@@ -510,7 +511,7 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 	}
 	if ro.render && b.renderer != nil {
 		var diag js.RenderResult
-		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout}
+		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, SessionStorage: ro.sessStorage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout}
 		if b.jsNetwork {
 			env.Transport = b.newRenderTransport(client, ro.timeout)
 		}
@@ -1037,7 +1038,7 @@ func (b *Browser) Click(ctx context.Context, sessionID string, linkIndex int, ma
 		href = links[linkIndex].Href
 	}
 
-	p, err := b.fetchPage(ctx, sess.Client(), href, renderOpts{render: render, storage: sess.Storage()})
+	p, err := b.fetchPage(ctx, sess.Client(), href, renderOpts{render: render, storage: sess.Storage(), sessStorage: sess.SessionStorage()})
 	if err != nil {
 		return nil, err
 	}
@@ -1076,7 +1077,7 @@ func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := b.processFetched(ctx, sess.Client(), p, renderOpts{render: render, storage: sess.Storage()}); err != nil {
+	if _, err := b.processFetched(ctx, sess.Client(), p, renderOpts{render: render, storage: sess.Storage(), sessStorage: sess.SessionStorage()}); err != nil {
 		return nil, err
 	}
 	sess.Visit(p)
@@ -1177,7 +1178,7 @@ func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.Liv
 	if err := dom.Parse(tmp); err != nil {
 		return nil, err
 	}
-	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage()}
+	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(), SessionStorage: sess.SessionStorage()}
 	if b.jsNetwork {
 		env.Transport = b.newLiveTransport(sess.Client())
 	}

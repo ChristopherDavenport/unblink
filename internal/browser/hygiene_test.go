@@ -50,14 +50,20 @@ func TestLiveRuntimeCap(t *testing.T) {
 	}
 }
 
-// localStorage persists across a session's renders (a real browser tab keeps it),
+// localStorage AND sessionStorage persist across a session's renders (a session
+// is a tab: both areas survive navigations within it), with separate keyspaces,
 // so SPA auth/state flows survive between calls.
-func TestSessionLocalStoragePersists(t *testing.T) {
+func TestSessionStoragePersists(t *testing.T) {
 	srv := serveDynamicHTML(t, func(*http.Request) string {
 		return `<html><body><p id="out"></p><script>
 			var n = parseInt(localStorage.getItem("visits") || "0", 10) + 1;
 			localStorage.setItem("visits", String(n));
-			document.getElementById("out").textContent = "visit-count-" + n;
+			var m = parseInt(sessionStorage.getItem("svisits") || "0", 10) + 1;
+			sessionStorage.setItem("svisits", String(m));
+			// The two areas must not share a keyspace.
+			var bleed = sessionStorage.getItem("visits") !== null || localStorage.getItem("svisits") !== null;
+			document.getElementById("out").textContent =
+				"local-" + n + " session-" + m + (bleed ? " BLEED" : "");
 		</script></body></html>`
 	})
 	b, err := browser.New(browser.WithJS(2*time.Second), browser.WithAllowPrivate(true))
@@ -75,8 +81,20 @@ func TestSessionLocalStoragePersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(r2.Markdown, "visit-count-2") {
-		t.Errorf("second render should see persisted localStorage; got %q", r2.Markdown)
+	if !strings.Contains(r2.Markdown, "local-2") || !strings.Contains(r2.Markdown, "session-2") {
+		t.Errorf("second render should see both persisted stores; got %q", r2.Markdown)
+	}
+	if strings.Contains(r2.Markdown, "BLEED") {
+		t.Error("localStorage and sessionStorage must have separate keyspaces")
+	}
+
+	// A different session gets fresh stores.
+	r3, err := b.Read(ctx, browser.Request{SessionID: "other-tab", URL: srv.URL, Render: true}, "full", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r3.Markdown, "local-1") || !strings.Contains(r3.Markdown, "session-1") {
+		t.Errorf("a new session should start with empty stores; got %q", r3.Markdown)
 	}
 }
 
