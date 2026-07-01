@@ -48,8 +48,8 @@ type rawRow struct {
 }
 
 func extractTable(t *html.Node) page.Table {
-	caption, rows := collectRows(t)
-	tbl := page.Table{Caption: caption}
+	caption, rows, truncated := collectRows(t)
+	tbl := page.Table{Caption: caption, Truncated: truncated}
 	if len(rows) == 0 {
 		return tbl
 	}
@@ -64,8 +64,9 @@ func extractTable(t *html.Node) page.Table {
 }
 
 // collectRows walks t (skipping nested tables), capturing the first <caption>
-// and each <tr>, tracking whether the row sits in a <thead>.
-func collectRows(t *html.Node) (caption string, rows []rawRow) {
+// and each <tr>, tracking whether the row sits in a <thead>. truncated reports
+// rows dropped by the maxTableRows cap.
+func collectRows(t *html.Node) (caption string, rows []rawRow, truncated bool) {
 	var walk func(n *html.Node, inHead bool)
 	walk = func(n *html.Node, inHead bool) {
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -85,6 +86,8 @@ func collectRows(t *html.Node) (caption string, rows []rawRow) {
 				if len(rows) < maxTableRows {
 					cells, allTh := collectCells(c)
 					rows = append(rows, rawRow{cells: cells, inHead: inHead, allTh: allTh})
+				} else {
+					truncated = true
 				}
 			default:
 				walk(c, inHead)

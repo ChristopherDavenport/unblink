@@ -89,11 +89,22 @@ persist across calls; auto-created on first use), `use_current` (act on the
 session's current page instead of fetching a URL), and `render` (run the page's
 JavaScript first — requires starting the server with `--js`).
 
+Idle sessions are evicted (default 30 minutes, tune with `--session-ttl` /
+`--session-cap`); an evicted id then errors with `session_expired` and must be
+re-created via `session(action=new)` — credentials are never carried over
+silently. Errors follow a stable `error [code]: message` convention
+(`bad_input`, `session_expired`, `no_current_page`, `js_required`,
+`not_configured`, `blocked` (SSRF guard), `cursor_expired`, `timeout`,
+`fetch_failed`…), and every tool carries MCP annotations (read-only vs
+state-changing) so hosts can gate sensitive actions. JS render diagnostics
+(`framework`, `js_errors`, `article_fallback`) are reported in `read`/`interact`
+results rather than logged away.
+
 | Tool          | Input                                              | Returns                                                                 |
 | ------------- | -------------------------------------------------- | ----------------------------------------------------------------------- |
 | `read`        | `{ url?, session?, use_current?, mode?, format?, selector?, max_tokens?, cursor?, wait_for?, wait_text?, wait_timeout?, headers?, auth? }` | Main content (`mode=article`, default) or whole page (`full`) as Markdown, paginated via cursor. `format=raw_html` returns the unreduced source (optionally scoped by a CSS `selector`) — the escape hatch for scripts/forms/SSR-embedded JSON that reduction strips; `format=text` returns visible plain text. `wait_for` (CSS selector) / `wait_text` hold a JS render open until that content hydrates (implies `render`, needs `--js`); `wait_timeout` (seconds, capped ~30s) extends the wait, and `wait_met` in the result reports whether it appeared. `headers`/`auth` attach one-shot credentials for a stateless gated GET (see [Authentication](#authentication)). |
 | `browse`      | `{ url?, session?, use_current?, headers?, auth? }` | Cheap orientation: title, description, lang, heading outline, link/form/image counts, excerpt, plus `llms_txt`/`robots` presence hints. |
-| `links`       | `{ url?, session?, use_current?, filter?, internal_only? }` | The page's links (text + absolute href), optionally filtered.   |
+| `links`       | `{ url?, session?, use_current?, filter?, internal_only?, limit? }` | The page's links (text + absolute href), optionally filtered. `limit` defaults to 200 (cap 1000); `total`/`truncated` report the rest. |
 | `forms`       | `{ url?, session?, use_current? }`                 | The page's forms and their fields (name, type, required, options).      |
 | `find`        | `{ url?, session?, use_current?, query, max_hits? }` | Matching text snippets with the heading path locating each.           |
 | `site`        | `{ url?, session?, use_current? }`                 | A host's agent-facing metadata: robots.txt summary (allow/disallow for a browser agent, crawl-delay, sitemaps) + llms.txt content + whether llms-full.txt exists. Context only — never blocks a fetch. |
@@ -102,7 +113,7 @@ JavaScript first — requires starting the server with `--js`).
 | `controls`    | `{ url?, session?, use_current? }`                 | Non-link interactive controls (buttons, `role=button`, `onclick`/`tabindex`, submit/reset inputs, tabs, summaries), each with a stable CSS selector for `interact`. |
 | `interact`    | `{ session, selector, event?, value? }`            | Dispatches an interaction at a selector and runs the page's JS so its handlers fire, then returns the updated page. `event` defaults to `click`, which emulates a **full primary-button press** (`pointerdown`→`mousedown`→focus→`pointerup`→`mouseup`→`click`) so press/pointer-based widgets (react-aria/Radix tabs, toggles, menus) actually activate — not just plain `onclick`; also `hover` (reveal hover menus/tooltips), `focus` (focus-triggered dropdowns), `input`, `change`, `keydown`, `submit`. The session keeps a **live JS runtime**, so state (variables, listeners, timers, fetched data) persists across calls. Requires `--js`. Does not navigate — but a handler that requests a cross-document navigation (`location.href`/`assign`/`replace`) surfaces the target as `pending_navigation` so you can follow it with `read`/`click`. |
 | `data`        | `{ url?, session?, use_current?, kind? }`          | Machine-readable structured data embedded in a page: JSON-LD (schema.org), HTML data tables (caption/headers/rows), and microdata (itemscope/itemprop). `kind` selects `jsonld`, `tables`, `microdata`, or `all` (default). HTML only. *(Tables: colspan is expanded, rowspan ignored; microdata `itemref` unsupported; JSON-LD `@graph` is flattened. `raw_html` returns source with relative URLs left as-is.)* |
-| `session`     | `{ action: new\|state\|history\|back\|forward\|close, session?, url?, headers?, cookies?, auth? }` | Manage a session's lifecycle and navigation. `new` accepts `url` + `headers`/`cookies`/`auth` to attach credentials for that origin (see [Authentication](#authentication)). |
+| `session`     | `{ action: new\|list\|state\|history\|back\|forward\|close, session?, url?, headers?, cookies?, auth? }` | Manage a session's lifecycle and navigation. `new` accepts `url` + `headers`/`cookies`/`auth` to attach credentials for that origin (see [Authentication](#authentication)); re-creating a live id with new credentials errors (close it first). `list` returns every live session's state. |
 | `map`         | `{ url, max_urls?, max_depth? }`                   | Discover a site's URLs: harvests sitemap.xml (robots.txt + `/sitemap.xml`, following sitemap indexes) and crawls same-origin links breadth-first from the seed. Returns a bounded, de-duplicated list tagged `source=sitemap\|crawl` with depth. Exposure-grade — surfaces robots.txt but never gates on it. |
 | `search`      | `{ query, count?, site? }`                         | Web search via the configured provider (SearXNG or Brave): ranked results (title, url, snippet). `site` restricts to one domain. Requires `--search-provider` (see [Search](#search)); errors cleanly otherwise. |
 

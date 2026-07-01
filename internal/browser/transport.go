@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -130,6 +131,11 @@ const (
 	liveJSWindowMax = 300
 )
 
+// errBlockedAddr is the SSRF guard's sentinel, wrapped into every dial rejection
+// so error classification can identify a blocked private/metadata target through
+// the net/http error chain.
+var errBlockedAddr = errors.New("blocked non-public address")
+
 // ssrfControl returns a dial-control hook that rejects connections to
 // private/loopback/link-local/metadata addresses, or nil when private addresses
 // are explicitly allowed.
@@ -143,7 +149,7 @@ func ssrfControl(allowPrivate bool) func(network, address string, c syscall.RawC
 			host = address
 		}
 		if ip := net.ParseIP(host); ip != nil && isBlockedIP(ip) {
-			return fmt.Errorf("unblink: blocked non-public address %s", ip)
+			return fmt.Errorf("unblink: %w: %s", errBlockedAddr, ip)
 		}
 		return nil
 	}

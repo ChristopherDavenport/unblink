@@ -35,6 +35,8 @@ func main() {
 	jsAllowPrivate := flag.Bool("js-allow-private", false, "permit page-JS requests to private/loopback IPs (internal/dev use)")
 	jsMaxRequests := flag.Int("js-max-requests", browser.DefaultJSMaxRequests, "max page-JS network requests per render")
 	jsPrewarm := flag.Int("js-prewarm", browser.DefaultJSPrewarm, "number of pre-warmed JS runtimes kept ready (0 disables)")
+	sessionTTL := flag.Duration("session-ttl", 0, "idle time before a session is evicted (default 30m)")
+	sessionCap := flag.Int("session-cap", 0, "maximum concurrent sessions, oldest evicted on overflow (default 256)")
 	searchProvider := flag.String("search-provider", "", "web search provider for the search tool: searxng|brave (empty disables it)")
 	searchEndpoint := flag.String("search-endpoint", "", "search endpoint URL (SearXNG base URL; optional Brave override). The API key comes from UNBLINK_SEARCH_API_KEY")
 	flag.Parse()
@@ -57,6 +59,7 @@ func main() {
 		browser.WithAllowPrivate(*allowPrivate),
 		browser.WithSiteHints(!*noSiteHints),
 		browser.WithSafeOutput(!*noSafeOutput),
+		browser.WithSessionLimits(*sessionTTL, *sessionCap),
 	}
 	if *enableJS {
 		opts = append(opts,

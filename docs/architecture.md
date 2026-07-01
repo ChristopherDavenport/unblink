@@ -317,6 +317,40 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     property handlers webpack sets directly — so `__webpack_require__.e` resolves.
     Inline inserted scripts and innerHTML-nested scripts still never execute.
 
+- **Phase 17 — Agent trust: visible failure modes.** ✅ An agent-facing browser must
+  never return plausible-but-wrong results silently; this phase makes every known
+  silent failure speak.
+  - **Classified errors (`internal/browser/errors.go`).** Every tool error now renders
+    as `error [code]: message` with a stable code (`bad_input`, `unknown_session`,
+    `session_expired`, `no_current_page`, `js_required`, `not_configured`, `blocked`,
+    `cursor_expired`, `timeout`, `fetch_failed`, `internal`) plus a transient-retry
+    hint. `browser.Classify` maps session/cursor/SSRF/net causes; messages tell the
+    agent what to do next.
+  - **Session lifecycle (`internal/session`).** Evicted ids (idle TTL / capacity) are
+    tombstoned (bounded: 24h/4096) so *every* tool reports `session_expired` — a
+    credentialed session is never silently re-created anonymous (the old
+    `GetOrCreate(empty Config)` credential-drop). Explicit `close` frees the id;
+    `action=new` on a live id with credentials errors (`ExistsError`) instead of
+    silently keeping the old config; `session action=list` lists live sessions; TTL
+    and cap are tunable (`--session-ttl`, `--session-cap`).
+  - **Render diagnostics surfaced.** `read` results carry `framework` and capped
+    `js_errors` (one-shot render); `interact` returns per-dispatch uncaught errors
+    (`js.DispatchResult.Errors`, captured on-loop around the settle window). The
+    article→full readability fallback is reported (`article_fallback:true`, mode says
+    `full`) via `page.Article.Source` instead of mislabeling the mode.
+  - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
+    24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
+    cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at
+    page 1; `links` takes `limit` (default 200, cap 1000) and reports
+    `total`/`truncated`; `forms`/`controls` cap at 100/300 with `truncated`; `find`
+    `max_hits` caps at 100; browse outlines truncate at 8 KiB with a marker; table
+    extraction sets `Truncated` when the row cap drops data. No silent caps.
+  - **Tool annotations (`internal/mcpserver/server.go`).** All 14 tools carry MCP
+    `ToolAnnotations` — read-only+open-world for the ten read tools, non-destructive
+    nav for `click`, destructive+open-world for `submit_form`/`interact`, local for
+    `session` — so hosts can gate state-changing actions (the Phase 13
+    human-in-the-loop contract now has a machine-readable signal).
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. Geometry and CSSOM are **honest constant
 stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle` return zeros/empty so

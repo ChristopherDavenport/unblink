@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"testing"
 	"time"
@@ -66,18 +67,71 @@ func TestCloseRemoves(t *testing.T) {
 	if !m.Close("a") {
 		t.Error("close returned false for existing session")
 	}
-	if _, ok := m.Get("a"); ok {
-		t.Error("session still present after close")
+	// An explicitly closed id is unknown (not expired): the caller freed it.
+	var nf *session.NotFoundError
+	if _, err := m.Get("a"); !errors.As(err, &nf) {
+		t.Errorf("Get after close = %v, want NotFoundError", err)
 	}
 }
 
-func TestTTLExpiry(t *testing.T) {
+func TestTTLExpiryReportsExpired(t *testing.T) {
 	m := session.NewManager(time.Millisecond, 10, newClient, nil)
-	s1, _ := m.GetOrCreate("a")
+	if _, err := m.GetOrCreate("a"); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(15 * time.Millisecond)
-	s2, _ := m.GetOrCreate("a")
-	if s1 == s2 {
-		t.Error("expected a fresh session after TTL expiry")
+
+	// An evicted id must NOT be silently re-created: both lookups report expiry.
+	var exp *session.ExpiredError
+	if _, err := m.GetOrCreate("a"); !errors.As(err, &exp) {
+		t.Fatalf("GetOrCreate after TTL = %v, want ExpiredError", err)
+	}
+	if exp.Reason != "idle" {
+		t.Errorf("reason = %q, want idle", exp.Reason)
+	}
+	if _, err := m.Get("a"); !errors.As(err, &exp) {
+		t.Errorf("Get after TTL = %v, want ExpiredError", err)
+	}
+
+	// A deliberate re-creation succeeds and clears the tombstone.
+	if _, err := m.New("a"); err != nil {
+		t.Fatalf("re-create after expiry: %v", err)
+	}
+	if _, err := m.GetOrCreate("a"); err != nil {
+		t.Errorf("GetOrCreate after re-create: %v", err)
+	}
+}
+
+func TestExpiredCredentialedSessionKeepsCredentialFlag(t *testing.T) {
+	m := session.NewManager(time.Millisecond, 10, newClient, nil)
+	if _, err := m.NewWithConfig("auth", session.Config{Bearer: "tok", Origin: "https://e.com"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(15 * time.Millisecond)
+	var exp *session.ExpiredError
+	if _, err := m.GetOrCreate("auth"); !errors.As(err, &exp) {
+		t.Fatalf("GetOrCreate after TTL = %v, want ExpiredError", err)
+	}
+	if !exp.HadCredentials {
+		t.Error("ExpiredError should report the evicted session carried credentials")
+	}
+}
+
+func TestNewWithConfigOnLiveSession(t *testing.T) {
+	m := session.NewManager(0, 0, newClient, nil)
+	s1, err := m.New("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Anonymous re-new is idempotent.
+	s2, err := m.New("a")
+	if err != nil || s1 != s2 {
+		t.Errorf("anonymous re-new = %v, %v; want same session", s2, err)
+	}
+	// Re-new with credentials must error, never silently keep the old config.
+	var ex *session.ExistsError
+	if _, err := m.NewWithConfig("a", session.Config{Bearer: "tok", Origin: "https://e.com"}); !errors.As(err, &ex) {
+		t.Errorf("credentialed re-new = %v, want ExistsError", err)
 	}
 }
 
@@ -92,14 +146,32 @@ func TestCapEviction(t *testing.T) {
 	if _, err := m.GetOrCreate("c"); err != nil { // evicts oldest ("a")
 		t.Fatal(err)
 	}
-	if _, ok := m.Get("a"); ok {
-		t.Error("oldest session 'a' should have been evicted")
+	var exp *session.ExpiredError
+	if _, err := m.Get("a"); !errors.As(err, &exp) || exp.Reason != "capacity" {
+		t.Errorf("Get(a) = %v, want ExpiredError(capacity)", err)
 	}
-	if _, ok := m.Get("c"); !ok {
-		t.Error("newest session 'c' missing")
+	if _, err := m.Get("c"); err != nil {
+		t.Errorf("newest session 'c' missing: %v", err)
 	}
 	if m.Len() != 2 {
 		t.Errorf("len = %d, want 2", m.Len())
+	}
+}
+
+func TestList(t *testing.T) {
+	m := session.NewManager(0, 0, newClient, nil)
+	if _, err := m.GetOrCreate("a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.GetOrCreate("b"); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, s := range m.List() {
+		got[s.ID] = true
+	}
+	if len(got) != 2 || !got["a"] || !got["b"] {
+		t.Errorf("List = %v, want a and b", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package tokens_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -57,18 +58,30 @@ func TestPaginateSingleChunk(t *testing.T) {
 func TestCursorRoundTrip(t *testing.T) {
 	fp := tokens.Fingerprint("hello world")
 	cur := tokens.EncodeCursor(2, fp)
-	if got := tokens.DecodeCursor(cur, fp); got != 2 {
-		t.Errorf("decode = %d, want 2", got)
+	if got, err := tokens.DecodeCursor(cur, fp); err != nil || got != 2 {
+		t.Errorf("decode = %d, %v; want 2, nil", got, err)
 	}
-	// Stale fingerprint resets to page 0.
-	if got := tokens.DecodeCursor(cur, "deadbeef"); got != 0 {
-		t.Errorf("stale decode = %d, want 0", got)
+	// A stale fingerprint is an explicit error, never a silent page-1 restart.
+	if _, err := tokens.DecodeCursor(cur, "deadbeef"); !errors.Is(err, tokens.ErrStaleCursor) {
+		t.Errorf("stale decode err = %v, want ErrStaleCursor", err)
 	}
-	// Empty / garbage cursors reset to 0.
-	if got := tokens.DecodeCursor("", fp); got != 0 {
-		t.Errorf("empty decode = %d, want 0", got)
+	// An empty cursor is page 0; a garbage cursor is a distinct error.
+	if got, err := tokens.DecodeCursor("", fp); err != nil || got != 0 {
+		t.Errorf("empty decode = %d, %v; want 0, nil", got, err)
 	}
-	if got := tokens.DecodeCursor("!!!not-base64!!!", fp); got != 0 {
-		t.Errorf("garbage decode = %d, want 0", got)
+	if _, err := tokens.DecodeCursor("!!!not-base64!!!", fp); err == nil || errors.Is(err, tokens.ErrStaleCursor) {
+		t.Errorf("garbage decode err = %v, want a malformed-cursor error", err)
+	}
+}
+
+func TestFingerprintCoversWholeContent(t *testing.T) {
+	// Two documents sharing a 64-byte prefix and equal length must not collide:
+	// the old fingerprint hashed only len + the first 64 bytes and served
+	// wrong-page chunks silently.
+	prefix := strings.Repeat("x", 64)
+	a := tokens.Fingerprint(prefix + "tail-one")
+	b := tokens.Fingerprint(prefix + "tail-two")
+	if a == b {
+		t.Error("fingerprints collide for same-prefix same-length content")
 	}
 }

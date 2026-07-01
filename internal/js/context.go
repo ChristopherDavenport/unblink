@@ -45,10 +45,13 @@ type LiveContext interface {
 }
 
 // DispatchResult reports the outcome of one Dispatch: whether the selector resolved,
-// and whether the action's wait condition (if any) was met before the settle ended.
+// whether the action's wait condition (if any) was met before the settle ended, and
+// any uncaught script errors recorded during the dispatch + settle window (so a
+// handler that threw is visible to the caller, not just a silent no-op).
 type DispatchResult struct {
 	Matched bool
 	WaitMet bool
+	Errors  []string
 }
 
 // Context is the concrete LiveContext: a long-lived goja runtime + event loop +
@@ -116,10 +119,21 @@ func (c *Context) Dispatch(ctx context.Context, action Action) (DispatchResult, 
 		cond = &WaitCondition{Selector: action.WaitFor, Text: action.WaitText}
 	}
 	var waitMet bool
+	var before int
 	err := c.run(ctx, true, cond, &waitMet, func(*goja.Runtime) {
+		before = len(c.bridge.diagErrors)
 		c.bridge.runActions(acts)
 	})
-	return DispatchResult{Matched: acts[0].Matched, WaitMet: waitMet}, err
+	res := DispatchResult{Matched: acts[0].Matched, WaitMet: waitMet}
+	// Read errors recorded during the dispatch + settle window on the loop (which
+	// serializes with the settle above). Best-effort: a failure here loses only
+	// diagnostics, never the dispatch outcome.
+	_ = c.run(ctx, false, nil, nil, func(*goja.Runtime) {
+		if n := len(c.bridge.diagErrors); n > before {
+			res.Errors = append(res.Errors, c.bridge.diagErrors[before:n]...)
+		}
+	})
+	return res, err
 }
 
 // Snapshot serializes the live document tree to HTML bytes on the loop goroutine.

@@ -150,14 +150,21 @@ type Article struct {
 	ContentHTML string     // reduced + sanitized HTML
 	ContentNode *html.Node // the cleaned content subtree (clone, safe to mutate)
 	TextLength  int
+	// Source records which reduction actually produced the content: "readability"
+	// (a distinct article body was extracted) or "full" (the whole reduced page —
+	// either requested, or the fallback when readability found no article). Lets
+	// callers report an article→full fallback instead of silently mislabeling it.
+	Source string
 }
 
 // Table is an extracted HTML data table. Computed on demand by dom.Tables (via
-// the data tool), never as part of the per-read Extract pass.
+// the data tool), never as part of the per-read Extract pass. Truncated reports
+// that rows were dropped by the extraction cap — never truncate silently.
 type Table struct {
-	Caption string     `json:"caption,omitempty"`
-	Headers []string   `json:"headers,omitempty"`
-	Rows    [][]string `json:"rows,omitempty"`
+	Caption   string     `json:"caption,omitempty"`
+	Headers   []string   `json:"headers,omitempty"`
+	Rows      [][]string `json:"rows,omitempty"`
+	Truncated bool       `json:"truncated,omitempty"`
 }
 
 // MicrodataItem is one schema.org microdata item (an itemscope subtree). Each
