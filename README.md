@@ -14,10 +14,13 @@ fetch(url) → parse HTML5 → [optionally execute JS] → semantic reduction �
 
 ## Status
 
-Early. The **static read path** works end to end today: an MCP `read` tool that
-turns most server-rendered pages into clean Markdown with zero JavaScript. The
-JavaScript/DOM bridge is a later, opt-in phase. See
-[docs/architecture.md](docs/architecture.md) for the full design and roadmap.
+**v0.16.0.** The full pipeline works end to end: 14 MCP tools covering reading,
+navigation, sessions, forms, structured data, site discovery, and search. The
+static read path turns most server-rendered pages into clean Markdown with zero
+JavaScript; the opt-in JavaScript engine (`--js`) renders mainstream SPA
+frameworks and powers live interactive sessions (`interact`). See
+[docs/architecture.md](docs/architecture.md) for the full design (phases 0–16)
+and its non-goals.
 
 ## Requirements
 
@@ -26,6 +29,15 @@ The official MCP Go SDK requires **Go ≥ 1.25**. The `Makefile` sets
 `go.mod` automatically — you do not need to install Go 1.25 yourself, and your
 global `go env` is left untouched. (If you run `go` directly rather than via
 `make`, prefix commands with `GOTOOLCHAIN=auto`.)
+
+## Install
+
+```sh
+GOTOOLCHAIN=auto go install github.com/christopherdavenport/unblink/cmd/unblink@latest
+```
+
+Or download a prebuilt binary from the GitHub releases page, or build from
+source:
 
 ## Build & run
 

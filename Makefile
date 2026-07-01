@@ -8,12 +8,17 @@ export GOTOOLCHAIN := auto
 
 BIN := bin/unblink
 
+# Stamp the release version from the nearest git tag (v0.16.0 -> 0.16.0).
+# Falls back to the in-source dev default when there is no tag yet.
+VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
+LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
+
 .PHONY: all build run version test eval vet fmt tidy clean
 
 all: build
 
 build:
-	go build -o $(BIN) ./cmd/unblink
+	go build $(LDFLAGS) -o $(BIN) ./cmd/unblink
 
 run: build
 	./$(BIN)

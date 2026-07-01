@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 
 	"github.com/christopherdavenport/unblink/internal/browser"
 	"github.com/christopherdavenport/unblink/internal/mcpserver"
@@ -39,7 +40,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("unblink", mcpserver.Version())
+		fmt.Println("unblink", mcpserver.Version(), buildMeta())
 		return
 	}
 
@@ -91,6 +92,40 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unblink:", err)
 		os.Exit(1)
 	}
+}
+
+// buildMeta reports the VCS revision and commit time embedded by the Go
+// toolchain, so --version identifies the exact build even without a release tag.
+func buildMeta() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	var rev, at string
+	dirty := false
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.time":
+			at = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		return ""
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if dirty {
+		rev += "-dirty"
+	}
+	if at != "" {
+		return fmt.Sprintf("(%s %s)", rev, at)
+	}
+	return "(" + rev + ")"
 }
 
 func parseLevel(s string) slog.Level {
