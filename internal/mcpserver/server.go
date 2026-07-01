@@ -41,9 +41,26 @@ func New(b *browser.Browser, safeOutput bool) *Server {
 	return s
 }
 
+// Tool annotations (MCP spec hints, so hosts can distinguish read-only fetches
+// from state-changing actions — e.g. for human-in-the-loop confirmation).
+var (
+	annFalse = false
+	annTrue  = true
+
+	// readOnlyAnn: pure reads that reach the open web.
+	readOnlyAnn = &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &annTrue}
+	// navAnn: navigates session state via plain GETs (non-destructive writes).
+	navAnn = &mcp.ToolAnnotations{DestructiveHint: &annFalse, OpenWorldHint: &annTrue}
+	// writeAnn: may change remote state (form submission, event handlers firing).
+	writeAnn = &mcp.ToolAnnotations{DestructiveHint: &annTrue, OpenWorldHint: &annTrue}
+	// localAnn: manages server-local session state only.
+	localAnn = &mcp.ToolAnnotations{DestructiveHint: &annFalse, OpenWorldHint: &annFalse}
+)
+
 func (s *Server) registerTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "read",
+		Name:        "read",
+		Annotations: readOnlyAnn,
 		Description: "Fetch a web page and return its main content as clean Markdown, with " +
 			"visual-only junk (scripts, styles, navigation, ads) removed. Large pages are " +
 			"paginated: pass the returned cursor to read the next page. mode=full returns the " +
@@ -56,7 +73,8 @@ func (s *Server) registerTools() {
 	}, s.handleRead)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "browse",
+		Name:        "browse",
+		Annotations: readOnlyAnn,
 		Description: "Cheaply orient on a page: returns its title, description, language, an " +
 			"outline of headings, counts of links/forms/images, and a short excerpt — without " +
 			"pulling the full content. Also hints whether the host publishes llms.txt and its " +
@@ -65,38 +83,44 @@ func (s *Server) registerTools() {
 	}, s.handleBrowse)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "links",
+		Name:        "links",
+		Annotations: readOnlyAnn,
 		Description: "List the page's links (text + absolute href), optionally filtered by a " +
 			"substring or restricted to internal (same-site) links.",
 	}, s.handleLinks)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "forms",
+		Annotations: readOnlyAnn,
 		Description: "List the page's forms and their fields (name, type, required, options).",
 	}, s.handleForms)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "find",
+		Name:        "find",
+		Annotations: readOnlyAnn,
 		Description: "Search the page text for a query and return matching snippets with the " +
 			"heading path that locates each match.",
 	}, s.handleFind)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "click",
+		Name:        "click",
+		Annotations: navAnn,
 		Description: "Within a session, follow a link from the current page — by link_index (from " +
 			"the links tool) or by a text/href match — carrying cookies. Returns a summary of the " +
 			"page navigated to.",
 	}, s.handleClick)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "submit_form",
+		Name:        "submit_form",
+		Annotations: writeAnn,
 		Description: "Within a session, submit a form from the current page with the given field " +
 			"values (merged over the form's defaults), carrying cookies. Returns a summary of the " +
 			"result page.",
 	}, s.handleSubmit)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "controls",
+		Name:        "controls",
+		Annotations: readOnlyAnn,
 		Description: "List the page's non-link interactive controls (buttons, role=button, " +
 			"onclick/tabindex elements, submit/reset inputs, tabs, summaries), each with a stable " +
 			"CSS selector — the selectors the interact tool takes. Use render=true to see controls " +
@@ -104,7 +128,8 @@ func (s *Server) registerTools() {
 	}, s.handleControls)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "interact",
+		Name:        "interact",
+		Annotations: writeAnn,
 		Description: "Within a session, dispatch a real DOM event at a CSS-selector-addressed element " +
 			"on the current page and run the page's JavaScript so its handlers fire and mutate the " +
 			"DOM, then return the updated page. event defaults to \"click\", which emulates a full " +
@@ -119,7 +144,8 @@ func (s *Server) registerTools() {
 	}, s.handleInteract)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "data",
+		Name:        "data",
+		Annotations: readOnlyAnn,
 		Description: "Extract machine-readable structured data embedded in a page: JSON-LD " +
 			"(schema.org — products, articles, recipes, breadcrumbs), HTML data tables " +
 			"(caption/headers/rows), and microdata (itemscope/itemprop). kind selects jsonld, tables, " +
@@ -128,7 +154,8 @@ func (s *Server) registerTools() {
 	}, s.handleData)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "site",
+		Name:        "site",
+		Annotations: readOnlyAnn,
 		Description: "Inspect a host's agent-facing metadata: its robots.txt (allow/disallow rules " +
 			"for a standard browser agent, crawl-delay, sitemap URLs) and its llms.txt (host-authored " +
 			"Markdown returned inline), plus whether llms-full.txt exists. Context only — unblink never " +
@@ -137,7 +164,8 @@ func (s *Server) registerTools() {
 	}, s.handleSite)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "map",
+		Name:        "map",
+		Annotations: readOnlyAnn,
 		Description: "Discover a site's URLs: harvests sitemap.xml (from robots.txt and the /sitemap.xml " +
 			"convention, following sitemap indexes) and crawls same-origin links breadth-first from the " +
 			"seed url. Returns a bounded, de-duplicated list of URLs, each tagged source=sitemap|crawl with " +
@@ -147,20 +175,25 @@ func (s *Server) registerTools() {
 	}, s.handleMap)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "search",
+		Name:        "search",
+		Annotations: readOnlyAnn,
 		Description: "Search the web via the configured provider (SearXNG or Brave) and return ranked results " +
 			"(title, url, snippet). Pass site to restrict to one domain; read a result with the read tool. " +
 			"Requires the server started with --search-provider; errors cleanly when no provider is configured.",
 	}, s.handleSearch)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: "session",
-		Description: "Manage a browsing session: new (create), state (current page), history " +
-			"(visited URLs), back, forward, or close. Sessions persist cookies and history across " +
-			"calls; any page tool auto-creates a session when given an unknown session id. " +
-			"action=new accepts url + auth/headers/cookies to attach credentials for that origin " +
-			"(bearer/basic; secrets via token_env/password_env stay out of the transcript); they " +
-			"never leak cross-origin.",
+		Name:        "session",
+		Annotations: localAnn,
+		Description: "Manage a browsing session: new (create), list (all live sessions), state " +
+			"(current page), history (visited URLs), back, forward, or close. Sessions persist " +
+			"cookies and history across calls; any page tool auto-creates a session when given a " +
+			"never-used session id. Idle sessions are evicted (default 30m): their ids then error " +
+			"with [session_expired] and must be re-created with action=new (re-attach credentials — " +
+			"they are never carried over). action=new accepts url + auth/headers/cookies to attach " +
+			"credentials for that origin (bearer/basic; secrets via token_env/password_env stay out " +
+			"of the transcript); they never leak cross-origin. Re-creating an existing session with " +
+			"new credentials errors: close it first.",
 	}, s.handleSession)
 }
 

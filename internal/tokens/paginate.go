@@ -2,10 +2,17 @@ package tokens
 
 import (
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"hash/fnv"
 	"strconv"
 	"strings"
 )
+
+// ErrStaleCursor reports a cursor whose fingerprint no longer matches the
+// content: the page changed between paginated calls, so the cursor's chunk
+// index is meaningless. Callers should restart without a cursor.
+var ErrStaleCursor = errors.New("cursor is stale: the content changed since it was issued")
 
 // Paginate splits markdown into chunks that each fit within maxTokens, breaking
 // only at blank-line block boundaries. A single block larger than the budget is
@@ -82,17 +89,12 @@ func hardSplit(block string, maxTokens int) []string {
 	return out
 }
 
-// Fingerprint is a short content hash used to detect a stale cursor (the page
-// changed between paginated calls).
+// Fingerprint is a short hash over the entire content, used to detect a stale
+// cursor (the page changed between paginated calls).
 func Fingerprint(s string) string {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(strconv.Itoa(len(s))))
-	head := s
-	if len(head) > 64 {
-		head = head[:64]
-	}
-	_, _ = h.Write([]byte(head))
-	return strconv.FormatUint(uint64(h.Sum32()), 16)
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(s))
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // EncodeCursor produces an opaque cursor pointing at chunk nextIndex of content
@@ -101,23 +103,28 @@ func EncodeCursor(nextIndex int, fp string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(fp + ":" + strconv.Itoa(nextIndex)))
 }
 
-// DecodeCursor returns the chunk index encoded in cursor, or 0 if the cursor is
-// empty, malformed, or stale (its fingerprint does not match fp).
-func DecodeCursor(cursor, fp string) int {
+// DecodeCursor returns the chunk index encoded in cursor. An empty cursor is
+// page 0. A cursor whose fingerprint does not match fp returns ErrStaleCursor;
+// a malformed cursor returns a descriptive error. Callers surface both rather
+// than silently restarting at page 1.
+func DecodeCursor(cursor, fp string) (int, error) {
 	if cursor == "" {
-		return 0
+		return 0, nil
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("malformed cursor: %w", err)
 	}
 	parts := strings.SplitN(string(raw), ":", 2)
-	if len(parts) != 2 || parts[0] != fp {
-		return 0
+	if len(parts) != 2 {
+		return 0, errors.New("malformed cursor")
 	}
 	i, err := strconv.Atoi(parts[1])
 	if err != nil || i < 0 {
-		return 0
+		return 0, errors.New("malformed cursor")
 	}
-	return i
+	if parts[0] != fp {
+		return 0, ErrStaleCursor
+	}
+	return i, nil
 }

@@ -52,6 +52,7 @@ func Article(p *page.Page, stripHidden bool) error {
 		ContentHTML: cleanHTML,
 		ContentNode: art.Node,
 		TextLength:  len(cleanHTML),
+		Source:      "readability",
 	}
 	if p.Meta.Title == "" {
 		p.Meta.Title = art.Title()
@@ -90,6 +91,7 @@ func Full(p *page.Page, stripHidden bool) error {
 		ContentHTML: cleanHTML,
 		ContentNode: clone,
 		TextLength:  len(cleanHTML),
+		Source:      "full",
 	}
 	return nil
 }

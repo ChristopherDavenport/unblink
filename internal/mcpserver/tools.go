@@ -77,6 +77,12 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 	if r.WaitMet != nil && !*r.WaitMet {
 		text += "\n\n---\n_wait_for/wait_text never appeared within the timeout; the expected content may be missing from this render._\n"
 	}
+	if r.ArticleFallback {
+		text += "\n\n---\n_mode=article was requested but no distinct article body was found; this is the full reduced page._\n"
+	}
+	if len(r.JSErrors) > 0 {
+		text += fmt.Sprintf("\n\n---\n_%d uncaught JavaScript error(s) during render — the page may not be fully hydrated (see js_errors in the structured result)._\n", len(r.JSErrors))
+	}
 	if r.ImageBytes != nil {
 		// Image + include_bytes: return the manifest text and the raw pixels as a
 		// base64 ImageContent block (the SDK encodes Data on the wire).
@@ -117,19 +123,41 @@ type linksArgs struct {
 	target
 	Filter       string `json:"filter,omitempty" jsonschema:"case-insensitive substring to match in link text or href"`
 	InternalOnly bool   `json:"internal_only,omitempty" jsonschema:"only return same-site (internal) links"`
+	Limit        int    `json:"limit,omitempty" jsonschema:"maximum links to return (default 200, capped at 1000); total in the result reports how many matched"`
 }
 
 type linksOut struct {
-	Count int         `json:"count"`
-	Links []page.Link `json:"links"`
+	Count     int         `json:"count"`               // links returned (after the limit)
+	Total     int         `json:"total"`               // links matching the filter on the page
+	Truncated bool        `json:"truncated,omitempty"` // total exceeded the limit
+	Links     []page.Link `json:"links"`
 }
+
+const (
+	defaultLinksLimit = 200
+	maxLinksLimit     = 1000
+	maxFormsOut       = 100
+	maxControlsOut    = 300
+)
 
 func (s *Server) handleLinks(ctx context.Context, _ *mcp.CallToolRequest, args linksArgs) (*mcp.CallToolResult, linksOut, error) {
 	links, err := s.browser.Links(ctx, args.request(), args.Filter, args.InternalOnly)
 	if err != nil {
 		return errorResult(err), linksOut{}, nil
 	}
-	out := linksOut{Count: len(links), Links: links}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = defaultLinksLimit
+	}
+	if limit > maxLinksLimit {
+		limit = maxLinksLimit
+	}
+	out := linksOut{Total: len(links), Links: links}
+	if len(links) > limit {
+		out.Links = links[:limit]
+		out.Truncated = true
+	}
+	out.Count = len(out.Links)
 	return s.framedJSON(out), out, nil
 }
 
@@ -140,8 +168,10 @@ type formsArgs struct {
 }
 
 type formsOut struct {
-	Count int         `json:"count"`
-	Forms []page.Form `json:"forms"`
+	Count     int         `json:"count"`
+	Total     int         `json:"total"`
+	Truncated bool        `json:"truncated,omitempty"`
+	Forms     []page.Form `json:"forms"`
 }
 
 func (s *Server) handleForms(ctx context.Context, _ *mcp.CallToolRequest, args formsArgs) (*mcp.CallToolResult, formsOut, error) {
@@ -149,7 +179,12 @@ func (s *Server) handleForms(ctx context.Context, _ *mcp.CallToolRequest, args f
 	if err != nil {
 		return errorResult(err), formsOut{}, nil
 	}
-	out := formsOut{Count: len(forms), Forms: forms}
+	out := formsOut{Total: len(forms), Forms: forms}
+	if len(forms) > maxFormsOut {
+		out.Forms = forms[:maxFormsOut]
+		out.Truncated = true
+	}
+	out.Count = len(out.Forms)
 	return s.framedJSON(out), out, nil
 }
 
@@ -167,6 +202,9 @@ type findOut struct {
 }
 
 func (s *Server) handleFind(ctx context.Context, _ *mcp.CallToolRequest, args findArgs) (*mcp.CallToolResult, findOut, error) {
+	if args.MaxHits > 100 {
+		args.MaxHits = 100
+	}
 	hits, err := s.browser.Find(ctx, args.request(), args.Query, args.MaxHits)
 	if err != nil {
 		return errorResult(err), findOut{}, nil
@@ -228,8 +266,10 @@ type controlsArgs struct {
 }
 
 type controlsOut struct {
-	Count    int            `json:"count"`
-	Controls []page.Control `json:"controls"`
+	Count     int            `json:"count"`
+	Total     int            `json:"total"`
+	Truncated bool           `json:"truncated,omitempty"`
+	Controls  []page.Control `json:"controls"`
 }
 
 func (s *Server) handleControls(ctx context.Context, _ *mcp.CallToolRequest, args controlsArgs) (*mcp.CallToolResult, controlsOut, error) {
@@ -237,7 +277,12 @@ func (s *Server) handleControls(ctx context.Context, _ *mcp.CallToolRequest, arg
 	if err != nil {
 		return errorResult(err), controlsOut{}, nil
 	}
-	out := controlsOut{Count: len(ctrls), Controls: ctrls}
+	out := controlsOut{Total: len(ctrls), Controls: ctrls}
+	if len(ctrls) > maxControlsOut {
+		out.Controls = ctrls[:maxControlsOut]
+		out.Truncated = true
+	}
+	out.Count = len(out.Controls)
 	return s.framedJSON(out), out, nil
 }
 
@@ -322,7 +367,7 @@ func (s *Server) handleSearch(ctx context.Context, _ *mcp.CallToolRequest, args 
 // --- session ---
 
 type sessionArgs struct {
-	Action  string `json:"action" jsonschema:"one of: new, state, history, back, forward, close"`
+	Action  string `json:"action" jsonschema:"one of: new, list, state, history, back, forward, close"`
 	Session string `json:"session,omitempty" jsonschema:"the session id (optional for new)"`
 	// The following apply to action=new and attach credentials for the whole session,
 	// scoped to url's origin (so they never leak cross-origin). Kept out of every
@@ -334,12 +379,13 @@ type sessionArgs struct {
 }
 
 type sessionResult struct {
-	Action  string                  `json:"action"`
-	ID      string                  `json:"id,omitempty"`
-	Closed  bool                    `json:"closed,omitempty"`
-	State   *browser.SessionState   `json:"state,omitempty"`
-	History *browser.SessionHistory `json:"history,omitempty"`
-	Current *browser.BrowseResult   `json:"current,omitempty"`
+	Action   string                  `json:"action"`
+	ID       string                  `json:"id,omitempty"`
+	Closed   bool                    `json:"closed,omitempty"`
+	State    *browser.SessionState   `json:"state,omitempty"`
+	Sessions []browser.SessionState  `json:"sessions,omitempty"` // action=list
+	History  *browser.SessionHistory `json:"history,omitempty"`
+	Current  *browser.BrowseResult   `json:"current,omitempty"`
 }
 
 func (s *Server) handleSession(ctx context.Context, _ *mcp.CallToolRequest, args sessionArgs) (*mcp.CallToolResult, sessionResult, error) {
@@ -357,6 +403,8 @@ func (s *Server) handleSession(ctx context.Context, _ *mcp.CallToolRequest, args
 			return errorResult(err), sessionResult{}, nil
 		}
 		out.ID = id
+	case "list":
+		out.Sessions = s.browser.SessionList()
 	case "state":
 		st, err := s.browser.SessionState(args.Session)
 		if err != nil {
@@ -385,7 +433,7 @@ func (s *Server) handleSession(ctx context.Context, _ *mcp.CallToolRequest, args
 		out.ID = args.Session
 		out.Closed = s.browser.CloseSession(args.Session)
 	default:
-		return errorResult(fmt.Errorf("unknown session action %q (want new|state|history|back|forward|close)", args.Action)),
+		return errorResult(fmt.Errorf("unknown session action %q (want new|list|state|history|back|forward|close)", args.Action)),
 			sessionResult{}, nil
 	}
 	return jsonResult(out), out, nil
@@ -454,9 +502,17 @@ func jsonResult(v any) *mcp.CallToolResult {
 	return textResult(string(data))
 }
 
+// errorResult renders a classified error as `error [code]: message`, appending a
+// retryable hint for transient failures. The bracketed code is stable and
+// machine-checkable; the message is written to tell the agent what to do next.
 func errorResult(err error) *mcp.CallToolResult {
+	be := browser.Classify(err)
+	text := fmt.Sprintf("error [%s]: %s", be.Code, be.Message)
+	if be.Retryable {
+		text += "\n(transient: retrying the same call may succeed)"
+	}
 	return &mcp.CallToolResult{
 		IsError: true,
-		Content: []mcp.Content{&mcp.TextContent{Text: "error: " + err.Error()}},
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
 	}
 }

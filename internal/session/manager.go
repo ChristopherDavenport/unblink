@@ -14,17 +14,31 @@ import (
 const (
 	DefaultTTL = 30 * time.Minute
 	DefaultCap = 256
+
+	// Tombstones remember evicted ids so later use reports "expired" instead of
+	// silently re-creating an anonymous session. Bounded in age and count.
+	tombstoneTTL = 24 * time.Hour
+	tombstoneCap = 4096
 )
+
+// tombstone records why a session id left the map, so the distinction between
+// "never existed" and "evicted" survives the eviction itself.
+type tombstone struct {
+	at       time.Time
+	reason   string // "idle" | "capacity"
+	hadCreds bool
+}
 
 // Manager owns the live sessions. Sessions are created lazily on first use,
 // evicted after an idle TTL, and capped in number (oldest evicted on overflow).
 type Manager struct {
-	mu        sync.Mutex
-	sessions  map[string]*Session
-	ttl       time.Duration
-	cap       int
-	newClient func(Config) (*fetch.Client, error)
-	onEvict   func(*Session) // called (outside the lock) when a session leaves the map
+	mu         sync.Mutex
+	sessions   map[string]*Session
+	tombstones map[string]tombstone
+	ttl        time.Duration
+	cap        int
+	newClient  func(Config) (*fetch.Client, error)
+	onEvict    func(*Session) // called (outside the lock) when a session leaves the map
 }
 
 // NewManager returns a Manager. newClient builds a fresh fetch.Client (with its own
@@ -40,23 +54,21 @@ func NewManager(ttl time.Duration, capacity int, newClient func(Config) (*fetch.
 		capacity = DefaultCap
 	}
 	return &Manager{
-		sessions:  make(map[string]*Session),
-		ttl:       ttl,
-		cap:       capacity,
-		newClient: newClient,
-		onEvict:   onEvict,
+		sessions:   make(map[string]*Session),
+		tombstones: make(map[string]tombstone),
+		ttl:        ttl,
+		cap:        capacity,
+		newClient:  newClient,
+		onEvict:    onEvict,
 	}
 }
 
 // GetOrCreate returns the session for id, creating an anonymous one on first use.
-// Use NewWithConfig to create a credentialed session.
+// An id that was evicted (idle TTL or capacity) returns *ExpiredError rather than
+// silently re-creating the session — the caller must re-create it deliberately so
+// credentials and cookies are never dropped without notice. Use NewWithConfig to
+// (re-)create a session.
 func (m *Manager) GetOrCreate(id string) (*Session, error) {
-	return m.getOrCreate(id, Config{})
-}
-
-// getOrCreate returns the session for id, creating it with cfg on first use. cfg is
-// ignored when a session already exists (credentials are fixed at creation).
-func (m *Manager) getOrCreate(id string, cfg Config) (s *Session, err error) {
 	var evicted []*Session
 	m.mu.Lock()
 	defer func() { m.mu.Unlock(); m.evictAll(evicted) }()
@@ -66,32 +78,46 @@ func (m *Manager) getOrCreate(id string, cfg Config) (s *Session, err error) {
 		ex.touch()
 		return ex, nil
 	}
+	if ts, ok := m.tombstones[id]; ok {
+		return nil, &ExpiredError{ID: id, Reason: ts.reason, HadCredentials: ts.hadCreds}
+	}
+	return m.createLocked(id, Config{}, &evicted)
+}
+
+// createLocked builds and registers a new session. Must be called with the
+// manager lock held; capacity eviction appends to *evicted.
+func (m *Manager) createLocked(id string, cfg Config, evicted *[]*Session) (*Session, error) {
 	if len(m.sessions) >= m.cap {
 		if v := m.evictOldestLocked(); v != nil {
-			evicted = append(evicted, v)
+			*evicted = append(*evicted, v)
 		}
 	}
 	client, cerr := m.newClient(cfg)
 	if cerr != nil {
 		return nil, fmt.Errorf("session: new client: %w", cerr)
 	}
-	s = newSession(id, client, cfg)
+	s := newSession(id, client, cfg)
 	m.sessions[id] = s
+	delete(m.tombstones, id) // a deliberate creation clears the id's history
 	return s, nil
 }
 
-// Get returns an existing session without creating one.
-func (m *Manager) Get(id string) (s *Session, ok bool) {
+// Get returns an existing session. A missing id returns *NotFoundError; an
+// evicted id returns *ExpiredError.
+func (m *Manager) Get(id string) (*Session, error) {
 	var evicted []*Session
 	m.mu.Lock()
 	defer func() { m.mu.Unlock(); m.evictAll(evicted) }()
 
 	evicted = m.gcLocked()
-	s, ok = m.sessions[id]
-	if ok {
+	if s, ok := m.sessions[id]; ok {
 		s.touch()
+		return s, nil
 	}
-	return s, ok
+	if ts, ok := m.tombstones[id]; ok {
+		return nil, &ExpiredError{ID: id, Reason: ts.reason, HadCredentials: ts.hadCreds}
+	}
+	return nil, &NotFoundError{ID: id}
 }
 
 // New creates an anonymous session, generating a random id when id is empty.
@@ -100,8 +126,11 @@ func (m *Manager) New(id string) (*Session, error) {
 }
 
 // NewWithConfig creates a session with the given credential config, generating a
-// random id when id is empty. If a session with that id already exists, it is
-// returned unchanged (credentials are fixed at creation).
+// random id when id is empty. Creating an evicted id succeeds (a deliberate
+// re-creation clears its tombstone). If a live session with that id already
+// exists: an anonymous request returns it unchanged (idempotent), but a request
+// carrying credentials returns *ExistsError — credentials are fixed at creation
+// and never silently ignored.
 func (m *Manager) NewWithConfig(id string, cfg Config) (*Session, error) {
 	if id == "" {
 		b := make([]byte, 6)
@@ -110,16 +139,46 @@ func (m *Manager) NewWithConfig(id string, cfg Config) (*Session, error) {
 		}
 		id = "s-" + hex.EncodeToString(b)
 	}
-	return m.getOrCreate(id, cfg)
+
+	var evicted []*Session
+	m.mu.Lock()
+	defer func() { m.mu.Unlock(); m.evictAll(evicted) }()
+
+	evicted = m.gcLocked()
+	if ex, ok := m.sessions[id]; ok {
+		if cfg.HasCredentials() || cfg.Origin != "" {
+			return nil, &ExistsError{ID: id}
+		}
+		ex.touch()
+		return ex, nil
+	}
+	return m.createLocked(id, cfg, &evicted)
 }
 
-// Close removes a session. It reports whether one existed.
+// List returns the live sessions (after sweeping expired ones), in no particular
+// order. Listing does not refresh the sessions' idle clocks.
+func (m *Manager) List() []*Session {
+	var evicted []*Session
+	m.mu.Lock()
+	defer func() { m.mu.Unlock(); m.evictAll(evicted) }()
+
+	evicted = m.gcLocked()
+	out := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		out = append(out, s)
+	}
+	return out
+}
+
+// Close removes a session. It reports whether one existed. An explicit close
+// frees the id for reuse (no tombstone: the caller chose to end the session).
 func (m *Manager) Close(id string) bool {
 	m.mu.Lock()
 	s, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
 	}
+	delete(m.tombstones, id)
 	m.mu.Unlock()
 	if ok && m.onEvict != nil {
 		m.onEvict(s)
@@ -155,8 +214,10 @@ func (m *Manager) gcLocked() []*Session {
 		if s.idle() > m.ttl {
 			evicted = append(evicted, s)
 			delete(m.sessions, id)
+			m.tombstoneLocked(id, "idle", s)
 		}
 	}
+	m.pruneTombstonesLocked()
 	return evicted
 }
 
@@ -171,9 +232,34 @@ func (m *Manager) evictOldestLocked() *Session {
 	if oldestID != "" {
 		s := m.sessions[oldestID]
 		delete(m.sessions, oldestID)
+		m.tombstoneLocked(oldestID, "capacity", s)
 		return s
 	}
 	return nil
+}
+
+func (m *Manager) tombstoneLocked(id, reason string, s *Session) {
+	m.tombstones[id] = tombstone{at: time.Now(), reason: reason, hadCreds: s.Config().HasCredentials()}
+}
+
+// pruneTombstonesLocked bounds the tombstone map in age and, if still over the
+// cap, drops the oldest entries.
+func (m *Manager) pruneTombstonesLocked() {
+	for id, ts := range m.tombstones {
+		if time.Since(ts.at) > tombstoneTTL {
+			delete(m.tombstones, id)
+		}
+	}
+	for len(m.tombstones) > tombstoneCap {
+		var oldestID string
+		var oldest time.Time
+		for id, ts := range m.tombstones {
+			if oldestID == "" || ts.at.Before(oldest) {
+				oldestID, oldest = id, ts.at
+			}
+		}
+		delete(m.tombstones, oldestID)
+	}
 }
 
 // evictAll runs the onEvict hook for each removed session. Must be called with the

@@ -87,7 +87,7 @@ type siteInfo struct {
 func (b *Browser) Site(ctx context.Context, req Request) (*SiteResult, error) {
 	origin, path, err := b.originForSite(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("browser: site: %w", err)
+		return nil, err
 	}
 	info := b.gatherSite(ctx, origin)
 	return siteResultFrom(info, path), nil
@@ -99,13 +99,13 @@ func (b *Browser) originForSite(ctx context.Context, req Request) (*url.URL, str
 	var final *url.URL
 	switch {
 	case req.SessionID != "" && (req.UseCurrent || req.URL == ""):
-		sess, ok := b.sessions.Get(req.SessionID)
-		if !ok {
-			return nil, "", fmt.Errorf("unknown session %q", req.SessionID)
+		sess, err := b.sessions.Get(req.SessionID)
+		if err != nil {
+			return nil, "", err
 		}
 		cur := sess.Current()
 		if cur == nil {
-			return nil, "", fmt.Errorf("session %q has no current page; provide a url", req.SessionID)
+			return nil, "", errNoCurrentPage(req.SessionID)
 		}
 		final = cur.FinalURL
 	case req.URL != "":
@@ -116,7 +116,7 @@ func (b *Browser) originForSite(ctx context.Context, req Request) (*url.URL, str
 		}
 		final = p.FinalURL
 	default:
-		return nil, "", fmt.Errorf("a url or a session with a current page is required")
+		return nil, "", errf(ErrBadInput, "a url or a session with a current page is required")
 	}
 	if final == nil {
 		return nil, "", fmt.Errorf("could not determine the page URL")

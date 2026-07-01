@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -70,7 +69,7 @@ func (b *Browser) Map(ctx context.Context, req Request, maxURLs, maxDepth int) (
 		maxDepth = MaxMapDepth
 	}
 	if originOfURL(req.URL) == "" {
-		return nil, fmt.Errorf("browser: map: a url is required")
+		return nil, errf(ErrBadInput, "a url is required")
 	}
 
 	deadline := time.Now().Add(mapWallClock)
@@ -79,7 +78,7 @@ func (b *Browser) Map(ctx context.Context, req Request, maxURLs, maxDepth int) (
 	// This doubles as BFS depth 0 and yields the post-redirect canonical origin.
 	seed, err := b.fetchPage(ctx, b.client, req.URL, renderOpts{})
 	if err != nil {
-		return nil, fmt.Errorf("browser: map: %w", err)
+		return nil, err
 	}
 	crawlOrigin := originOfURL(req.URL)
 	if seed.FinalURL != nil && seed.FinalURL.Host != "" {
@@ -336,7 +335,7 @@ func (b *Browser) Search(ctx context.Context, query string, count int, site stri
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, fmt.Errorf("browser: search: query is required")
+		return nil, errf(ErrBadInput, "query is required")
 	}
 	if count <= 0 {
 		count = DefaultSearchCount
@@ -346,7 +345,7 @@ func (b *Browser) Search(ctx context.Context, query string, count int, site stri
 	}
 	results, err := b.search.Search(ctx, query, search.Options{Count: count, Site: strings.TrimSpace(site)})
 	if err != nil {
-		return nil, fmt.Errorf("browser: search: %w", err)
+		return nil, err
 	}
 	return &SearchResult{
 		Provider: b.search.Name(),

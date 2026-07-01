@@ -6,11 +6,13 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +40,10 @@ const (
 	DefaultSiteCacheCap  = 128
 	DefaultLLMsMaxTokens = 4000 // cap on inline llms.txt content
 	DefaultMaxTokens     = 6000
+	MaxReadTokens        = 24000 // ceiling on a read chunk: max_tokens cannot defeat pagination
+
+	maxJSErrors          = 5   // uncaught JS errors surfaced per result
+	maxJSErrorLen        = 300 // runes per surfaced JS error
 	DefaultJSTimeout     = 2 * time.Second
 	DefaultJSMaxRequests = 50 // generous enough for an ES-module graph; still bounded
 	DefaultJSPrewarm     = js.DefaultMaxConcurrent
@@ -105,6 +111,8 @@ type options struct {
 	safeOutput     bool
 	allowPrivate   bool
 	search         search.Provider
+	sessionTTL     time.Duration
+	sessionCap     int
 }
 
 // WithFetchOptions forwards options to the underlying fetch clients (default and
@@ -164,6 +172,13 @@ func WithRetries(n int) Option { return func(o *options) { o.retries = n } }
 
 // WithTLSMimic enables browser-like TLS fingerprinting (utls) on page fetches.
 func WithTLSMimic(enabled bool) Option { return func(o *options) { o.tlsMimic = enabled } }
+
+// WithSessionLimits tunes the session manager: how long an idle session lives
+// before eviction, and the maximum number of concurrent sessions (oldest evicted
+// on overflow). Zero values keep the defaults (30m / 256).
+func WithSessionLimits(ttl time.Duration, capacity int) Option {
+	return func(o *options) { o.sessionTTL, o.sessionCap = ttl, capacity }
+}
 
 // WithSiteHints controls whether Browse folds robots.txt/llms.txt presence hints
 // into its output (default enabled). Disabling it avoids the per-host origin-root
@@ -227,7 +242,7 @@ func New(opts ...Option) (*Browser, error) {
 		return nil, err
 	}
 	// Tear down a session's live JS runtime when the manager evicts/closes it.
-	mgr := session.NewManager(session.DefaultTTL, session.DefaultCap, newPageClient,
+	mgr := session.NewManager(o.sessionTTL, o.sessionCap, newPageClient,
 		func(s *session.Session) { s.Close() })
 
 	b := &Browser{
@@ -371,7 +386,7 @@ func (b *Browser) resolve(ctx context.Context, req Request) (*page.Page, *sessio
 		if req.UseCurrent || req.URL == "" {
 			cur := sess.Current()
 			if cur == nil {
-				return nil, sess, fmt.Errorf("session %q has no current page; provide a url", req.SessionID)
+				return nil, sess, errNoCurrentPage(req.SessionID)
 			}
 			// If a live runtime is driving this page, refresh from a fresh snapshot so
 			// reads reflect interactions and background timer/fetch activity.
@@ -393,7 +408,7 @@ func (b *Browser) resolve(ctx context.Context, req Request) (*page.Page, *sessio
 	}
 
 	if req.URL == "" {
-		return nil, nil, fmt.Errorf("a url is required when no session is given")
+		return nil, nil, errf(ErrBadInput, "a url is required when no session is given")
 	}
 	if req.Auth != nil || len(req.Headers) > 0 {
 		// One-shot credentials: fetch through a throwaway client scoped to the URL's
@@ -562,12 +577,23 @@ type ReadResult struct {
 	Kind        string `json:"kind,omitempty"`
 	Bytes       int    `json:"bytes,omitempty"`
 
+	// ArticleFallback is true when mode=article was requested but readability found
+	// no distinct article body, so the whole reduced page was returned instead
+	// (Mode then reports "full"). The agent asked for an article and didn't get one.
+	ArticleFallback bool `json:"article_fallback,omitempty"`
+
 	// WaitMet is set only when the request carried a wait_for/wait_text gate: true if
 	// the condition appeared before the render returned, false if it never did (the
 	// content the agent asked for is likely missing). PendingNavigation is a URL the
 	// page's JS asked to navigate to but that the render did not follow.
 	WaitMet           *bool  `json:"wait_met,omitempty"`
 	PendingNavigation string `json:"pending_navigation,omitempty"`
+
+	// Framework/JSErrors surface JavaScript render diagnostics: the SPA framework
+	// detected (if any) and up to maxJSErrors uncaught script errors. A page that
+	// failed to hydrate is visible here rather than silently thin.
+	Framework string   `json:"framework,omitempty"`
+	JSErrors  []string `json:"js_errors,omitempty"`
 
 	// ImageBytes/ImageMIME carry the raw image for the MCP layer to base64-encode,
 	// set only when the page is an image and the request asked for include_bytes.
@@ -582,13 +608,14 @@ type ReadResult struct {
 // (cached or session) pages are never mutated.
 func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens int, cursor string) (*ReadResult, error) {
 	if (req.WaitFor != "" || req.WaitText != "") && b.renderer == nil {
-		return nil, fmt.Errorf("browser: read: wait_for requires JavaScript; start the server with --js")
+		return nil, errf(ErrJSRequired, "wait_for/wait_text require JavaScript; start the server with --js")
 	}
 	p, _, err := b.resolve(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("browser: read: %w", err)
+		return nil, err
 	}
 
+	articleFallback := false
 	pc := *p
 	switch format := strings.ToLower(strings.TrimSpace(req.Format)); format {
 	case "raw_html", "text":
@@ -596,7 +623,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		// surface, so refuse them (the caller can use include_bytes instead).
 		switch pc.Kind {
 		case page.KindImage, page.KindPDF, page.KindBinary:
-			return nil, fmt.Errorf("browser: read: format %q unavailable for %s content", format, kindString(pc.Kind))
+			return nil, errf(ErrBadInput, "format %q unavailable for %s content", format, kindString(pc.Kind))
 		}
 		var out string
 		if format == "raw_html" {
@@ -605,7 +632,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 			out = b.rawText(&pc)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("browser: read: %w", err)
+			return nil, err
 		}
 		pc.Markdown, mode = out, format
 	default:
@@ -618,16 +645,21 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 				mode, err = "article", reduce.Article(&pc, b.safeOutput)
 			}
 			if err != nil {
-				return nil, fmt.Errorf("browser: reduce: %w", err)
+				return nil, fmt.Errorf("reduce: %w", err)
+			}
+			// Report what actually ran: readability finding no article falls back to
+			// the full reduction, and pretending otherwise misleads the agent.
+			if mode == "article" && pc.Article != nil && pc.Article.Source == "full" {
+				mode, articleFallback = "full", true
 			}
 			if err := emit.Markdown(&pc); err != nil {
-				return nil, fmt.Errorf("browser: emit: %w", err)
+				return nil, fmt.Errorf("emit: %w", err)
 			}
 		default:
 			// Non-HTML: convert to Markdown in place (lazily, on the copy) and report
 			// the kind as the mode so the caller sees what happened.
 			if err := content.Render(ctx, &pc); err != nil {
-				return nil, fmt.Errorf("browser: convert: %w", err)
+				return nil, fmt.Errorf("convert: %w", err)
 			}
 			mode = string(pc.Kind)
 		}
@@ -640,21 +672,31 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	if maxTokens <= 0 {
 		maxTokens = DefaultMaxTokens
 	}
+	if maxTokens > MaxReadTokens {
+		maxTokens = MaxReadTokens
+	}
 	chunks := tokens.Paginate(pc.Markdown, maxTokens)
 	fp := tokens.Fingerprint(pc.Markdown)
-	idx := tokens.DecodeCursor(cursor, fp)
+	idx, err := tokens.DecodeCursor(cursor, fp)
+	if err != nil {
+		if errors.Is(err, tokens.ErrStaleCursor) {
+			return nil, err // Classify maps it to cursor_expired with guidance
+		}
+		return nil, errf(ErrBadInput, "%v", err)
+	}
 	if idx >= len(chunks) {
 		idx = len(chunks) - 1
 	}
 
 	res := &ReadResult{
-		Markdown:    chunks[idx],
-		Mode:        mode,
-		Page:        idx + 1,
-		TotalPages:  len(chunks),
-		ContentType: pc.ContentType,
-		Kind:        kindString(pc.Kind),
-		Bytes:       len(pc.Raw),
+		Markdown:        chunks[idx],
+		Mode:            mode,
+		ArticleFallback: articleFallback,
+		Page:            idx + 1,
+		TotalPages:      len(chunks),
+		ContentType:     pc.ContentType,
+		Kind:            kindString(pc.Kind),
+		Bytes:           len(pc.Raw),
 	}
 	if idx+1 < len(chunks) {
 		res.NextCursor = tokens.EncodeCursor(idx+1, fp)
@@ -666,12 +708,34 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 			res.WaitMet = &wm
 		}
 		res.PendingNavigation = d.PendingNavigation
+		res.Framework = d.Framework
+		res.JSErrors = capErrors(d.Errors)
 	}
 	if req.IncludeBytes && pc.Kind == page.KindImage {
 		res.ImageBytes = pc.Raw
 		res.ImageMIME = pc.ContentType
 	}
 	return res, nil
+}
+
+// capErrors bounds a JS-error list for tool output: at most maxJSErrors entries,
+// each truncated to maxJSErrorLen runes.
+func capErrors(errs []string) []string {
+	if len(errs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, maxJSErrors)
+	for _, e := range errs {
+		if len(out) == maxJSErrors {
+			out = append(out, fmt.Sprintf("… (%d more)", len(errs)-maxJSErrors))
+			break
+		}
+		if r := []rune(e); len(r) > maxJSErrorLen {
+			e = string(r[:maxJSErrorLen]) + "…"
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // kindString reports a page's Kind for the wire, mapping the "" zero value (an
@@ -691,14 +755,14 @@ func kindString(k page.Kind) string {
 func (b *Browser) rawHTML(pc *page.Page, selector string) (string, error) {
 	if s := strings.TrimSpace(selector); s != "" {
 		if pc.Doc == nil {
-			return "", fmt.Errorf("selector requires an HTML page (got %s)", kindString(pc.Kind))
+			return "", errf(ErrBadInput, "selector requires an HTML page (got %s)", kindString(pc.Kind))
 		}
 		out, n, err := dom.RenderSelector(pc.Doc, s)
 		if err != nil {
-			return "", err
+			return "", errf(ErrBadInput, "%v", err)
 		}
 		if n == 0 {
-			return "", fmt.Errorf("selector %q matched no elements", s)
+			return "", errf(ErrBadInput, "selector %q matched no elements", s)
 		}
 		return out, nil
 	}
@@ -771,11 +835,26 @@ func summarize(p *page.Page) *BrowseResult {
 			Controls: len(p.Meta.Controls),
 		},
 		Excerpt:     excerpt,
-		Outline:     emit.Outline(p),
+		Outline:     truncateOutline(emit.Outline(p)),
 		ContentType: p.ContentType,
 		Kind:        kindString(p.Kind),
 		Bytes:       len(p.Raw),
 	}
+}
+
+// maxOutlineBytes bounds a browse outline — a pathological page with thousands
+// of headings must not turn the "cheap orientation" tool into a token bomb.
+const maxOutlineBytes = 8 << 10
+
+func truncateOutline(outline string) string {
+	if len(outline) <= maxOutlineBytes {
+		return outline
+	}
+	cut := strings.LastIndexByte(outline[:maxOutlineBytes], '\n')
+	if cut <= 0 {
+		cut = maxOutlineBytes
+	}
+	return outline[:cut] + "\n… (outline truncated)"
 }
 
 // Browse returns a cheap orientation summary of req's page. When site hints are
@@ -910,7 +989,7 @@ func (b *Browser) Click(ctx context.Context, sessionID string, linkIndex int, ma
 	}
 	cur := sess.Current()
 	if cur == nil {
-		return nil, fmt.Errorf("browser: click: session %q has no current page", sessionID)
+		return nil, errNoCurrentPage(sessionID)
 	}
 	links := cur.Meta.Links
 
@@ -923,18 +1002,18 @@ func (b *Browser) Click(ctx context.Context, sessionID string, linkIndex int, ma
 			}
 		}
 		if href == "" {
-			return nil, fmt.Errorf("browser: click: no link matching %q", match)
+			return nil, errf(ErrBadInput, "no link matching %q on the current page (%d links; list them with the links tool)", match, len(links))
 		}
 	} else {
 		if linkIndex < 0 || linkIndex >= len(links) {
-			return nil, fmt.Errorf("browser: click: link_index %d out of range (%d links)", linkIndex, len(links))
+			return nil, errf(ErrBadInput, "link_index %d out of range (%d links)", linkIndex, len(links))
 		}
 		href = links[linkIndex].Href
 	}
 
 	p, err := b.fetchPage(ctx, sess.Client(), href, renderOpts{})
 	if err != nil {
-		return nil, fmt.Errorf("browser: click: %w", err)
+		return nil, err
 	}
 	sess.Visit(p)
 	return summarize(p), nil
@@ -950,11 +1029,11 @@ func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values 
 	}
 	cur := sess.Current()
 	if cur == nil {
-		return nil, fmt.Errorf("browser: submit: session %q has no current page", sessionID)
+		return nil, errNoCurrentPage(sessionID)
 	}
 	form, ok := selectForm(cur.Meta.Forms, formRef)
 	if !ok {
-		return nil, fmt.Errorf("browser: submit: no form matching %q (%d forms on page)", formRef, len(cur.Meta.Forms))
+		return nil, errf(ErrBadInput, "no form matching %q (%d forms on page; list them with the forms tool)", formRef, len(cur.Meta.Forms))
 	}
 
 	vals := url.Values{}
@@ -969,10 +1048,10 @@ func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values 
 
 	p, err := sess.Client().Submit(ctx, form.Method, form.Action, vals)
 	if err != nil {
-		return nil, fmt.Errorf("browser: submit: %w", err)
+		return nil, err
 	}
 	if _, err := processPage(p); err != nil {
-		return nil, fmt.Errorf("browser: submit: %w", err)
+		return nil, err
 	}
 	sess.Visit(p)
 	return summarize(p), nil
@@ -986,6 +1065,9 @@ type InteractResult struct {
 	Matched  bool           `json:"matched"` // the selector resolved to a node during dispatch
 	Changed  bool           `json:"changed"` // the live DOM differs from before the action
 	Controls []page.Control `json:"controls,omitempty"`
+	// JSErrors are uncaught script errors recorded while this interaction ran
+	// (capped) — a handler that threw is visible instead of a silent no-op.
+	JSErrors []string `json:"js_errors,omitempty"`
 	// PendingNavigation is a URL the handler asked to navigate to via
 	// location.href/assign/replace (interact never navigates itself); follow it with
 	// read/click. Empty when the interaction requested no cross-document navigation.
@@ -1003,10 +1085,10 @@ type InteractResult struct {
 // handlers they attach fire on dispatch. Never navigates.
 func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, value string) (*InteractResult, error) {
 	if b.liveEngine == nil {
-		return nil, fmt.Errorf("browser: interact requires JavaScript; start the server with --js")
+		return nil, errf(ErrJSRequired, "interact requires JavaScript; start the server with --js")
 	}
 	if strings.TrimSpace(selector) == "" {
-		return nil, fmt.Errorf("browser: interact: selector is required")
+		return nil, errf(ErrBadInput, "selector is required (discover selectors with the controls tool)")
 	}
 	sess, err := b.sessions.GetOrCreate(sessionID)
 	if err != nil {
@@ -1014,7 +1096,7 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 	}
 	cur := sess.Current()
 	if cur == nil {
-		return nil, fmt.Errorf("browser: interact: session %q has no current page", sessionID)
+		return nil, errNoCurrentPage(sessionID)
 	}
 
 	event = strings.TrimSpace(event)
@@ -1025,11 +1107,11 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 	before := docFingerprint(cur.Doc)
 	lc, err := b.ensureLive(ctx, sess)
 	if err != nil {
-		return nil, fmt.Errorf("browser: interact: %w", err)
+		return nil, err
 	}
 	res, err := lc.Dispatch(ctx, js.Action{Selector: selector, Type: event, Value: value})
 	if err != nil {
-		return nil, fmt.Errorf("browser: interact: %w", err)
+		return nil, err
 	}
 	// A handler may have requested a cross-document navigation (location.href); read
 	// and clear it so the caller can follow it. Best-effort — a snapshot failure below
@@ -1037,7 +1119,7 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 	nav, _ := lc.PendingNavigation(ctx)
 	np, err := b.refreshFromLive(ctx, sess, lc)
 	if err != nil {
-		return nil, fmt.Errorf("browser: interact: %w", err)
+		return nil, err
 	}
 
 	return &InteractResult{
@@ -1047,6 +1129,7 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 		Matched:           res.Matched,
 		Changed:           docFingerprint(np.Doc) != before,
 		Controls:          np.Meta.Controls,
+		JSErrors:          capErrors(res.Errors),
 		PendingNavigation: nav,
 	}, nil
 }
@@ -1164,11 +1247,17 @@ func (b *Browser) NewSession(id string, cfg session.Config) (string, error) {
 
 // SessionState returns the current state of an existing session.
 func (b *Browser) SessionState(id string) (*SessionState, error) {
-	s, ok := b.sessions.Get(id)
-	if !ok {
-		return nil, fmt.Errorf("browser: unknown session %q", id)
+	s, err := b.sessions.Get(id)
+	if err != nil {
+		return nil, err
 	}
-	st := &SessionState{ID: id}
+	st := sessionStateOf(s)
+	return &st, nil
+}
+
+// sessionStateOf builds a SessionState snapshot without touching secrets.
+func sessionStateOf(s *session.Session) SessionState {
+	st := SessionState{ID: s.ID}
 	if cfg := s.Config(); cfg.HasCredentials() {
 		st.AuthScope = cfg.Origin
 		switch {
@@ -1189,14 +1278,25 @@ func (b *Browser) SessionState(id string) (*SessionState, error) {
 		}
 		st.Title = cur.Meta.Title
 	}
-	return st, nil
+	return st
+}
+
+// SessionList returns the state of every live session, sorted by id.
+func (b *Browser) SessionList() []SessionState {
+	live := b.sessions.List()
+	out := make([]SessionState, 0, len(live))
+	for _, s := range live {
+		out = append(out, sessionStateOf(s))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // SessionHistoryOf returns the navigation history of an existing session.
 func (b *Browser) SessionHistoryOf(id string) (*SessionHistory, error) {
-	s, ok := b.sessions.Get(id)
-	if !ok {
-		return nil, fmt.Errorf("browser: unknown session %q", id)
+	s, err := b.sessions.Get(id)
+	if err != nil {
+		return nil, err
 	}
 	urls, pos := s.HistoryURLs()
 	return &SessionHistory{ID: id, URLs: urls, Position: pos}, nil
@@ -1204,26 +1304,26 @@ func (b *Browser) SessionHistoryOf(id string) (*SessionHistory, error) {
 
 // Back moves a session to the previous page and returns its summary.
 func (b *Browser) Back(id string) (*BrowseResult, error) {
-	s, ok := b.sessions.Get(id)
-	if !ok {
-		return nil, fmt.Errorf("browser: unknown session %q", id)
+	s, err := b.sessions.Get(id)
+	if err != nil {
+		return nil, err
 	}
 	p, ok := s.Back()
 	if !ok {
-		return nil, fmt.Errorf("browser: already at the start of history")
+		return nil, errf(ErrBadInput, "already at the start of history")
 	}
 	return summarize(p), nil
 }
 
 // Forward moves a session to the next page and returns its summary.
 func (b *Browser) Forward(id string) (*BrowseResult, error) {
-	s, ok := b.sessions.Get(id)
-	if !ok {
-		return nil, fmt.Errorf("browser: unknown session %q", id)
+	s, err := b.sessions.Get(id)
+	if err != nil {
+		return nil, err
 	}
 	p, ok := s.Forward()
 	if !ok {
-		return nil, fmt.Errorf("browser: already at the end of history")
+		return nil, errf(ErrBadInput, "already at the end of history")
 	}
 	return summarize(p), nil
 }
