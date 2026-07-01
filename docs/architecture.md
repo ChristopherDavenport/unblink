@@ -351,6 +351,42 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     `session` — so hosts can gate state-changing actions (the Phase 13
     human-in-the-loop contract now has a machine-readable signal).
 
+- **Phase 18 — Resource hygiene + engine robustness.** ✅ Bounds every remaining
+  unbounded growth path and closes the hydration blockers real bundles hit.
+  - **Live-runtime cap (`browser.WithJSMaxLive`, `--js-max-live`, default 16).**
+    Live contexts bypass the render semaphore, so the only prior bound was the
+    256-session cap — up to 256 goja heaps. Opening a new live context now tears
+    down the most-idle runtimes over the cap (session + page survive; the next
+    interact reopens; `session action=list` shows `live_js`).
+  - **Bounded state**: per-session history capped at 50 entries (each held a full
+    DOM + raw body); JS history stack capped at 100; per-context diag errors at
+    64; rate-limiter host map idle-pruned past 1024 entries; session localStorage
+    capped (1024 keys / 64KiB values).
+  - **Settle/timeout retuned**: default JS budget 2s → **5s** (code-split SPAs
+    need it; settled pages return early regardless) and the settle quiet window
+    ~30ms → **~60ms** (2→4 ticks) — 30ms could declare a framework idling between
+    microtask batches "settled" and return a half-hydrated page.
+  - **Rowspan-aware tables (`dom.expandGrid`)**: cells now lay out on the real
+    table grid — rowspan carries down (colspan interplay + trailing-gap padding),
+    ending the silent column misalignment on merged-cell data tables.
+  - **`click`/`submit_form` accept `render:true`** (parity with read): the
+    destination/result page's JS runs before summarizing, and BrowseResult now
+    carries `framework`/`js_errors`. Submit shares fetchPage's post-fetch stages
+    (`processFetched`).
+  - **Benign globals** (prelude): real recursive `structuredClone` (cycles,
+    Date/RegExp/Map/Set/typed arrays), connection-less `WebSocket` stub (async
+    error→close(1006) so reconnect logic degrades instead of crashing), inert
+    `Worker`/`SharedWorker`, append-mode `document.write`/`writeln`, and
+    `hashchange` on fragment navigation. `href`/`src` are now real reflected
+    properties (getter returns the absolute URL) instead of wrapper-only.
+  - **Session-persistent `localStorage`** (`js.Storage`/`MemStorage`, wired via
+    `Env.Storage`): a session's renders, live runtime, click/submit renders all
+    share one mutex-guarded store, so SPA auth/state flows survive across calls
+    like a real tab. One-shot stateless renders keep the fresh per-render map.
+  - *Deliberately deferred*: pruning the live-context DOM wrapper maps on node
+    removal — JS legitimately holds detached nodes (React vnodes), so pruning
+    risks correctness; the live-runtime cap + session TTL now bound that memory.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. Geometry and CSSOM are **honest constant
 stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle` return zeros/empty so

@@ -283,7 +283,7 @@ func TestSessionLoginFlow(t *testing.T) {
 	if _, err := b.Browse(ctx, browser.Request{SessionID: sid, URL: srv.URL + "/login"}); err != nil {
 		t.Fatalf("browse login: %v", err)
 	}
-	welcome, err := b.Submit(ctx, sid, "login", map[string]string{"username": "alice", "password": "secret"})
+	welcome, err := b.Submit(ctx, sid, "login", map[string]string{"username": "alice", "password": "secret"}, false)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestSessionLoginFlow(t *testing.T) {
 	}
 
 	// Clicking through to the dashboard must carry the session cookie.
-	dash, err := b.Click(ctx, sid, 0, "dashboard")
+	dash, err := b.Click(ctx, sid, 0, "dashboard", false)
 	if err != nil {
 		t.Fatalf("click: %v", err)
 	}
@@ -332,10 +332,10 @@ func TestSessionHistoryAndBack(t *testing.T) {
 	if _, err := b.Browse(ctx, browser.Request{SessionID: sid, URL: srv.URL + "/login"}); err != nil {
 		t.Fatalf("browse: %v", err)
 	}
-	if _, err := b.Submit(ctx, sid, "login", map[string]string{"username": "bob"}); err != nil {
+	if _, err := b.Submit(ctx, sid, "login", map[string]string{"username": "bob"}, false); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	if _, err := b.Click(ctx, sid, 0, "dashboard"); err != nil {
+	if _, err := b.Click(ctx, sid, 0, "dashboard", false); err != nil {
 		t.Fatalf("click: %v", err)
 	}
 

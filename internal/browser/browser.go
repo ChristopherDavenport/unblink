@@ -44,12 +44,17 @@ const (
 
 	maxJSErrors          = 5   // uncaught JS errors surfaced per result
 	maxJSErrorLen        = 300 // runes per surfaced JS error
-	DefaultJSTimeout     = 2 * time.Second
+	DefaultJSTimeout     = 5 * time.Second
 	DefaultJSMaxRequests = 50 // generous enough for an ES-module graph; still bounded
-	DefaultJSPrewarm     = js.DefaultMaxConcurrent
-	DefaultRateRPS       = 5.0 // per-host requests/sec (0 disables)
-	DefaultRateBurst     = 10
-	DefaultRetries       = fetch.DefaultRetries
+	// DefaultJSMaxLive caps concurrent live (persistent) JS runtimes. Each is a full
+	// goja heap plus an event-loop goroutine; without this cap the only bound was the
+	// 256-session cap — far too much memory. LRU runtimes are torn down (the session
+	// keeps its page; a later interact reopens).
+	DefaultJSMaxLive = 16
+	DefaultJSPrewarm = js.DefaultMaxConcurrent
+	DefaultRateRPS   = 5.0 // per-host requests/sec (0 disables)
+	DefaultRateBurst = 10
+	DefaultRetries   = fetch.DefaultRetries
 )
 
 // Renderer executes a page's scripts against its DOM, mutating doc in place. env
@@ -84,6 +89,7 @@ type Browser struct {
 	jsMaxRequests  int          // per-render JS request budget
 	jsAllowPrivate bool         // permit JS requests to private/loopback IPs
 	jsReqTimeout   time.Duration
+	jsMaxLive      int // cap on concurrent live JS runtimes (LRU torn down)
 
 	limiter *ratelimit.Limiter // shared per-host rate limiter (nil = disabled)
 	retries int                // fetch retries, threaded into JS subrequest clients
@@ -103,6 +109,7 @@ type options struct {
 	jsAllowPrivate bool
 	jsTimeout      time.Duration
 	jsPrewarm      int
+	jsMaxLive      int
 	rateRPS        float64
 	rateBurst      int
 	retries        int
@@ -155,6 +162,11 @@ func WithJSMaxRequests(n int) Option { return func(o *options) { o.jsMaxRequests
 // default; for internal/dev targets and testing).
 func WithJSAllowPrivate(allow bool) Option { return func(o *options) { o.jsAllowPrivate = allow } }
 
+// WithJSMaxLive caps how many live (persistent, per-session) JS runtimes may
+// exist at once; the least-recently-used runtime is torn down to make room (its
+// session and page survive — the next interact reopens it). 0 keeps the default.
+func WithJSMaxLive(n int) Option { return func(o *options) { o.jsMaxLive = n } }
+
 // WithAllowPrivate permits page fetches (the default + per-session + one-shot
 // clients) to reach private/loopback/metadata addresses. Off by default: direct
 // fetches to localhost/private IPs are blocked by the SSRF dial guard. Enable for
@@ -195,8 +207,8 @@ func WithSafeOutput(enabled bool) Option { return func(o *options) { o.safeOutpu
 func New(opts ...Option) (*Browser, error) {
 	o := options{
 		jsNetwork: true, jsMaxRequests: DefaultJSMaxRequests, jsTimeout: DefaultJSTimeout,
-		jsPrewarm: js.DefaultMaxConcurrent,
-		rateRPS:   DefaultRateRPS, rateBurst: DefaultRateBurst, retries: DefaultRetries,
+		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive,
+		rateRPS: DefaultRateRPS, rateBurst: DefaultRateBurst, retries: DefaultRetries,
 		siteHints: true, safeOutput: true,
 	}
 	for _, opt := range opts {
@@ -258,6 +270,7 @@ func New(opts ...Option) (*Browser, error) {
 		jsMaxRequests:  o.jsMaxRequests,
 		jsAllowPrivate: o.jsAllowPrivate,
 		jsReqTimeout:   o.jsTimeout,
+		jsMaxLive:      o.jsMaxLive,
 		limiter:        limiter,
 		retries:        o.retries,
 		search:         o.search,
@@ -362,6 +375,7 @@ type renderOpts struct {
 	render  bool
 	wait    *js.WaitCondition
 	timeout time.Duration
+	storage js.Storage // session-scoped localStorage backing; nil for stateless fetches
 }
 
 // renderOpts derives the render intent from a Request. A wait condition implies a
@@ -399,7 +413,9 @@ func (b *Browser) resolve(ctx context.Context, req Request) (*page.Page, *sessio
 			}
 			return cur, sess, nil
 		}
-		p, err := b.fetchPage(ctx, sess.Client(), req.URL, req.renderOpts())
+		ro := req.renderOpts()
+		ro.storage = sess.Storage()
+		p, err := b.fetchPage(ctx, sess.Client(), req.URL, ro)
 		if err != nil {
 			return nil, sess, err
 		}
@@ -475,6 +491,13 @@ func (b *Browser) fetchPage(ctx context.Context, client *fetch.Client, url strin
 	if err != nil {
 		return nil, err
 	}
+	return b.processFetched(ctx, client, p, ro)
+}
+
+// processFetched runs the post-fetch stages over an already-fetched page:
+// classify -> parse -> [render] -> extract. Shared by fetchPage and Submit (a
+// form response is a fetched page too).
+func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *page.Page, ro renderOpts) (*page.Page, error) {
 	p.Kind = classify(p.ContentType, p.Raw)
 	if p.Kind != page.KindHTML {
 		// Non-HTML: skip HTML parse/extract (Doc stays nil). Conversion to Markdown
@@ -487,7 +510,7 @@ func (b *Browser) fetchPage(ctx context.Context, client *fetch.Client, url strin
 	}
 	if ro.render && b.renderer != nil {
 		var diag js.RenderResult
-		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout}
+		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout}
 		if b.jsNetwork {
 			env.Transport = b.newRenderTransport(client, ro.timeout)
 		}
@@ -497,12 +520,23 @@ func (b *Browser) fetchPage(ctx context.Context, client *fetch.Client, url strin
 			return nil, err
 		}
 		p.Rendered = true
-		applyRenderDiag(p, diag, url)
+		applyRenderDiag(p, diag, pageURL(p))
 	}
 	if err := dom.Extract(p); err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+// pageURL is the page's best-known URL for logging.
+func pageURL(p *page.Page) string {
+	if p.FinalURL != nil {
+		return p.FinalURL.String()
+	}
+	if p.RequestURL != nil {
+		return p.RequestURL.String()
+	}
+	return ""
 }
 
 // applyRenderDiag records JS render diagnostics on the page and logs them at debug,
@@ -525,24 +559,6 @@ func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 	for _, e := range diag.Errors {
 		slog.Debug("js: uncaught script error", "url", url, "err", e)
 	}
-}
-
-// processPage runs parse + extract over an already-fetched page (no JS). A
-// non-HTML result (e.g. a form that submits to a download) is classified and left
-// unparsed, exactly like fetchPage.
-func processPage(p *page.Page) (*page.Page, error) {
-	p.Kind = classify(p.ContentType, p.Raw)
-	if p.Kind != page.KindHTML {
-		deriveNonHTMLMeta(p)
-		return p, nil
-	}
-	if err := dom.Parse(p); err != nil {
-		return nil, err
-	}
-	if err := dom.Extract(p); err != nil {
-		return nil, err
-	}
-	return p, nil
 }
 
 // deriveNonHTMLMeta sets a minimal Meta.Title for a non-HTML page — the URL's last
@@ -808,6 +824,11 @@ type BrowseResult struct {
 	// Agent-facing site hints (populated by Browse when site hints are enabled).
 	LLMsTxt bool        `json:"llms_txt,omitempty"`
 	Robots  *RobotsHint `json:"robots,omitempty"`
+
+	// Framework/JSErrors surface JavaScript render diagnostics when the page was
+	// rendered (browse/click/submit with render=true) — same contract as read.
+	Framework string   `json:"framework,omitempty"`
+	JSErrors  []string `json:"js_errors,omitempty"`
 }
 
 // summarize builds a BrowseResult from a page.
@@ -820,7 +841,7 @@ func summarize(p *page.Page) *BrowseResult {
 	if p.FinalURL != nil {
 		final = p.FinalURL.String()
 	}
-	return &BrowseResult{
+	res := &BrowseResult{
 		FinalURL:    final,
 		Status:      p.StatusCode,
 		Title:       p.Meta.Title,
@@ -840,6 +861,11 @@ func summarize(p *page.Page) *BrowseResult {
 		Kind:        kindString(p.Kind),
 		Bytes:       len(p.Raw),
 	}
+	if d := p.RenderDiag; d != nil {
+		res.Framework = d.Framework
+		res.JSErrors = capErrors(d.Errors)
+	}
+	return res
 }
 
 // maxOutlineBytes bounds a browse outline — a pathological page with thousands
@@ -982,7 +1008,7 @@ func (b *Browser) Find(ctx context.Context, req Request, query string, maxHits i
 // Click follows a link from the session's current page — by match (case-
 // insensitive substring of text or href) when given, otherwise by linkIndex —
 // navigating the session to it.
-func (b *Browser) Click(ctx context.Context, sessionID string, linkIndex int, match string) (*BrowseResult, error) {
+func (b *Browser) Click(ctx context.Context, sessionID string, linkIndex int, match string, render bool) (*BrowseResult, error) {
 	sess, err := b.sessions.GetOrCreate(sessionID)
 	if err != nil {
 		return nil, err
@@ -1011,7 +1037,7 @@ func (b *Browser) Click(ctx context.Context, sessionID string, linkIndex int, ma
 		href = links[linkIndex].Href
 	}
 
-	p, err := b.fetchPage(ctx, sess.Client(), href, renderOpts{})
+	p, err := b.fetchPage(ctx, sess.Client(), href, renderOpts{render: render, storage: sess.Storage()})
 	if err != nil {
 		return nil, err
 	}
@@ -1022,7 +1048,7 @@ func (b *Browser) Click(ctx context.Context, sessionID string, linkIndex int, ma
 // Submit submits a form from the session's current page. The form is chosen by
 // formRef (id, name, or numeric index; optional when the page has one form).
 // values overlay the form's default field values.
-func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values map[string]string) (*BrowseResult, error) {
+func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values map[string]string, render bool) (*BrowseResult, error) {
 	sess, err := b.sessions.GetOrCreate(sessionID)
 	if err != nil {
 		return nil, err
@@ -1050,7 +1076,7 @@ func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := processPage(p); err != nil {
+	if _, err := b.processFetched(ctx, sess.Client(), p, renderOpts{render: render, storage: sess.Storage()}); err != nil {
 		return nil, err
 	}
 	sess.Visit(p)
@@ -1136,11 +1162,13 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 
 // ensureLive returns the session's live JS runtime, opening one from the current
 // page's original bytes if none exists yet (the first interact pays the page-load
-// cost; later interacts are cheap single dispatches).
+// cost; later interacts are cheap single dispatches). Opening a new runtime first
+// enforces the live-runtime cap.
 func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.LiveContext, error) {
 	if lc := sess.Live(); lc != nil {
 		return lc, nil
 	}
+	b.trimLiveContexts(sess)
 	cur := sess.Current()
 	if cur == nil {
 		return nil, fmt.Errorf("session has no current page")
@@ -1149,7 +1177,7 @@ func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.Liv
 	if err := dom.Parse(tmp); err != nil {
 		return nil, err
 	}
-	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}}
+	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage()}
 	if b.jsNetwork {
 		env.Transport = b.newLiveTransport(sess.Client())
 	}
@@ -1159,6 +1187,32 @@ func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.Liv
 	}
 	sess.SetLive(lc)
 	return lc, nil
+}
+
+// trimLiveContexts enforces the live-runtime cap before a new context opens:
+// each runtime is a full goja heap plus a goroutine, so the most-idle sessions'
+// runtimes are torn down until there is room for one more. The sessions and
+// their pages survive — a later interact reopens the runtime from the stored
+// page (JS state is lost, exactly as on eviction).
+func (b *Browser) trimLiveContexts(opening *session.Session) {
+	if b.jsMaxLive <= 0 {
+		return
+	}
+	var lively []*session.Session
+	for _, s := range b.sessions.List() {
+		if s != opening && s.Live() != nil {
+			lively = append(lively, s)
+		}
+	}
+	drop := len(lively) - (b.jsMaxLive - 1)
+	if drop <= 0 {
+		return
+	}
+	sort.Slice(lively, func(i, j int) bool { return lively[i].Idle() > lively[j].Idle() })
+	for _, s := range lively[:drop] {
+		s.Close() // tears down only the live runtime; the session and page remain
+		slog.Debug("js: live runtime evicted to honor cap", "session", s.ID, "cap", b.jsMaxLive)
+	}
 }
 
 // refreshFromLive snapshots the live runtime's current DOM, re-parses it into a
@@ -1223,6 +1277,7 @@ type SessionState struct {
 	HasCurrent bool   `json:"has_current"`
 	CurrentURL string `json:"current_url,omitempty"`
 	Title      string `json:"title,omitempty"`
+	LiveJS     bool   `json:"live_js,omitempty"`    // a persistent JS runtime is attached
 	AuthType   string `json:"auth_type,omitempty"`  // bearer|basic|headers|cookies (redacted)
 	AuthScope  string `json:"auth_scope,omitempty"` // origin the credentials are pinned to
 }
@@ -1278,6 +1333,7 @@ func sessionStateOf(s *session.Session) SessionState {
 		}
 		st.Title = cur.Meta.Title
 	}
+	st.LiveJS = s.Live() != nil
 	return st
 }
 

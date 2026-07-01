@@ -25,6 +25,7 @@ type bridge struct {
 	base       *url.URL
 	transport  Transport // nil when JS networking is disabled
 	cookies    CookieJar // nil when document.cookie is unavailable
+	storage    Storage   // backs window.localStorage; nil → per-render prelude fallback
 	ctx        context.Context
 	reqTimeout time.Duration
 
@@ -113,7 +114,7 @@ type bridge struct {
 	pending atomic.Int32
 }
 
-func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, ctx context.Context, reqTimeout time.Duration) *bridge {
+func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage Storage, ctx context.Context, reqTimeout time.Duration) *bridge {
 	return &bridge{
 		vm:                   vm,
 		loop:                 loop,
@@ -121,6 +122,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		base:                 base,
 		transport:            transport,
 		cookies:              cookies,
+		storage:              storage,
 		ctx:                  ctx,
 		reqTimeout:           reqTimeout,
 		cache:                make(map[*html.Node]*goja.Object),
@@ -177,6 +179,7 @@ func (b *bridge) install() {
 	b.objNode[doc] = b.doc
 	_ = doc.SetPrototype(b.protoDocument)
 	_ = vm.Set("document", doc)
+	b.installStorage()
 	_ = win.Set("document", doc)
 
 	b.installGlobals(win)

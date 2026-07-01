@@ -47,6 +47,7 @@ type Session struct {
 	pos      int            // index of the current page; -1 when empty
 	live     js.LiveContext // persistent JS runtime for the current page; nil when none
 	livePos  int            // history index live is bound to; -1 when none
+	storage  *js.MemStorage // persistent window.localStorage backing; lazily created
 	lastUsed time.Time
 }
 
@@ -56,6 +57,18 @@ func newSession(id string, client *fetch.Client, cfg Config) *Session {
 
 // Client returns the session's fetch client (which owns its cookie jar).
 func (s *Session) Client() *fetch.Client { return s.client }
+
+// Storage returns the session's persistent localStorage backing store, created
+// on first use. It outlives individual renders and live runtimes, so page state
+// (auth tokens, preferences) survives across calls — like a real browser tab.
+func (s *Session) Storage() *js.MemStorage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.storage == nil {
+		s.storage = js.NewMemStorage()
+	}
+	return s.storage
+}
 
 // Config returns the session's credential configuration (set at creation).
 func (s *Session) Config() Config { return s.cfg }
@@ -112,6 +125,11 @@ func (s *Session) Close() {
 	}
 }
 
+// maxHistory bounds a session's back/forward stack. Each entry retains a full
+// parsed DOM plus the raw body, so an unbounded stack grows monotonically for
+// the session's life; past the cap the oldest entries fall off the back.
+const maxHistory = 50
+
 // Visit appends p as the new current page, discarding any forward history (the
 // standard browser model). The prior page's live runtime is dropped — a fresh
 // navigation is a new page, hence a new runtime.
@@ -122,6 +140,13 @@ func (s *Session) Visit(p *page.Page) {
 	}
 	s.history = append(s.history, p)
 	s.pos = len(s.history) - 1
+	if drop := len(s.history) - maxHistory; drop > 0 {
+		s.history = append([]*page.Page(nil), s.history[drop:]...)
+		s.pos -= drop
+		if s.livePos >= 0 {
+			s.livePos -= drop
+		}
+	}
 	old := s.dropLiveLocked()
 	s.mu.Unlock()
 	if old != nil {
@@ -202,3 +227,7 @@ func (s *Session) idle() time.Duration {
 	defer s.mu.Unlock()
 	return time.Since(s.lastUsed)
 }
+
+// Idle reports how long since the session was last used. Exposed so the browser
+// can pick the least-recently-used live runtime when enforcing its cap.
+func (s *Session) Idle() time.Duration { return s.idle() }

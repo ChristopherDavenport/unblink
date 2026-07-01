@@ -129,6 +129,10 @@ func (b *bridge) resolveNav(raw string) *url.URL {
 	return b.currentURL.ResolveReference(ref)
 }
 
+// maxHistoryStack bounds the JS history stack: a router that pushState-loops
+// must not grow it for the life of a live session (real browsers cap history too).
+const maxHistoryStack = 100
+
 // historyPush implements history.pushState/replaceState: it updates location and
 // records the entry. There is no popstate (pushState/replaceState never fire it).
 func (b *bridge) historyPush(state, urlArg goja.Value, replace bool) {
@@ -142,6 +146,9 @@ func (b *bridge) historyPush(state, urlArg goja.Value, replace bool) {
 		b.historyStack[b.historyPos] = entry
 	} else {
 		b.historyStack = append(b.historyStack[:b.historyPos+1], entry)
+		if len(b.historyStack) > maxHistoryStack {
+			b.historyStack = append([]historyEntry(nil), b.historyStack[len(b.historyStack)-maxHistoryStack:]...)
+		}
 		b.historyPos = len(b.historyStack) - 1
 	}
 	b.syncHistoryLength()
@@ -176,13 +183,28 @@ func (b *bridge) historyGo(delta int) {
 // navigate handles location.href/assign/replace. A render never performs the real
 // cross-document fetch, but when the target is a different document it records the
 // requested URL in pendingNav so the caller can follow it (surfaced on the render /
-// interact result). Same-document changes (fragment only) update location silently.
+// interact result). A fragment-only change stays on the same document and fires
+// hashchange — the signal hash-based routers listen for.
 func (b *bridge) navigate(raw string) {
 	u := b.resolveNav(raw)
 	if !sameDocument(b.currentURL, u) {
 		b.pendingNav = u
+		b.updateLocation(u)
+		return
 	}
+	old := b.currentURL
 	b.updateLocation(u)
+	if old != nil && u != nil && old.Fragment != u.Fragment {
+		ev := b.newEvent("hashchange", false, false, b.windowObj)
+		_ = ev.js.Set("oldURL", old.String())
+		_ = ev.js.Set("newURL", u.String())
+		b.dispatchOnWindow(ev)
+		if h := b.windowObj.Get("onhashchange"); h != nil {
+			if fn, ok := goja.AssertFunction(h); ok {
+				b.callSafe(fn, b.windowObj, ev.js)
+			}
+		}
+	}
 }
 
 // sameDocument reports whether a and c differ only in their fragment (a hash change
@@ -242,8 +264,88 @@ const preludeJS = `
       get length() { return Object.keys(m).length; }
     };
   }
-  window.localStorage = makeStorage();
+  // A Go-installed persistent localStorage (session-scoped) wins; the in-memory
+  // fallback covers one-shot renders. sessionStorage is always per-render.
+  if (!window.localStorage) window.localStorage = makeStorage();
   window.sessionStorage = makeStorage();
+
+  // structuredClone: a real recursive clone for the object graphs apps actually
+  // clone (JSON-ish + Date/RegExp/Map/Set/typed arrays, cycles included).
+  // Mainstream bundles call it without feature detection; absence threw at
+  // hydration. Functions/symbols throw, matching the spec's DataCloneError.
+  if (typeof window.structuredClone !== 'function') {
+    window.structuredClone = function (value) {
+      var seen = new Map();
+      function clone(v) {
+        if (v === null || typeof v !== 'object') {
+          if (typeof v === 'function' || typeof v === 'symbol') {
+            throw new Error('DataCloneError: ' + typeof v + ' could not be cloned');
+          }
+          return v;
+        }
+        if (seen.has(v)) return seen.get(v);
+        if (v instanceof Date) return new Date(v.getTime());
+        if (v instanceof RegExp) return new RegExp(v.source, v.flags);
+        if (v instanceof Map) { var m = new Map(); seen.set(v, m); v.forEach(function (val, k) { m.set(clone(k), clone(val)); }); return m; }
+        if (v instanceof Set) { var st = new Set(); seen.set(v, st); v.forEach(function (val) { st.add(clone(val)); }); return st; }
+        if (Array.isArray(v)) { var a = []; seen.set(v, a); for (var i = 0; i < v.length; i++) a[i] = clone(v[i]); return a; }
+        if (typeof ArrayBuffer === 'function') {
+          if (v instanceof ArrayBuffer) return v.slice(0);
+          if (ArrayBuffer.isView(v)) return new v.constructor(v);
+        }
+        var o = {}; seen.set(v, o);
+        for (var k in v) if (Object.prototype.hasOwnProperty.call(v, k)) o[k] = clone(v[k]);
+        return o;
+      }
+      return clone(value);
+    };
+  }
+
+  // WebSocket: connection-less stub (real sockets are a permanent non-goal).
+  // Constructing one no longer throws; it reports failure through the standard
+  // error -> close(1006) event sequence so reconnect/offline logic degrades
+  // gracefully instead of crashing hydration.
+  if (typeof window.WebSocket === 'undefined') {
+    var WS = function (url) {
+      var self = this;
+      this.url = String(url || '');
+      this.readyState = WS.CONNECTING;
+      this.bufferedAmount = 0; this.protocol = ''; this.extensions = '';
+      this.binaryType = 'blob';
+      this.onopen = null; this.onmessage = null; this.onerror = null; this.onclose = null;
+      this.__l = {};
+      setTimeout(function () {
+        self.readyState = WS.CLOSED;
+        var err = { type: 'error', target: self };
+        var close = { type: 'close', target: self, code: 1006, reason: 'WebSocket is not supported in this environment', wasClean: false };
+        if (typeof self.onerror === 'function') { try { self.onerror(err); } catch (e) {} }
+        (self.__l.error || []).slice().forEach(function (f) { try { f.call(self, err); } catch (e) {} });
+        if (typeof self.onclose === 'function') { try { self.onclose(close); } catch (e) {} }
+        (self.__l.close || []).slice().forEach(function (f) { try { f.call(self, close); } catch (e) {} });
+      }, 0);
+    };
+    WS.CONNECTING = 0; WS.OPEN = 1; WS.CLOSING = 2; WS.CLOSED = 3;
+    WS.prototype.send = function () {};
+    WS.prototype.close = function () { this.readyState = WS.CLOSED; };
+    WS.prototype.addEventListener = function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); };
+    WS.prototype.removeEventListener = function (t, f) { var a = this.__l[t]; if (a) { var i = a.indexOf(f); if (i >= 0) a.splice(i, 1); } };
+    WS.prototype.dispatchEvent = function () { return true; };
+    window.WebSocket = WS;
+  }
+
+  // Worker/SharedWorker: inert stubs — construction succeeds, messages go
+  // nowhere. Apps that offload work keep running on their main-thread fallback
+  // path (or simply never receive results) instead of throwing at load.
+  if (typeof window.Worker === 'undefined') {
+    var Wk = function () { this.onmessage = null; this.onmessageerror = null; this.onerror = null; };
+    Wk.prototype.postMessage = noop; Wk.prototype.terminate = noop;
+    Wk.prototype.addEventListener = noop; Wk.prototype.removeEventListener = noop;
+    Wk.prototype.dispatchEvent = function () { return true; };
+    window.Worker = Wk;
+    window.SharedWorker = function () {
+      this.port = { postMessage: noop, start: noop, close: noop, addEventListener: noop, removeEventListener: noop, onmessage: null };
+    };
+  }
 
   window.requestAnimationFrame = function (cb) {
     return setTimeout(function () { cb(typeof Date.now === 'function' ? Date.now() : 0); }, 0);
@@ -521,5 +623,23 @@ const preludeJS = `
   window.URL.prototype.toJSON = function () { return this.href; };
   window.URL.createObjectURL = function () { return 'blob:unblink'; };
   window.URL.revokeObjectURL = function () {};
+
+  // document.write / writeln: append-mode. Post-parse write() must not blow the
+  // document away (the destructive spec behavior); appending the parsed markup
+  // to <body> keeps it visible to extraction — the dominant real-world use is
+  // ad/analytics snippets injecting markup at load.
+  if (typeof document !== 'undefined' && typeof document.write !== 'function') {
+    var docWrite = function (html) {
+      try {
+        var host = document.createElement('div');
+        host.innerHTML = String(html);
+        var body = document.body || document.documentElement;
+        if (!body) return;
+        while (host.firstChild) body.appendChild(host.firstChild);
+      } catch (e) {}
+    };
+    document.write = docWrite;
+    document.writeln = function (html) { docWrite(String(html) + '\n'); };
+  }
 })();
 `

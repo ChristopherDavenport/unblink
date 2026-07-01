@@ -19,8 +19,12 @@ import (
 // settled" is a heuristic: the in-flight network count has held at zero across a
 // short quiet period, bounded by a wall-clock budget.
 const (
-	settleTick       = 15 * time.Millisecond
-	settleQuietTicks = 2
+	settleTick = 15 * time.Millisecond
+	// 4 quiet ticks ≈ 60ms with no DOM change and no in-flight network before the
+	// page is declared settled. 2 ticks (~30ms) proved too aggressive: a framework
+	// idling between microtask batches, or an XHR scheduled but not yet dispatched,
+	// could trip the quiet counter and return a half-hydrated page.
+	settleQuietTicks = 4
 	settleGrace      = 500 * time.Millisecond // hard-watchdog margin past the settle budget
 )
 
@@ -90,7 +94,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 	modules := collectModuleScripts(doc)
 	err := c.run(ctx, true, nil, nil, func(vm *goja.Runtime) {
 		c.vm.Store(vm)
-		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, c.ctx, e.timeout)
+		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, c.ctx, e.timeout)
 		b.install()
 		_, _ = vm.RunString(preludeJS)
 		b.runScripts(scripts)

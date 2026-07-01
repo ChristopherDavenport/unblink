@@ -41,10 +41,22 @@ func Tables(doc *html.Node) []page.Table {
 	return out
 }
 
+type rawCell struct {
+	text    string
+	colspan int
+	rowspan int
+}
+
 type rawRow struct {
-	cells  []string
+	cells  []rawCell
 	inHead bool
 	allTh  bool
+}
+
+// carry is a cell spanning down into later rows (rowspan > 1).
+type carry struct {
+	text      string
+	remaining int
 }
 
 func extractTable(t *html.Node) page.Table {
@@ -53,14 +65,74 @@ func extractTable(t *html.Node) page.Table {
 	if len(rows) == 0 {
 		return tbl
 	}
+	grid := expandGrid(rows)
 	if first := rows[0]; first.inHead || first.allTh {
-		tbl.Headers = first.cells
-		rows = rows[1:]
+		tbl.Headers = grid[0]
+		grid = grid[1:]
 	}
-	for _, r := range rows {
-		tbl.Rows = append(tbl.Rows, r.cells)
+	tbl.Rows = append(tbl.Rows, grid...)
+	if len(tbl.Rows) == 0 {
+		tbl.Rows = nil
 	}
 	return tbl
+}
+
+// expandGrid lays raw rows out on the table grid, expanding colspan by
+// repetition and carrying rowspan cells down into the rows they span — the HTML
+// table model — so a merged cell appears in every row it covers and later
+// columns stay aligned. All dimensions remain capped by the max* constants.
+func expandGrid(rows []rawRow) [][]string {
+	out := make([][]string, 0, len(rows))
+	carries := map[int]*carry{} // column index → cell spanning down from an earlier row
+	for _, r := range rows {
+		var cells []string
+		col := 0
+		place := func(text string) {
+			cells = append(cells, text)
+			col++
+		}
+		fillCarries := func() {
+			for col < maxTableCols {
+				c, ok := carries[col]
+				if !ok {
+					return
+				}
+				place(c.text)
+				c.remaining--
+				if c.remaining <= 0 {
+					delete(carries, col-1)
+				}
+			}
+		}
+		for _, cell := range r.cells {
+			fillCarries()
+			for i := 0; i < cell.colspan && col < maxTableCols; i++ {
+				if cell.rowspan > 1 {
+					carries[col] = &carry{text: cell.text, remaining: cell.rowspan - 1}
+				}
+				place(cell.text)
+			}
+		}
+		// Trailing carries past the row's own cells keep their columns aligned;
+		// gaps before them pad with empty cells.
+		for col < maxTableCols {
+			next := -1
+			for cc := range carries {
+				if cc >= col && (next == -1 || cc < next) {
+					next = cc
+				}
+			}
+			if next == -1 {
+				break
+			}
+			for col < next {
+				place("")
+			}
+			fillCarries()
+		}
+		out = append(out, cells)
+	}
+	return out
 }
 
 // collectRows walks t (skipping nested tables), capturing the first <caption>
@@ -98,10 +170,10 @@ func collectRows(t *html.Node) (caption string, rows []rawRow, truncated bool) {
 	return
 }
 
-// collectCells returns a row's cell texts (colspan-expanded) and whether every
+// collectCells returns a row's cells (text + colspan/rowspan) and whether every
 // cell was a <th>. It does not descend into a cell (nested-table text is already
 // captured by collapsedText) or into nested tables.
-func collectCells(tr *html.Node) (cells []string, allTh bool) {
+func collectCells(tr *html.Node) (cells []rawCell, allTh bool) {
 	allTh = true
 	count := 0
 	var walk func(n *html.Node)
@@ -116,10 +188,11 @@ func collectCells(tr *html.Node) (cells []string, allTh bool) {
 				if c.Data != "th" {
 					allTh = false
 				}
-				text := truncate(collapsedText(c), maxCellLen)
-				for i := 0; i < colspan(c) && len(cells) < maxTableCols; i++ {
-					cells = append(cells, text)
-				}
+				cells = append(cells, rawCell{
+					text:    truncate(collapsedText(c), maxCellLen),
+					colspan: colspan(c),
+					rowspan: rowspan(c),
+				})
 			case "table":
 				// don't descend into a nested table
 			default:
@@ -142,6 +215,20 @@ func colspan(cell *html.Node) int {
 	}
 	if n > maxTableCols {
 		return maxTableCols
+	}
+	return n
+}
+
+// rowspan parses the rowspan attribute, clamped to the row cap (rowspan=0 —
+// "span to the end of the group" — is treated as 1; supporting it needs group
+// bookkeeping that no data table this tool targets relies on).
+func rowspan(cell *html.Node) int {
+	n, err := strconv.Atoi(strings.TrimSpace(attr(cell, "rowspan")))
+	if err != nil || n < 1 {
+		return 1
+	}
+	if n > maxTableRows {
+		return maxTableRows
 	}
 	return n
 }
