@@ -1,0 +1,3 @@
+unblink plain text fixture
+This is a plain text document served as text/plain.
+It contains a findable sentinel phrase: TEXT-SENTINEL-OK.

@@ -1,0 +1,37 @@
+package js
+
+import (
+	"strings"
+
+	"golang.org/x/net/html"
+)
+
+// WaitCondition is an optional gate the render/interact settle waits for before it
+// considers the page ready: the selector resolves and/or the text appears in the
+// live DOM. When both fields are set, both must hold. A nil or blank condition is
+// treated as satisfied immediately, so the settle behaves exactly as before.
+type WaitCondition struct {
+	Selector string // CSS selector (cascadia) that must resolve to a node
+	Text     string // substring that must appear in the tree's visible text
+}
+
+// empty reports whether the condition asks for nothing (nil receiver included), in
+// which case it is satisfied from the first tick.
+func (w *WaitCondition) empty() bool {
+	return w == nil || (w.Selector == "" && w.Text == "")
+}
+
+// satisfied reports whether the condition holds in the tree rooted at doc. An empty
+// condition is always satisfied.
+func (w *WaitCondition) satisfied(doc *html.Node) bool {
+	if w.empty() || doc == nil {
+		return w.empty()
+	}
+	if w.Selector != "" && query(doc, w.Selector) == nil {
+		return false
+	}
+	if w.Text != "" && !strings.Contains(textContent(doc), w.Text) {
+		return false
+	}
+	return true
+}

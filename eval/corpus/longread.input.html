@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Long Form of a Machine-Readable Web</title>
+  <meta name="description" content="A deliberately long article used to exercise token-budgeted pagination.">
+  <style>nav { color: red; }</style>
+  <script>console.log('tracking pixel');</script>
+</head>
+<body>
+  <header><nav>Home | Archive | About | Subscribe</nav></header>
+
+  <main>
+    <article>
+      <h1>The Long Form of a Machine-Readable Web</h1>
+
+      <p>The phrase alpha-sentinel opens this essay so that any tool reading the
+      first page of the rendered document can confirm it reached the very top of
+      the article body. For three decades the web grew up around the assumption
+      that a human being with eyes and a pointer would sit in front of every
+      page. Layout, colour, motion, and whitespace were all tuned for that single
+      reader, and the entire craft of front-end design was organised around the
+      moment a person first glances at a screen and decides whether to stay.</p>
+
+      <p>That assumption is eroding faster than most publishers realise. A large
+      and growing fraction of requests now arrive from automated agents that act
+      on behalf of people but never render a pixel. They want the meaning of a
+      document, not its appearance, and they pay a tax in tokens and latency for
+      every byte of presentational scaffolding they must wade through to find it.</p>
+
+      <h2>What the New Reader Wants</h2>
+
+      <p>An automated reader cares about structure. It wants the headings that
+      divide a document into sections, the prose that carries the argument, the
+      links that connect one resource to the next, and the handful of facts that
+      a person would have skimmed for in the first place. Stylesheets, sprite
+      maps, and animation timelines are pure overhead to such a consumer, adding
+      weight and ambiguity without adding a single unit of information it can use.</p>
+
+      <p>This is why a reduction step matters so much. By discarding the visual
+      chrome and keeping only the content that carries meaning, a good extractor
+      hands the model a compact and faithful representation of the page. The
+      result reads less like a screenshot and more like a clean manuscript, which
+      is exactly the form a language model reasons over most reliably and cheaply.</p>
+
+      <h2>The Cost of Carrying Everything</h2>
+
+      <p>Every token a model reads has a price, in money and in attention. A page
+      that ships forty kilobytes of navigation, cookie notices, and inline
+      analytics for two kilobytes of actual article is asking its reader to pay a
+      twentyfold premium for the privilege of being informed. Multiply that across
+      the thousands of pages an agent might consult during a single research task
+      and the waste becomes the dominant cost of the whole operation.</p>
+
+      <p>Budgeting is therefore not a luxury but a load-bearing feature. A tool
+      that returns a bounded, paginated view of a document lets the reader decide
+      how much to consume, and lets it stop the moment it has enough. The cursor
+      that threads one page to the next is the quiet machinery that makes an
+      unbounded web safe to consume in bounded, predictable bites.</p>
+
+      <h2>Why Pagination Beats Truncation</h2>
+
+      <p>The lazy answer to a large document is to cut it off at a fixed length
+      and hope the important part came first. That works until it does not, and
+      the part the reader needed was a paragraph past the cut. Pagination keeps
+      the whole document reachable while still bounding any single response, so a
+      reader that wants more simply asks for the next page rather than refetching.</p>
+
+      <p>The contract has to be honest, though. Each page must fit the stated
+      budget, the pages must join back into the original document without gaps or
+      repeats, and the cursor must survive a round trip so that following it twice
+      yields the same place. A pagination scheme that quietly drops or duplicates
+      a block is worse than no pagination at all, because it lies about coverage.</p>
+
+      <h2>Semantics Over Geometry</h2>
+
+      <p>A rendering engine spends most of its effort computing geometry: where a
+      box lands, how text wraps, which pixels light up. None of that geometry
+      survives the trip into a model's context window, where the only thing that
+      matters is the order and meaning of the words. A semantic reducer can skip
+      the entire layout problem and still produce a better artifact for its reader.</p>
+
+      <p>That is a liberating realisation for anyone building tooling in this
+      space. The hardest parts of a browser, the parts that consume a hundred
+      megabytes of memory and a team of compiler engineers, are precisely the
+      parts an agent-facing reader can throw away. What remains is parsing, a
+      little script execution, and the disciplined art of deciding what to keep.</p>
+
+      <h2>The Discipline of Throwing Things Away</h2>
+
+      <p>Deciding what to discard is harder than deciding what to keep. A naive
+      stripper that removes every script and style will also remove the content
+      that a script was about to inject, and a reducer that keeps every paragraph
+      will drag along the newsletter modal and the comment section. The judgement
+      lives in the messy middle, and it is where most of the engineering effort
+      and most of the test coverage of a serious tool ends up concentrated.</p>
+
+      <p>Good heuristics are conservative in both directions. They keep anything
+      that plausibly carries meaning and drop anything that plausibly does not,
+      and they fail towards keeping rather than towards losing, because a reader
+      can ignore a stray sentence far more easily than it can recover one that was
+      thrown away. Recall is the metric that protects against silent erasure.</p>
+
+      <h2>Measuring Whether It Stays Good</h2>
+
+      <p>None of this craft is worth anything if it quietly degrades over time. An
+      extractor that strips junk today may strip content tomorrow after an
+      innocent-looking change to a heuristic, and without a scorecard nobody would
+      notice until a user complained. The only defence is a corpus of pages with
+      known-good answers and a harness that scores each reduction against them on
+      every change, failing loudly the moment a number moves the wrong way.</p>
+
+      <p>That is the whole motivation for an eval set. It turns a vague sense that
+      the output looks fine into a set of numbers that either hold or do not,
+      across junk-stripping, recall, token budgets, and the continuity of
+      pagination. A regression becomes a failing test rather than a slow erosion
+      of quality that nobody can quite put a finger on until it is far too late.</p>
+
+      <h2>The Shape of a Faithful Reduction</h2>
+
+      <p>A faithful reduction preserves the document's spine: its title, its
+      section order, its emphasis, and the links that let a reader navigate
+      onward. It does not invent structure that was not there, and it does not
+      collapse distinct sections into an undifferentiated wall of text. The reader
+      should be able to reconstruct the author's outline from the reduced form
+      alone, which is the surest sign that the meaning made it through intact.</p>
+
+      <p>Equally, a faithful reduction is stable. Fetching the same page twice
+      should yield the same Markdown, and paginating it twice should yield the
+      same pages in the same order. Determinism is what makes the output testable,
+      and testability is what lets a small team trust a large and changing engine
+      not to rot underneath them as the wider web keeps shifting around it.</p>
+
+      <h2>Closing the Loop</h2>
+
+      <p>The machine-facing web is not a replacement for the human one; it is a
+      second audience reading the same documents through a different lens. Serving
+      that audience well means caring about meaning over appearance, budgets over
+      blobs, and continuity over convenience. Those are unglamorous virtues, but
+      they are the ones that make a tool trustworthy enough to build real work on.</p>
+
+      <p>And so the essay ends where careful tools end: with a check that the last
+      page was reached and nothing in between was lost. The phrase omega-sentinel
+      closes this article so that a reader following the cursor to the final page
+      can confirm it travelled the entire distance from the top to the very bottom
+      without dropping a section, duplicating a block, or stopping a paragraph too
+      soon along the way.</p>
+    </article>
+  </main>
+
+  <footer><p>&copy; 2026 Example Media.</p></footer>
+  <script>window.dataLayer = [];</script>
+</body>
+</html>

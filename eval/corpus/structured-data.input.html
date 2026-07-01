@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Structured Data Fixture</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "name": "Acme Widget",
+    "sku": "AW-001",
+    "aggregateRating": {
+      "@type": "AggregateRating",
+      "ratingValue": "4.5",
+      "reviewCount": "128"
+    }
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "Article", "headline": "Widgets Explained" },
+      { "@type": "Organization", "name": "Acme Corp" }
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  { this block is deliberately not valid json ]
+  </script>
+</head>
+<body>
+  <h1>Structured Data Fixture</h1>
+
+  <div itemscope itemtype="https://schema.org/Person">
+    <span itemprop="name">Grace Hopper</span>
+    <a itemprop="url" href="/people/grace">profile</a>
+    <div itemprop="address" itemscope itemtype="https://schema.org/PostalAddress">
+      <span itemprop="addressLocality">Arlington</span>
+      <span itemprop="addressRegion">VA</span>
+    </div>
+  </div>
+
+  <table>
+    <caption>Quarterly Sales</caption>
+    <thead>
+      <tr><th>Region</th><th>Q1</th><th>Q2</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>North</td><td>100</td><td>120</td></tr>
+      <tr><td>South</td><td colspan="2">pending</td></tr>
+    </tbody>
+  </table>
+</body>
+</html>

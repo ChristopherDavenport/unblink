@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Interact App</title>
+</head>
+<body>
+  <main>
+    <h1>Interact Fixture</h1>
+
+    <!-- Direct listener: a click reveals hidden prose. -->
+    <button id="reveal">Show details</button>
+    <div id="panel" hidden>placeholder</div>
+
+    <!-- Two-step flow driven via event delegation on document. The menu item only
+         exists in the DOM after the first action reveals the menu, so it exercises
+         the session replay path. -->
+    <button id="open-menu">Open menu</button>
+    <div id="menu"></div>
+    <div id="menu-out">placeholder</div>
+
+    <!-- Input event mirrors the typed value into an output region. -->
+    <input id="field" type="text" value="">
+    <div id="echo">placeholder</div>
+  </main>
+
+  <script>
+    document.getElementById('reveal').addEventListener('click', function () {
+      var panel = document.getElementById('panel');
+      panel.removeAttribute('hidden');
+      panel.textContent =
+        'revealedcontent: the details region was unhidden by a click handler and now ' +
+        'carries enough prose for the reducer to treat it as real article content.';
+    });
+
+    document.getElementById('open-menu').addEventListener('click', function () {
+      document.getElementById('menu').innerHTML =
+        '<button id="menu-item-1">Pick the first item</button>';
+    });
+
+    // Delegated handler on document: fires for the dynamically-added menu item.
+    document.addEventListener('click', function (e) {
+      if (e.target && e.target.id === 'menu-item-1') {
+        document.getElementById('menu-out').textContent =
+          'menuselected: the first menu item was chosen after the menu was opened, ' +
+          'proving a multi-step interaction replay reached a node that did not exist ' +
+          'in the original document.';
+      }
+    });
+
+    document.getElementById('field').addEventListener('input', function (e) {
+      document.getElementById('echo').textContent = 'echoed:' + e.target.value;
+    });
+  </script>
+</body>
+</html>

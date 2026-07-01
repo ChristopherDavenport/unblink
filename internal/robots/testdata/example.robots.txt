@@ -1,0 +1,13 @@
+# Example robots.txt captured for parser fixtures.
+User-agent: *
+Disallow: /admin/
+Disallow: /cgi-bin/
+Disallow: /*?sessionid=
+Allow: /admin/public/
+Crawl-delay: 5
+
+User-agent: AdsBot-Google
+Disallow:
+
+Sitemap: https://example.com/sitemap.xml
+Sitemap: https://example.com/sitemap-news.xml

@@ -1,0 +1,417 @@
+package js
+
+import (
+	"github.com/dop251/goja"
+	"golang.org/x/net/html"
+)
+
+// Event phases (DOM).
+const (
+	phaseNone      = 0
+	phaseCapturing = 1
+	phaseAtTarget  = 2
+	phaseBubbling  = 3
+)
+
+// listenerEntry is one registered event listener. jsFn is the original function
+// value, kept so removeEventListener can match by identity.
+type listenerEntry struct {
+	fn      goja.Callable
+	jsFn    goja.Value
+	capture bool
+	once    bool
+	passive bool
+}
+
+// listenerOpts is the parsed addEventListener 3rd argument.
+type listenerOpts struct {
+	capture bool
+	once    bool
+	passive bool
+	signal  goja.Value // nil if absent
+}
+
+// domEvent holds the Go-side state for an in-flight event dispatch.
+type domEvent struct {
+	typ              string
+	bubbles          bool
+	cancelable       bool
+	defaultPrevented bool
+	stopped          bool // stopPropagation
+	stopImmediate    bool // stopImmediatePropagation
+	passiveActive    bool // a passive listener is currently running
+	js               *goja.Object
+}
+
+// pathEntry is one node on the event propagation path.
+type pathEntry struct {
+	listeners map[string][]listenerEntry
+	jsValue   goja.Value
+}
+
+type phaseFilter int
+
+const (
+	captureOnly phaseFilter = iota
+	bubbleOnly
+	allListeners
+)
+
+// --- registration ---
+
+func (b *bridge) addListener(reg map[string][]listenerEntry, call goja.FunctionCall) {
+	fnVal := call.Argument(1)
+	fn, ok := goja.AssertFunction(fnVal)
+	if !ok {
+		return
+	}
+	t := call.Argument(0).String()
+	opts := b.parseListenerOpts(call.Argument(2))
+	if opts.signal != nil && b.signalAborted(opts.signal) {
+		return // an already-aborted signal means never add the listener
+	}
+	reg[t] = append(reg[t], listenerEntry{fn: fn, jsFn: fnVal, capture: opts.capture, once: opts.once, passive: opts.passive})
+	if opts.signal != nil {
+		b.onAbort(opts.signal, func() { removeEntryByFn(reg, t, fnVal, opts.capture) })
+	}
+}
+
+func (b *bridge) removeListener(reg map[string][]listenerEntry, call goja.FunctionCall) {
+	removeEntryByFn(reg, call.Argument(0).String(), call.Argument(1), b.parseListenerOpts(call.Argument(2)).capture)
+}
+
+// removeEntryByFn drops the listener for type t matching jsFn (by identity) and
+// capture phase.
+func removeEntryByFn(reg map[string][]listenerEntry, t string, jsFn goja.Value, capture bool) {
+	entries := reg[t]
+	if len(entries) == 0 {
+		return
+	}
+	out := entries[:0]
+	for _, e := range entries {
+		if e.capture == capture && jsFn != nil && e.jsFn != nil && e.jsFn.SameAs(jsFn) {
+			continue
+		}
+		out = append(out, e)
+	}
+	reg[t] = out
+}
+
+func (b *bridge) nodeAddListener(n *html.Node, call goja.FunctionCall) {
+	m := b.nodeListeners[n]
+	if m == nil {
+		m = make(map[string][]listenerEntry)
+		b.nodeListeners[n] = m
+	}
+	b.addListener(m, call)
+}
+
+func (b *bridge) nodeRemoveListener(n *html.Node, call goja.FunctionCall) {
+	if m := b.nodeListeners[n]; m != nil {
+		b.removeListener(m, call)
+	}
+}
+
+// parseListenerOpts reads the addEventListener 3rd argument: a boolean (legacy
+// capture), or an options object {capture, once, passive, signal}.
+func (b *bridge) parseListenerOpts(arg goja.Value) listenerOpts {
+	if arg == nil || goja.IsUndefined(arg) || goja.IsNull(arg) {
+		return listenerOpts{}
+	}
+	if v, ok := arg.Export().(bool); ok {
+		return listenerOpts{capture: v}
+	}
+	o := arg.ToObject(b.vm)
+	if o == nil {
+		return listenerOpts{}
+	}
+	opts := listenerOpts{
+		capture: boolProp(o, "capture"),
+		once:    boolProp(o, "once"),
+		passive: boolProp(o, "passive"),
+	}
+	if s := o.Get("signal"); s != nil && !goja.IsUndefined(s) && !goja.IsNull(s) {
+		opts.signal = s
+	}
+	return opts
+}
+
+func boolProp(o *goja.Object, name string) bool {
+	if v := o.Get(name); v != nil && !goja.IsUndefined(v) {
+		return v.ToBoolean()
+	}
+	return false
+}
+
+// signalAborted reports whether an AbortSignal's `aborted` is true.
+func (b *bridge) signalAborted(signal goja.Value) bool {
+	o := signal.ToObject(b.vm)
+	if o == nil {
+		return false
+	}
+	return boolProp(o, "aborted")
+}
+
+// onAbort registers a Go callback to run when an AbortSignal fires "abort".
+func (b *bridge) onAbort(signal goja.Value, cb func()) {
+	o := signal.ToObject(b.vm)
+	if o == nil {
+		return
+	}
+	add, ok := goja.AssertFunction(o.Get("addEventListener"))
+	if !ok {
+		return
+	}
+	_, _ = add(o, b.vm.ToValue("abort"), b.vm.ToValue(func(goja.FunctionCall) goja.Value {
+		cb()
+		return goja.Undefined()
+	}))
+}
+
+// --- dispatch ---
+
+// newEvent builds a fresh synthetic event (used by element.click() and lifecycle
+// events).
+func (b *bridge) newEvent(typ string, bubbles, cancelable bool, target goja.Value) *domEvent {
+	o := b.vm.NewObject()
+	_ = o.Set("type", typ)
+	_ = o.Set("bubbles", bubbles)
+	_ = o.Set("cancelable", cancelable)
+	ev := &domEvent{typ: typ, bubbles: bubbles, cancelable: cancelable, js: o}
+	b.bindEvent(o, ev, target)
+	return ev
+}
+
+// newUIEvent builds a synthetic mouse/pointer event carrying realistic,
+// non-"virtual" fields so press/pointer-based widget libraries (react-aria,
+// Radix, …) treat an interact-driven gesture as a real primary-button press.
+// Unlike newEvent (which stays bare for lifecycle events and element.click()),
+// it is used only for the engine's synthesized interact gestures.
+func (b *bridge) newUIEvent(typ string, bubbles, cancelable bool, target goja.Value) *domEvent {
+	o := b.vm.NewObject()
+	_ = o.Set("type", typ)
+	_ = o.Set("bubbles", bubbles)
+	_ = o.Set("cancelable", cancelable)
+	// A real user gesture: primary button, trusted, composed, on-screen.
+	_ = o.Set("isTrusted", true)
+	_ = o.Set("composed", true)
+	_ = o.Set("clientX", 1)
+	_ = o.Set("clientY", 1)
+	_ = o.Set("screenX", 1)
+	_ = o.Set("screenY", 1)
+	_ = o.Set("button", 0)
+	if typ == "pointerdown" || typ == "mousedown" {
+		_ = o.Set("buttons", 1) // primary button held during the down phase
+	} else {
+		_ = o.Set("buttons", 0)
+	}
+	switch typ {
+	case "pointerdown", "pointerup", "pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave":
+		_ = o.Set("pointerId", 1)
+		_ = o.Set("pointerType", "mouse")
+		_ = o.Set("isPrimary", true)
+		// Non-zero geometry + pressure so react-aria's isVirtualPointerEvent()
+		// heuristic never classifies this synthetic press as a virtual/AT event.
+		_ = o.Set("width", 1)
+		_ = o.Set("height", 1)
+		_ = o.Set("pressure", 0.5)
+		_ = o.Set("detail", 0)
+	default: // mouse/click family: a non-zero detail marks a real (non-virtual) click
+		_ = o.Set("detail", 1)
+	}
+	ev := &domEvent{typ: typ, bubbles: bubbles, cancelable: cancelable, js: o}
+	b.bindEvent(o, ev, target)
+	return ev
+}
+
+// wrapEvent augments a user-constructed event object (from dispatchEvent) with the
+// dispatch machinery, preserving its own fields (e.g. clientX on a MouseEvent).
+func (b *bridge) wrapEvent(o *goja.Object, target goja.Value) *domEvent {
+	typ := ""
+	if t := o.Get("type"); t != nil && !goja.IsUndefined(t) {
+		typ = t.String()
+	}
+	ev := &domEvent{typ: typ, bubbles: boolProp(o, "bubbles"), cancelable: boolProp(o, "cancelable"), js: o}
+	b.bindEvent(o, ev, target)
+	return ev
+}
+
+// bindEvent installs target/currentTarget/phase and the Go-backed control methods
+// onto an event object.
+func (b *bridge) bindEvent(o *goja.Object, ev *domEvent, target goja.Value) {
+	vm := b.vm
+	_ = o.Set("target", target)
+	_ = o.Set("currentTarget", goja.Null())
+	_ = o.Set("eventPhase", phaseNone)
+	b.defineGetter(o, "defaultPrevented", func() goja.Value { return vm.ToValue(ev.defaultPrevented) })
+	_ = o.Set("preventDefault", func(goja.FunctionCall) goja.Value {
+		if ev.cancelable && !ev.passiveActive {
+			ev.defaultPrevented = true
+		}
+		return goja.Undefined()
+	})
+	_ = o.Set("stopPropagation", func(goja.FunctionCall) goja.Value { ev.stopped = true; return goja.Undefined() })
+	_ = o.Set("stopImmediatePropagation", func(goja.FunctionCall) goja.Value {
+		ev.stopped, ev.stopImmediate = true, true
+		return goja.Undefined()
+	})
+}
+
+// dispatch runs an event through capture → target → bubble over path (ordered
+// outermost → target). Returns false if the default was prevented.
+func (b *bridge) dispatch(path []pathEntry, ev *domEvent) bool {
+	target := len(path) - 1
+
+	_ = ev.js.Set("eventPhase", phaseCapturing)
+	for i := 0; i < target; i++ {
+		b.invokePhase(path[i], ev, captureOnly)
+		if ev.stopped {
+			return !ev.defaultPrevented
+		}
+	}
+
+	_ = ev.js.Set("eventPhase", phaseAtTarget)
+	b.invokePhase(path[target], ev, allListeners)
+	if ev.stopped || !ev.bubbles {
+		return !ev.defaultPrevented
+	}
+
+	_ = ev.js.Set("eventPhase", phaseBubbling)
+	for i := target - 1; i >= 0; i-- {
+		b.invokePhase(path[i], ev, bubbleOnly)
+		if ev.stopped {
+			return !ev.defaultPrevented
+		}
+	}
+	return !ev.defaultPrevented
+}
+
+func (b *bridge) invokePhase(entry pathEntry, ev *domEvent, filter phaseFilter) {
+	live := entry.listeners[ev.typ]
+	if len(live) == 0 {
+		return
+	}
+	// Snapshot: listeners added during dispatch must not fire (DOM semantics);
+	// once-listeners are removed from the live registry after firing.
+	listeners := append([]listenerEntry(nil), live...)
+	_ = ev.js.Set("currentTarget", entry.jsValue)
+	ev.stopImmediate = false
+	for _, le := range listeners {
+		switch filter {
+		case captureOnly:
+			if !le.capture {
+				continue
+			}
+		case bubbleOnly:
+			if le.capture {
+				continue
+			}
+		}
+		ev.passiveActive = le.passive
+		b.callSafe(le.fn, entry.jsValue, ev.js)
+		ev.passiveActive = false
+		if le.once {
+			removeEntryByFn(entry.listeners, ev.typ, le.jsFn, le.capture)
+		}
+		if ev.stopImmediate {
+			return
+		}
+	}
+}
+
+// elementTargetPath builds [window, document, ...ancestors top-down..., target].
+func (b *bridge) elementTargetPath(target *html.Node) []pathEntry {
+	var chain []*html.Node // target .. root
+	for n := target; n != nil; n = n.Parent {
+		if n.Type == html.ElementNode {
+			chain = append(chain, n)
+		}
+	}
+	path := []pathEntry{
+		{listeners: b.winListeners, jsValue: b.windowObj},
+		{listeners: b.docListeners, jsValue: b.documentObj},
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		n := chain[i]
+		path = append(path, pathEntry{listeners: b.nodeListeners[n], jsValue: b.wrap(n)})
+	}
+	return path
+}
+
+func (b *bridge) dispatchOnNode(target *html.Node, ev *domEvent) bool {
+	return b.dispatch(b.elementTargetPath(target), ev)
+}
+
+func (b *bridge) dispatchOnDocument(ev *domEvent) bool {
+	return b.dispatch([]pathEntry{
+		{listeners: b.winListeners, jsValue: b.windowObj},
+		{listeners: b.docListeners, jsValue: b.documentObj},
+	}, ev)
+}
+
+func (b *bridge) dispatchOnWindow(ev *domEvent) bool {
+	return b.dispatch([]pathEntry{{listeners: b.winListeners, jsValue: b.windowObj}}, ev)
+}
+
+// dispatchFocusEvent fires a focus-family event (focus/blur non-bubbling;
+// focusin/focusout bubbling) at n, with relatedTarget set to the other element.
+func (b *bridge) dispatchFocusEvent(typ string, bubbles bool, n, related *html.Node) {
+	ev := b.newEvent(typ, bubbles, false, b.wrap(n))
+	if related != nil {
+		_ = ev.js.Set("relatedTarget", b.wrap(related))
+	} else {
+		_ = ev.js.Set("relatedTarget", goja.Null())
+	}
+	b.dispatchOnNode(n, ev)
+}
+
+// focusNode moves focus to n, updating document.activeElement and firing the
+// browser-order focus events: blur+focusout on the previously focused element,
+// then focus+focusin on n. No-op if n is nil or already focused.
+func (b *bridge) focusNode(n *html.Node) {
+	if n == nil || n == b.activeEl {
+		return
+	}
+	prev := b.activeEl
+	if prev != nil {
+		b.activeEl = nil // transitional: activeElement is <body> during blur
+		b.dispatchFocusEvent("blur", false, prev, n)
+		b.dispatchFocusEvent("focusout", true, prev, n)
+	}
+	b.activeEl = n
+	b.dispatchFocusEvent("focus", false, n, prev)
+	b.dispatchFocusEvent("focusin", true, n, prev)
+}
+
+// blurNode clears focus from n (if it is the active element), firing blur then
+// focusout. document.activeElement falls back to <body>.
+func (b *bridge) blurNode(n *html.Node) {
+	if n == nil || n != b.activeEl {
+		return
+	}
+	b.activeEl = nil
+	b.dispatchFocusEvent("blur", false, n, nil)
+	b.dispatchFocusEvent("focusout", true, n, nil)
+}
+
+// dispatchUserEvent dispatches a user-constructed event object at an element/
+// document/window target, returning false if the default was prevented.
+func (b *bridge) dispatchUserEvent(arg goja.Value, target goja.Value, run func(*domEvent) bool) bool {
+	o := arg.ToObject(b.vm)
+	if o == nil {
+		return false
+	}
+	return run(b.wrapEvent(o, target))
+}
+
+func (b *bridge) callSafe(fn goja.Callable, this goja.Value, args ...goja.Value) {
+	defer func() { _ = recover() }()
+	_, _ = fn(this, args...)
+}
+
+// fireLifecycle dispatches DOMContentLoaded (document, bubbling to window) and
+// load (window) after the page's scripts have run.
+func (b *bridge) fireLifecycle() {
+	b.dispatchOnDocument(b.newEvent("DOMContentLoaded", true, false, b.documentObj))
+	b.dispatchOnWindow(b.newEvent("load", false, false, b.windowObj))
+}

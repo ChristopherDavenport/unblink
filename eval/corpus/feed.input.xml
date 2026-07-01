@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Feed</title>
+    <description>A sample RSS feed for the unblink eval corpus</description>
+    <link>https://example.com</link>
+    <item>
+      <title>First Post</title>
+      <link>https://example.com/posts/1</link>
+      <description>&lt;p&gt;The &lt;b&gt;first&lt;/b&gt; post body &amp;amp; summary.&lt;/p&gt;</description>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 GMT</pubDate>
+    </item>
+    <item>
+      <title>Second Post</title>
+      <link>https://example.com/posts/2</link>
+      <description>Second post summary text.</description>
+      <pubDate>Tue, 03 Jan 2006 09:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

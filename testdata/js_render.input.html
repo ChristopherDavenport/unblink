@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>JS App</title>
+</head>
+<body>
+  <div id="root">Loading…</div>
+  <script>
+    document.getElementById('root').innerHTML =
+      '<article>' +
+      '<h1>JS Rendered Title</h1>' +
+      '<p>This paragraph was injected by JavaScript at runtime and would be invisible ' +
+      'without a script engine. It carries the marker phrase clientsiderendered so the ' +
+      'test can assert the content materialized only after execution.</p>' +
+      '<p>A second injected paragraph adds enough prose that the readability extractor ' +
+      'treats this as a genuine article body rather than a sparse placeholder page.</p>' +
+      '</article>';
+  </script>
+</body>
+</html>

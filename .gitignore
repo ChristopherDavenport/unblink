@@ -1,0 +1,13 @@
+# Build output
+/bin/
+
+# Editor / OS cruft
+*.swp
+.DS_Store
+
+# Claude Code session tooling
+/.claude/
+
+# Go test artifacts
+*.out
+*.test

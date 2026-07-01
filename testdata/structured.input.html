@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Structured Test Page</title>
+  <meta name="description" content="A fixture exercising links, forms, headings and pagination.">
+  <meta property="og:site_name" content="Unblink Test Suite">
+  <link rel="canonical" href="/blog/post">
+  <style>nav { color: red; }</style>
+  <script>console.log('should be stripped');</script>
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/about">About Us</a>
+    <a href="https://external-site.example.org/docs">External Docs</a>
+  </nav>
+
+  <main>
+    <h1>Structured Test Page</h1>
+
+    <p>This opening section exists to give the readability extractor enough prose to
+    recognize a genuine article body. It talks at some length about nothing in particular
+    so that the character thresholds are comfortably exceeded and the main content is not
+    mistaken for boilerplate navigation or a sparse stub page with little to say.</p>
+
+    <h2>Installation</h2>
+    <p>Installing the imaginary widget is straightforward. You download the artifact, you
+    place it on your path, and you confirm the version. None of these steps are real, but
+    the paragraph is long enough to matter for chunking, which is the entire point of
+    including several substantial paragraphs in a single deterministic test fixture here.</p>
+    <p>A second installation paragraph follows to add bulk. It continues describing the
+    fictional procedure with enough words that a small token budget will be forced to split
+    the rendered Markdown across more than one page, letting the pagination round-trip test
+    verify that joining the chunks reproduces every block of the original document body.</p>
+
+    <h3>Requirements</h3>
+    <p>The requirements section mentions a search term: the magic word pomegranate appears
+    here exactly once so the find tool has a concrete, unambiguous string to locate within
+    a known heading path of Installation followed by Requirements in the document outline.</p>
+
+    <h2>Usage</h2>
+    <p>Usage is covered by yet another long paragraph of filler prose, present so the page
+    has multiple top-level sections and a believable heading hierarchy spanning h1, h2 and
+    h3 levels for the outline and heading-path assertions exercised by the test suite.</p>
+
+    <form id="signup" name="signup" action="/subscribe" method="post">
+      <input type="text" name="fullname" required>
+      <input type="email" name="email" required>
+      <select name="plan">
+        <option value="free">Free</option>
+        <option value="pro">Pro</option>
+      </select>
+      <textarea name="comments">default comment</textarea>
+      <input type="checkbox" name="newsletter">
+      <input type="submit" value="Join">
+    </form>
+
+    <p><img src="/images/diagram.png" alt="A diagram"></p>
+  </main>
+
+  <footer>
+    <a href="/privacy">Privacy</a>
+  </footer>
+</body>
+</html>
