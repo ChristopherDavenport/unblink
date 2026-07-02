@@ -32,6 +32,10 @@ const (
 	// maxRenderBudget caps an Env.Timeout override so a caller's wait_timeout can't
 	// pin a runtime (and its concurrency slot) open indefinitely.
 	maxRenderBudget = 30 * time.Second
+	// timerClampMargin is how far before the budget deadline a clamped one-shot
+	// timer fires, leaving room for its callback's DOM mutation to be captured by
+	// the settle poll before the snapshot is taken.
+	timerClampMargin = 600 * time.Millisecond
 )
 
 // Engine runs scripts over an *html.Node tree. It is safe for concurrent use;
@@ -44,6 +48,7 @@ type Engine struct {
 	closeOnce sync.Once
 	assets    *assetCache // TTL'd script/module/bundle cache; nil when disabled
 	webdriver bool        // navigator.webdriver; true unless the operator opted into --tls-mimic parity
+	memGuard  *memGuard   // heap watchdog over all live/one-shot runtimes; nil when disabled
 }
 
 // Option configures an Engine.
@@ -55,6 +60,7 @@ type config struct {
 	prewarm    int
 	assetTTL   time.Duration
 	webdriver  bool
+	memLimit   uint64
 }
 
 // WithTimeout sets the wall-clock budget for a single render.
@@ -79,6 +85,10 @@ func WithAssetCache(ttl time.Duration) Option { return func(c *config) { c.asset
 // opt-in fingerprint parity to the JS environment.
 func WithWebdriver(v bool) Option { return func(c *config) { c.webdriver = v } }
 
+// WithMemoryLimit caps the Go heap that running page JS may grow before every
+// live runtime is interrupted (see memGuard / ADR-0003). 0 disables the guard.
+func WithMemoryLimit(bytes uint64) Option { return func(c *config) { c.memLimit = bytes } }
+
 // New returns an Engine. If a pre-warm pool is configured, call Close to stop its
 // background refiller.
 func New(opts ...Option) *Engine {
@@ -92,7 +102,7 @@ func New(opts ...Option) *Engine {
 	if c.concurrent <= 0 {
 		c.concurrent = DefaultMaxConcurrent
 	}
-	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent), assets: newAssetCache(c.assetTTL), webdriver: c.webdriver}
+	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent), assets: newAssetCache(c.assetTTL), webdriver: c.webdriver, memGuard: newMemGuard(c.memLimit)}
 	if c.prewarm > 0 {
 		e.pool = make(chan *eventloop.EventLoop, c.prewarm)
 		e.stop = make(chan struct{})
@@ -148,13 +158,14 @@ func (e *Engine) takeLoop() *eventloop.EventLoop {
 	return newLoop()
 }
 
-// Close stops the pre-warm refiller. It is idempotent and safe to call on an
-// engine without a pool.
+// Close stops the pre-warm refiller and the memory-guard watchdog. It is
+// idempotent and safe to call on an engine without a pool.
 func (e *Engine) Close() {
 	e.closeOnce.Do(func() {
 		if e.stop != nil {
 			close(e.stop)
 		}
+		e.memGuard.close()
 	})
 }
 
@@ -217,12 +228,21 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 			}
 		}()
 		vmRef.Store(vm)
+		e.memGuard.register(vm)
 		// reqTimeout is the render budget so a wait_timeout override also gives the
 		// page's own fetches longer to complete (else the awaited content never lands).
 		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget)
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()
+		// Timer clamp deadline (one-shot renders only): a wall-clock instant, read
+		// by the prelude timer wrapper, past which a long one-shot timer is pulled
+		// in so its content still materializes. Live sessions leave this unset.
+		clamp := budget - timerClampMargin
+		if clamp < 0 {
+			clamp = 0
+		}
+		_ = vm.Set("__unblinkTimerDeadlineMs", time.Now().Add(clamp).UnixMilli())
 		// Stubs simplest to express in JS (storage, observers, rAF), then the
 		// web-platform API layer (encoding, fetch classes, viewport/matchMedia,
 		// Intl, messaging). Failure here is non-fatal.
@@ -272,6 +292,9 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	// tree concurrently with extraction. Terminate joins the loop goroutine, giving
 	// the happens-before edge for the b/stats reads below.
 	loop.Terminate()
+	if vm := vmRef.Load(); vm != nil {
+		e.memGuard.unregister(vm)
+	}
 	if env.Diag != nil {
 		// Timing: a wedged script can leave setupDone/execDone unset; attribute the
 		// whole elapsed time to the last stage that was reached.
@@ -293,6 +316,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		env.Diag.DeadlineHit = stats.deadline || interrupted
 		env.Diag.DOMBusy = stats.domBusy
 		env.Diag.NetPending = int(stats.pending)
+		env.Diag.TimersPending = stats.timersPending
 		if b != nil {
 			if interrupted {
 				// The settle never closed on its own (a wedged script or cancellation),

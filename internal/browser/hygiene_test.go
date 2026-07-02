@@ -30,7 +30,7 @@ func TestLiveRuntimeCap(t *testing.T) {
 		if _, err := b.Read(ctx, browser.Request{SessionID: sid, URL: srv.URL}, "", 0, ""); err != nil {
 			t.Fatalf("read %s: %v", sid, err)
 		}
-		if _, err := b.Interact(ctx, sid, "#b", "click", ""); err != nil {
+		if _, err := b.Interact(ctx, sid, "#b", "click", "", ""); err != nil {
 			t.Fatalf("interact %s: %v", sid, err)
 		}
 	}
@@ -45,7 +45,7 @@ func TestLiveRuntimeCap(t *testing.T) {
 		t.Errorf("live runtimes = %d, want <= 2 (cap)", live)
 	}
 	// The evicted session still works: interact reopens a runtime from its page.
-	if r, err := b.Interact(ctx, "s0", "#b", "click", ""); err != nil || !r.Matched {
+	if r, err := b.Interact(ctx, "s0", "#b", "click", "", ""); err != nil || !r.Matched {
 		t.Errorf("interact on evicted-live session: r=%+v err=%v", r, err)
 	}
 }

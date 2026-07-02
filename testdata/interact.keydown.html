@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Keydown Search Fixture</title>
+</head>
+<body>
+  <main>
+    <h1>Keydown Fixture</h1>
+
+    <!-- A search box that renders results when Enter is pressed. The listener
+         reads e.key, which a bare Event (pre-Phase-21) never carried, so the
+         results only appear if the KeyboardEvent fields are populated. -->
+    <input id="search" type="text" placeholder="Search…">
+    <div id="results">placeholder</div>
+  </main>
+
+  <script>
+    document.getElementById('search').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        document.getElementById('results').textContent =
+          'pomegranate-results: the search box handled an Enter keydown carrying its ' +
+          'key field and rendered a results region with enough prose for the reducer ' +
+          'to treat it as real article content. The query was "' + e.target.value + '".';
+      }
+    });
+  </script>
+</body>
+</html>
