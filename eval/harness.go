@@ -45,6 +45,7 @@ type Case struct {
 	Name     string
 	Host     Host
 	Browser  []browser.Option
+	Safe     bool // run with the production safe-output pipeline (framing + hidden-strip + defang)
 	Steps    []Step
 	Scorers  []Scorer
 	Floor    float64 // case passes if its mean score >= Floor
@@ -69,6 +70,7 @@ const (
 	AxisContent      Axis = "non-html-content"
 	AxisAuth         Axis = "auth-credentials"
 	AxisDiscovery    Axis = "search-discovery"
+	AxisSafety       Axis = "safe-output"
 )
 
 // Scorer returns a partial-credit score in [0,1] with a one-line detail. A
@@ -134,19 +136,18 @@ type world struct {
 // session bleed between cases), the real MCP adapter with the full tool set, an
 // in-memory transport pair (server connected first, then client, per the SDK
 // contract), and an httptest server for the case's fixture host.
-func newWorld(ctx context.Context, host http.Handler, bopts []browser.Option) (*world, error) {
+func newWorld(ctx context.Context, host http.Handler, bopts []browser.Option, safe bool) (*world, error) {
 	// Fixtures are httptest servers on loopback; allow the page-fetch SSRF guard to
 	// reach them (a case can still re-disable it by appending WithAllowPrivate(false)).
-	// Eval validates extraction correctness against raw tool output, so the
+	// Most cases validate extraction correctness against raw tool output, so the
 	// untrusted-content safety pass (framing / hidden-strip / image-defang) is off
-	// here; it is covered by dedicated unit tests. A case can re-enable it via bopts.
-	b, err := browser.New(append([]browser.Option{
-		browser.WithAllowPrivate(true), browser.WithSafeOutput(false),
-	}, bopts...)...)
+	// by default; safe cases run the full production pipeline instead.
+	base := []browser.Option{browser.WithAllowPrivate(true), browser.WithSafeOutput(safe)}
+	b, err := browser.New(append(base, bopts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("browser.New: %w", err)
 	}
-	s := mcpserver.New(b, false)
+	s := mcpserver.New(b, safe)
 
 	st, ct := mcp.NewInMemoryTransports()
 	ss, err := s.Connect(ctx, st)
@@ -187,7 +188,7 @@ func run(ctx context.Context, c Case) (*Transcript, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("build host: %w", err)
 	}
-	w, err := newWorld(ctx, handler, c.Browser)
+	w, err := newWorld(ctx, handler, c.Browser, c.Safe)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -107,11 +107,12 @@ type Image struct {
 
 // Form is an HTML form and its fields.
 type Form struct {
-	ID     string  `json:"id,omitempty"`
-	Name   string  `json:"name,omitempty"`
-	Action string  `json:"action"`
-	Method string  `json:"method"`
-	Fields []Field `json:"fields,omitempty"`
+	ID      string  `json:"id,omitempty"`
+	Name    string  `json:"name,omitempty"`
+	Action  string  `json:"action"`
+	Method  string  `json:"method"`
+	Enctype string  `json:"enctype,omitempty"` // e.g. multipart/form-data; "" = urlencoded
+	Fields  []Field `json:"fields,omitempty"`
 }
 
 // Field is a single form control.

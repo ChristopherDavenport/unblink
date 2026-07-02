@@ -389,6 +389,40 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     removal — JS legitimately holds detached nodes (React vnodes), so pruning
     risks correctness; the live-runtime cap + session TTL now bound that memory.
 
+- **Phase 19 — Capability roadmap: fetch efficiency + upload + progress.** ✅
+  - **HTTP conditional revalidation** (`fetch.Client.GetConditional`,
+    `browser.revalidate`): the stateless page cache retains expired entries
+    (up to `ttl×10`) and revalidates them with `If-None-Match`/
+    `If-Modified-Since` — a 304 reuses the already-parsed page (and re-dates the
+    entry) instead of refetching and re-parsing; a changed body replaces it. The
+    previously dead 304 path in `fetch.decodeBody` is now live.
+  - **HTTP/2 connection pooling under `--tls-mimic`**: the utls RoundTripper
+    pools one h2 `ClientConn` per host:port and reuses it while the server keeps
+    it open (dead conns are detected via `CanTakeNewRequest`/round-trip failure
+    and redialed, with a single safe retry) — repeat fetches no longer pay a
+    TCP+TLS handshake each. HTTP/1.1 stays one-conn-per-request (rare on this
+    path).
+  - **multipart/form-data submission** (`fetch.Client.SubmitMultipart`,
+    `submit_form` `files`): forms declaring `enctype=multipart/form-data`
+    switch encoding automatically; file uploads take inline `content`/
+    `content_base64` (capped: 8 files / 4 MiB total) — file bytes are supplied
+    by the agent, **never read from local disk**, so a hostile page cannot turn
+    submit into local-file exfiltration. Multipart requires a POST form.
+    `page.Form` gains `Enctype`.
+  - **MCP progress notifications for `map`** (`browser.MapProgress`): a client
+    that sends `_meta.progressToken` receives throttled (500ms) progress
+    notifications (`done/total` + phase message) while the up-to-60s walk runs,
+    ending with a completion update. The bridge lives in `mcpserver.handleMap`;
+    the browser layer stays MCP-free (a plain callback type).
+  - **Eval hardening**: the JS-render suite (plain + Preact/React/Vue bundles),
+    `read-wait-for`, `interact-navigation`, and `read-pdf` are promoted to
+    must-pass; a `Safe` case variant runs the production safe-output pipeline
+    end-to-end (untrusted framing + hidden-strip + image defang, scored by
+    `FramedUntrusted`), and a multipart-upload case gates `submit_form`'s new
+    path.
+  - *Deferred*: a streamable-HTTP MCP transport (would force multi-tenant
+    session namespacing; stdio remains the deployment model for now).
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. Geometry and CSSOM are **honest constant
 stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle` return zeros/empty so

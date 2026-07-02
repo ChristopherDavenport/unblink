@@ -275,6 +275,46 @@ func contentHost(path, mime string) Host {
 	}
 }
 
+// uploadHost serves a multipart upload form and echoes back the submitted
+// field, filename, and file content — proving submit_form's multipart path
+// end-to-end through MCP.
+func uploadHost() Host {
+	return func() (http.Handler, error) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, `<!doctype html><html><head><title>Upload</title></head><body>`+
+				`<form id="up" action="/upload" method="post" enctype="multipart/form-data">`+
+				`<input type="text" name="note"><input type="file" name="doc">`+
+				`<input type="submit" value="Send"></form></body></html>`)
+		})
+		mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, "<html><head><title>Bad</title></head><body>parse error: %v</body></html>", err)
+				return
+			}
+			f, fh, err := r.FormFile("doc")
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, "<html><head><title>Bad</title></head><body>no file: %v</body></html>", err)
+				return
+			}
+			defer f.Close()
+			data, _ := io.ReadAll(f)
+			fmt.Fprintf(w, `<!doctype html><html><head><title>Received</title></head><body>`+
+				`<p>note=%s filename=%s content=%s</p></body></html>`,
+				r.FormValue("note"), fh.Filename, data)
+		})
+		return mux, nil
+	}
+}
+
 // authHost gates content behind credentials: /protected needs Authorization:
 // Bearer letmein, /api.json needs X-Api-Key: k-9000. Unmatched paths (incl. the
 // metadata probes) 404 via the mux default. Proves credentialed reads.
@@ -342,6 +382,7 @@ const (
 	fxPNG        = "corpus/pixel.input.png"
 	fxPDF        = "corpus/sample.pdf"
 	fxData       = "corpus/structured-data.input.html"
+	fxUnsafe     = "corpus/unsafe.input.html"
 )
 
 // SPA shells rendered by real framework bundles in the eval cases below. Each
@@ -619,7 +660,7 @@ func cases() []Case {
 				RenderPresence(0, []string{"JS Rendered Title"}, 1, []string{"JS Rendered Title", "clientsiderendered"}),
 			},
 			Floor:    0.9,
-			MustPass: false, // JS render depends on the goja engine; not a hard gate
+			MustPass: true, // the JS engine is a headline capability; regressions gate
 		},
 		{
 			Name:    "preact-render",
@@ -631,7 +672,7 @@ func cases() []Case {
 			},
 			Scorers:  []Scorer{RenderPresence(0, []string{"Preact Rendered Title"}, 1, []string{"Preact Rendered Title"})},
 			Floor:    0.9,
-			MustPass: false, // real-bundle render; soft-gated until proven stable in CI
+			MustPass: true,
 		},
 		{
 			Name: "react-render",
@@ -646,7 +687,7 @@ func cases() []Case {
 			},
 			Scorers:  []Scorer{RenderPresence(0, []string{"React Rendered Title"}, 1, []string{"React Rendered Title"})},
 			Floor:    0.9,
-			MustPass: false,
+			MustPass: true,
 		},
 		{
 			Name:    "vue-render",
@@ -658,7 +699,7 @@ func cases() []Case {
 			},
 			Scorers:  []Scorer{RenderPresence(0, []string{"Vue Rendered Title"}, 1, []string{"Vue Rendered Title"})},
 			Floor:    0.9,
-			MustPass: false,
+			MustPass: true,
 		},
 		{
 			// wait_for holds the render open for content that a delayed in-page fetch
@@ -676,7 +717,7 @@ func cases() []Case {
 				Recall(0, "delayed-answer-payload"),
 			},
 			Floor:    0.9,
-			MustPass: false, // depends on the goja engine + timing; not a hard gate
+			MustPass: true,
 		},
 		{
 			// interact drives a handler that navigates via location.href; the target
@@ -694,7 +735,7 @@ func cases() []Case {
 				PendingNavigation(2, "https://example.com/dest"),
 			},
 			Floor:    0.9,
-			MustPass: false,
+			MustPass: true,
 		},
 		{
 			Name: "read-error",
@@ -782,7 +823,7 @@ func cases() []Case {
 				KindIs(0, "pdf"),
 			},
 			Floor:    0.9,
-			MustPass: false, // PDF text extraction quality is engine-dependent
+			MustPass: true, // the fixture is deterministic; extraction regressions gate
 		},
 		{
 			// raw_html escape hatch: markdown strips the script/form, raw_html
@@ -925,6 +966,45 @@ func cases() []Case {
 				SearchUnconfigured(0),
 			},
 			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			// The production safe-output pipeline end-to-end through MCP: the result
+			// is framed as untrusted, human-hidden injection text is stripped, the
+			// image beacon is defanged, and the visible content still comes through.
+			Name: "safe-output-fencing",
+			Host: htmlHost(fxUnsafe),
+			Safe: true,
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full"}},
+			},
+			Scorers: []Scorer{
+				FramedUntrusted(0),
+				NoJunk(0, "hidden-injection-payload", "offscreen-injection-payload", "!["),
+				Recall(0, "Visible Headline", "second visible paragraph", "[image: beacon-alt"),
+			},
+			Floor:    0.95,
+			MustPass: true,
+		},
+		{
+			// submit_form uploads a file: the multipart-declared form switches the
+			// encoding and the inline file content arrives as a real file part.
+			Name: "submit-multipart-upload",
+			Host: uploadHost(),
+			Steps: []Step{
+				{Tool: "session", Args: map[string]any{"action": "new", "session": "up"}},
+				{Tool: "browse", Path: "/", Args: map[string]any{"session": "up"}},
+				{Tool: "submit_form", Args: map[string]any{"session": "up", "form": "up",
+					"values": map[string]any{"note": "hello"},
+					"files": []map[string]any{{"field": "doc", "filename": "notes.txt",
+						"mime": "text/plain", "content": "upload-payload"}}}},
+				{Tool: "read", Args: map[string]any{"session": "up", "use_current": true, "mode": "full"}},
+			},
+			Scorers: []Scorer{
+				SessionTitle(2, "Received"),
+				Recall(3, "note=hello", "filename=notes.txt", "content=upload-payload"),
+			},
+			Floor:    0.95,
 			MustPass: true,
 		},
 	}

@@ -167,10 +167,11 @@ func extractForms(doc *html.Node, base, pageURL *url.URL) []page.Form {
 			method = "GET"
 		}
 		form := page.Form{
-			ID:     attr(f, "id"),
-			Name:   attr(f, "name"),
-			Action: action,
-			Method: method,
+			ID:      attr(f, "id"),
+			Name:    attr(f, "name"),
+			Action:  action,
+			Method:  method,
+			Enctype: strings.ToLower(strings.TrimSpace(attr(f, "enctype"))),
 		}
 		for _, fld := range selField.MatchAll(f) {
 			form.Fields = append(form.Fields, extractField(fld))

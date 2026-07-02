@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -47,6 +48,17 @@ type MapResult struct {
 	Note      string     `json:"note,omitempty"`      // why the walk stopped, when truncated
 }
 
+// MapProgress reports a Map walk's progress: URLs discovered so far, the
+// max_urls budget, and a short human-readable phase message. Calls are
+// throttled; the final call fires when the walk completes. A plain func type so
+// the MCP layer can bridge it to progress notifications without any MCP type
+// appearing below mcpserver.
+type MapProgress func(done, total int, msg string)
+
+// mapProgressInterval throttles progress callbacks so a fast crawl cannot flood
+// the transport with notifications.
+const mapProgressInterval = 500 * time.Millisecond
+
 // Map discovers a site's URLs: it harvests sitemap.xml (from robots.txt and the
 // /sitemap.xml convention, following sitemap indexes) and then crawls same-origin
 // links breadth-first from req.URL. It is exposure-grade — it surfaces robots.txt
@@ -55,7 +67,9 @@ type MapResult struct {
 // a partial result with Truncated set rather than an error; only a missing seed
 // origin or an unreachable seed is a hard error. Fetches go through the default
 // client, so the SSRF dial guard and per-host rate limiter apply automatically.
-func (b *Browser) Map(ctx context.Context, req Request, maxURLs, maxDepth int) (*MapResult, error) {
+// progress, when non-nil, receives throttled updates as the walk advances (a Map
+// can legitimately run for its full 60s wall-clock).
+func (b *Browser) Map(ctx context.Context, req Request, maxURLs, maxDepth int, progress MapProgress) (*MapResult, error) {
 	if maxURLs <= 0 {
 		maxURLs = DefaultMapURLs
 	}
@@ -88,6 +102,20 @@ func (b *Browser) Map(ctx context.Context, req Request, maxURLs, maxDepth int) (
 	res := &MapResult{Origin: crawlOrigin}
 	visited := map[string]bool{}
 
+	// notify emits a throttled progress update; the unthrottled final call below
+	// always reports the completed count.
+	notify := func(string) {}
+	if progress != nil {
+		var lastNotify time.Time
+		notify = func(msg string) {
+			if time.Since(lastNotify) < mapProgressInterval {
+				return
+			}
+			lastNotify = time.Now()
+			progress(len(res.URLs), maxURLs, msg)
+		}
+	}
+
 	// record adds a discovered URL. It returns false only when maxURLs is reached
 	// (the caller should stop); a duplicate or unparseable URL is skipped silently.
 	record := func(rawURL, source string, depth int) bool {
@@ -115,19 +143,22 @@ func (b *Browser) Map(ctx context.Context, req Request, maxURLs, maxDepth int) (
 	record(seedURL, "crawl", 0)
 
 	// --- sitemaps first ---
-	crawlDelay := b.harvestSitemaps(ctx, crawlOrigin, maxURLs, deadline, record, res)
+	crawlDelay := b.harvestSitemaps(ctx, crawlOrigin, maxURLs, deadline, record, notify, res)
 
 	// --- same-origin BFS crawl fills the remaining budget ---
-	b.crawlSameOrigin(ctx, seed, crawlOrigin, maxURLs, maxDepth, crawlDelay, deadline, visited, record, res)
+	b.crawlSameOrigin(ctx, seed, crawlOrigin, maxURLs, maxDepth, crawlDelay, deadline, visited, record, notify, res)
 
 	res.Count = len(res.URLs)
+	if progress != nil {
+		progress(len(res.URLs), maxURLs, "map complete")
+	}
 	return res, nil
 }
 
 // harvestSitemaps seeds from robots.txt Sitemap: directives plus the /sitemap.xml
 // convention, follows sitemap indexes (bounded), and records same-origin <loc>
 // URLs. It returns the star-group Crawl-delay (surfaced for pacing; never gates).
-func (b *Browser) harvestSitemaps(ctx context.Context, origin string, maxURLs int, deadline time.Time, record func(string, string, int) bool, res *MapResult) float64 {
+func (b *Browser) harvestSitemaps(ctx context.Context, origin string, maxURLs int, deadline time.Time, record func(string, string, int) bool, notify func(string), res *MapResult) float64 {
 	var pol *robots.Policy
 	if r, err := b.client.Fetch(ctx, http.MethodGet, origin+"/robots.txt", nil, nil); err == nil && r != nil {
 		pol = robots.Parse(r.Body)
@@ -175,6 +206,7 @@ func (b *Browser) harvestSitemaps(ctx context.Context, origin string, maxURLs in
 		item := queue[0]
 		queue = queue[1:]
 		fetches++
+		notify("harvesting sitemap " + item.url)
 
 		r, err := b.client.Fetch(ctx, http.MethodGet, item.url, nil, nil)
 		if err != nil {
@@ -214,7 +246,7 @@ func (b *Browser) harvestSitemaps(ctx context.Context, origin string, maxURLs in
 // following only same-origin links (recomputed by scheme+host — page.Link.Internal
 // is registrable-domain, too loose). A page that redirects off-origin is recorded
 // but not expanded (open-redirector guard). crawlDelay paces fetches (politeness).
-func (b *Browser) crawlSameOrigin(ctx context.Context, seed *page.Page, origin string, maxURLs, maxDepth int, crawlDelay float64, deadline time.Time, visited map[string]bool, record func(string, string, int) bool, res *MapResult) {
+func (b *Browser) crawlSameOrigin(ctx context.Context, seed *page.Page, origin string, maxURLs, maxDepth int, crawlDelay float64, deadline time.Time, visited map[string]bool, record func(string, string, int) bool, notify func(string), res *MapResult) {
 	type crawlItem struct {
 		page  *page.Page // non-nil only for the seed (already fetched)
 		url   string
@@ -258,6 +290,7 @@ func (b *Browser) crawlSameOrigin(ctx context.Context, seed *page.Page, origin s
 					}
 				}
 			}
+			notify(fmt.Sprintf("crawling depth %d: %s", item.depth, item.url))
 			fetched, err := b.fetchPage(ctx, b.client, item.url, renderOpts{})
 			lastFetch = time.Now()
 			if err != nil {

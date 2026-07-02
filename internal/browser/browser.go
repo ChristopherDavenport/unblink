@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"path"
 	"sort"
@@ -461,6 +462,8 @@ func (b *Browser) fetchStatelessAuthed(ctx context.Context, req Request) (*page.
 // fetchStateless fetches via the default client, using the short-TTL URL cache.
 // Rendered and non-rendered results are cached under distinct keys. A waited render
 // is time-sensitive, so it bypasses the cache entirely (never served or stored).
+// An expired entry whose response carried cache validators is revalidated with a
+// conditional request first — a 304 reuses the parsed page for free.
 func (b *Browser) fetchStateless(ctx context.Context, url string, ro renderOpts) (*page.Page, error) {
 	if ro.wait != nil {
 		return b.fetchPage(ctx, b.client, url, ro)
@@ -469,12 +472,47 @@ func (b *Browser) fetchStateless(ctx context.Context, url string, ro renderOpts)
 	if p, ok := b.cache.get(key); ok {
 		return p, nil
 	}
+	if stale, ok := b.cache.getStale(key); ok {
+		if p, ok, err := b.revalidate(ctx, key, url, stale, ro); ok {
+			return p, err
+		}
+	}
 	p, err := b.fetchPage(ctx, b.client, url, ro)
 	if err != nil {
 		return nil, err
 	}
 	b.cache.put(key, p)
 	return p, nil
+}
+
+// revalidate refreshes an expired cache entry with an HTTP conditional request
+// built from the stale page's validators. The bool reports whether the attempt
+// was made (validators present): when true the (page, error) pair is the final
+// outcome — a 304 re-dates and reuses the cached page; a full response replaces
+// it. Without validators the caller performs the normal fetch.
+func (b *Browser) revalidate(ctx context.Context, key, url string, stale *page.Page, ro renderOpts) (*page.Page, bool, error) {
+	etag := stale.Header.Get("Etag")
+	lastMod := stale.Header.Get("Last-Modified")
+	if etag == "" && lastMod == "" {
+		return nil, false, nil
+	}
+	p, err := b.client.GetConditional(ctx, url, etag, lastMod)
+	if err != nil {
+		// The conditional GET is a plain GET plus validator headers, so this is the
+		// same failure a normal fetch would hit — report it rather than refetching.
+		return nil, true, err
+	}
+	if p.StatusCode == http.StatusNotModified {
+		b.cache.touch(key)
+		slog.Debug("cache: revalidated not-modified", "url", url, "render", ro.render)
+		return stale, true, nil
+	}
+	pp, err := b.processFetched(ctx, b.client, p, ro)
+	if err != nil {
+		return nil, true, err
+	}
+	b.cache.put(key, pp)
+	return pp, true, nil
 }
 
 func cacheKey(url string, render bool) string {
@@ -1046,10 +1084,16 @@ func (b *Browser) Click(ctx context.Context, sessionID string, linkIndex int, ma
 	return summarize(p), nil
 }
 
+// FilePart is one file attached to a form submission. The content is supplied
+// inline by the caller — never read from the server's disk.
+type FilePart = fetch.FilePart
+
 // Submit submits a form from the session's current page. The form is chosen by
 // formRef (id, name, or numeric index; optional when the page has one form).
-// values overlay the form's default field values.
-func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values map[string]string, render bool) (*BrowseResult, error) {
+// values overlay the form's default field values. files (or a form declaring
+// enctype=multipart/form-data) switch the submission to multipart encoding;
+// file uploads require a POST form.
+func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values map[string]string, files []FilePart, render bool) (*BrowseResult, error) {
 	sess, err := b.sessions.GetOrCreate(sessionID)
 	if err != nil {
 		return nil, err
@@ -1073,7 +1117,15 @@ func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values 
 		vals.Set(k, v)
 	}
 
-	p, err := sess.Client().Submit(ctx, form.Method, form.Action, vals)
+	var p *page.Page
+	if len(files) > 0 || strings.Contains(form.Enctype, "multipart/form-data") {
+		if !strings.EqualFold(form.Method, "POST") {
+			return nil, errf(ErrBadInput, "multipart submission requires a POST form (form method is %s)", form.Method)
+		}
+		p, err = sess.Client().SubmitMultipart(ctx, form.Action, vals, files)
+	} else {
+		p, err = sess.Client().Submit(ctx, form.Method, form.Action, vals)
+	}
 	if err != nil {
 		return nil, err
 	}
