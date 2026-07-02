@@ -20,7 +20,9 @@ static read path turns most server-rendered pages into clean Markdown with zero
 JavaScript; the opt-in JavaScript engine (`--js`) renders mainstream SPA
 frameworks and powers live interactive sessions (`interact`). See
 [docs/architecture.md](docs/architecture.md) for the full design (phases 0–16)
-and its non-goals.
+and its non-goals, and [docs/comparison.md](docs/comparison.md) for how unblink
+compares to other AI web-browsing tools (Playwright MCP, Charlotte, Obscura,
+Lightpanda).
 
 ## Requirements
 
