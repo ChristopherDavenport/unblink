@@ -39,7 +39,7 @@ explicit about both directions.
 | Sessions | Cookies + history + persistent live JS runtime per session | Real browser profile, tabs, storage | Persistent Chromium session, stable hashed element IDs, structural diffs | Fast-boot ephemeral sessions | CDP sessions |
 | Agent-safety defaults | SSRF dial guard + untrusted-content fence + origin-scoped credentials, all on by default | — | Chromium sandbox on by default | Stealth / anti-fingerprinting, tracker blocking (a different goal) | robots.txt respect, proxy support |
 | License | MIT | Apache-2.0 | MIT | Apache-2.0 | AGPL-3.0 |
-| Maturity (07/2026) | v0.16.0 | Mature incumbent (in GitHub Copilot's coding agent) | v0.7.0 | v0.1.9 | Beta |
+| Maturity (07/2026) | v0.17.0 | Mature incumbent (in GitHub Copilot's coding agent) | v0.7.0 | v0.1.9 | Beta |
 
 ## The tools
 
