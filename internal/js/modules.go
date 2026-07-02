@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/andybalholm/cascadia"
-	"github.com/dop251/goja"
 	esbuild "github.com/evanw/esbuild/pkg/api"
 	"golang.org/x/net/html"
 )
@@ -88,7 +87,7 @@ func (b *bridge) runModules(modules []*html.Node, importMap map[string]string) {
 			}
 			continue
 		}
-		prog, err := goja.Compile("module.js", string(res.OutputFiles[0].Contents), false)
+		prog, err := compileCached("module.js", string(res.OutputFiles[0].Contents))
 		if err != nil {
 			b.recordError(err)
 			continue

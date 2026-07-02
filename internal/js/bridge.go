@@ -666,7 +666,7 @@ func findByID(root *html.Node, id string) *html.Node {
 }
 
 func query(root *html.Node, selector string) *html.Node {
-	sel, err := cascadia.Compile(selector)
+	sel, err := compileSelector(selector)
 	if err != nil {
 		return nil
 	}
@@ -674,7 +674,7 @@ func query(root *html.Node, selector string) *html.Node {
 }
 
 func queryAll(root *html.Node, selector string) []*html.Node {
-	sel, err := cascadia.Compile(selector)
+	sel, err := compileSelector(selector)
 	if err != nil {
 		return nil
 	}

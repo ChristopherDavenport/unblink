@@ -80,7 +80,7 @@ func (b *bridge) loadDynamicChunk(spec string) (goja.Value, error) {
 	if len(res.OutputFiles) == 0 {
 		return nil, errors.New("bundle produced no output")
 	}
-	prog, err := goja.Compile("dynimport.js", string(res.OutputFiles[0].Contents), false)
+	prog, err := compileCached("dynimport.js", string(res.OutputFiles[0].Contents))
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package js
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 
@@ -195,7 +196,25 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 // the initial script pass (runScripts) and dynamically inserted <script src> chunks
 // (loadExternalScript). A compile or runtime error is recorded, never fatal.
 func (b *bridge) compileAndRun(name, src string) {
-	src = stripSourceMappingURL(src)
+	prog, err := classicProgram(name, stripSourceMappingURL(src))
+	if err != nil {
+		b.recordError(err) // original goja error preserves today's diagnostic text
+		return
+	}
+	if _, err := b.vm.RunProgram(prog); err != nil {
+		b.recordError(err)
+	}
+}
+
+// classicProgram resolves the Program for a classic script: goja compile with
+// the esbuild dynamic-import-lowering fallback. The whole outcome — the lowered
+// program or the original compile error — is cached across renders, so neither
+// goja's parse nor esbuild's Transform re-runs for identical source.
+func classicProgram(name, src string) (*goja.Program, error) {
+	key := progKey{name: "classic\x00" + name, hash: sha256.Sum256([]byte(src))}
+	if e, ok := progCacheGet(key); ok {
+		return e.prog, e.err
+	}
 	prog, err := goja.Compile(name, src, false)
 	if err != nil && strings.Contains(src, "import") {
 		// goja can't parse dynamic import(); lower it via esbuild and retry so an SPA
@@ -207,11 +226,6 @@ func (b *bridge) compileAndRun(name, src string) {
 			}
 		}
 	}
-	if err != nil {
-		b.recordError(err) // original goja error preserves today's diagnostic text
-		return
-	}
-	if _, err := b.vm.RunProgram(prog); err != nil {
-		b.recordError(err)
-	}
+	progCachePut(key, progEntry{prog: prog, err: err, size: int64(len(src))})
+	return prog, err
 }

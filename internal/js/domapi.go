@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/andybalholm/cascadia"
 	"github.com/dop251/goja"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -128,7 +127,7 @@ func matchesSelector(n *html.Node, selector string) bool {
 	if n.Type != html.ElementNode {
 		return false
 	}
-	sel, err := cascadia.Compile(selector)
+	sel, err := compileSelector(selector)
 	if err != nil {
 		return false
 	}
