@@ -184,7 +184,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	loop.Start()
 	var vmRef atomic.Pointer[goja.Runtime]
 	var b *bridge
-	var waitMet bool
+	var stats settleStats
 	done := make(chan struct{})
 	var once sync.Once
 	closeDone := func() { once.Do(func() { close(done) }) }
@@ -213,7 +213,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		if env.Diag != nil {
 			*env.Diag = b.collectDiagnostics()
 		}
-		settlePoll(loop, b, budget, env.Wait, &waitMet, closeDone)
+		settlePoll(loop, b, budget, env.Wait, &stats, closeDone)
 	})
 	if !scheduled {
 		loop.Terminate()
@@ -226,14 +226,17 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	defer hard.Stop()
 
 	var rerr error
+	interrupted := false
 	select {
 	case <-done:
 	case <-hard.C:
+		interrupted = true
 		if vm := vmRef.Load(); vm != nil {
 			vm.Interrupt("unblink: render timeout")
 		}
 		<-done
 	case <-ctx.Done():
+		interrupted = true
 		if vm := vmRef.Load(); vm != nil {
 			vm.Interrupt("unblink: context cancelled")
 		}
@@ -242,13 +245,27 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	}
 	// Terminate before the caller reads doc so no background setInterval mutates the
 	// tree concurrently with extraction. Terminate joins the loop goroutine, giving
-	// the happens-before edge for the b/waitMet reads below.
+	// the happens-before edge for the b/stats reads below.
 	loop.Terminate()
 	if env.Diag != nil {
 		env.Diag.WaitRequested = !env.Wait.empty()
-		env.Diag.WaitMet = waitMet
-		if b != nil && b.pendingNav != nil {
-			env.Diag.PendingNavigation = b.pendingNav.String()
+		env.Diag.WaitMet = stats.met
+		env.Diag.DeadlineHit = stats.deadline || interrupted
+		env.Diag.DOMBusy = stats.domBusy
+		env.Diag.NetPending = int(stats.pending)
+		if b != nil {
+			if interrupted {
+				// The settle never closed on its own (a wedged script or cancellation),
+				// so its close-tick stats are empty; read the live counter instead.
+				env.Diag.NetPending = int(b.pending.Load())
+			}
+			if b.netCount != nil {
+				env.Diag.NetRequests = int(b.netCount.total.Load())
+				env.Diag.NetFailed = int(b.netCount.failed.Load())
+			}
+			if b.pendingNav != nil {
+				env.Diag.PendingNavigation = b.pendingNav.String()
+			}
 		}
 	}
 	return rerr

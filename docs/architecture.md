@@ -235,7 +235,18 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   follow). SPA client-side routing (`history.pushState` + in-place re-render) was
   already captured by the live snapshot and is *not* reported as a navigation. All
   new inputs are optional; default behavior only gains correctness. Still fourteen
-  tools (the new inputs ride `read`/`interact`).
+  tools (the new inputs ride `read`/`interact`). (d) **Saturation diagnostics** —
+  a settle can also end because the budget ran out mid-hydration, which previously
+  looked identical to a finished page. `settlePoll` now reports *how* it closed
+  (deadline vs. quiescence, in-flight request count, DOM-still-mutating) and a
+  `countingTransport` in the bridge tallies every subrequest (fetch/XHR, scripts,
+  modules, dynamic import); the browser adds the request-budget guard's denial
+  count. `read` surfaces these as `net_requests`/`net_failed`/`net_pending`/
+  `net_denied`/`render_budget_hit`/`dom_busy` plus a footer when the snapshot was
+  taken while the page was still working ("budget elapsed with N request(s) in
+  flight / the DOM still mutating") or when the per-render request budget blocked
+  page requests — so an agent can tell a complete snapshot from a starved one and
+  knows which knob (wait_timeout vs. --js-max-requests) would capture more.
 
 - **Phase 13 — Agent-browsing security hardening.** ✅ Closes the exploit classes an
   "agent's browser" inherits (indirect prompt injection, data exfiltration, untrusted
@@ -458,6 +469,21 @@ framework probes don't crash; no pixels are ever computed. Shadow DOM is **flatt
 not encapsulated**: shadow content renders into the light tree (visible to extraction)
 and `:host`/`<slot>`/style scoping are ignored. `IntersectionObserver`/`ResizeObserver`
 report one synthetic "visible / zero-size" entry so lazy content renders.
+
+**Programmatic form submission** (`internal/js/forms.go`): `document.forms`,
+`form.elements`, `.namedItem`, and `form.submit()`/`requestSubmit()` are modelled.
+A render never performs the cross-document fetch, so a submit is treated like a
+`location` navigation — a cancelable `submit` event fires first (an `onsubmit`
+returning false or `preventDefault()` aborts), then the target lands in `pendingNav`
+(surfaced as `pending_navigation`) for the caller to follow in-session. GET forms
+serialize their successful controls into the query string; POST records the action
+target best-effort (the body isn't carried on the follow). This is what clears a
+**self-submitting JS bot-check interstitial** (e.g. Reddit's: on `DOMContentLoaded`
+it computes a `solution`, sets a hidden field via `elements.namedItem`, and calls
+`requestSubmit()` on a GET form). The engine runs that unchanged; the agent follows
+the resulting `pending_navigation` in a session and the clearance cookie unlocks the
+rest of the host (feed, `.json` API, etc.). Note this only handles a *page-computed*
+solution — a server-side proof-of-work or interactive challenge still won't pass.
 
 Anti-bot fingerprint (under `--tls-mimic`): the utls ClientHello already gives a
 genuine Chrome JA3/JA4, and the HTTP/2 SETTINGS + request-header persona are now

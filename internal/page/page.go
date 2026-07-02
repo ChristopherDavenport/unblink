@@ -72,6 +72,18 @@ type RenderDiag struct {
 	WaitRequested     bool
 	WaitMet           bool
 	PendingNavigation string
+
+	// Saturation: whether the snapshot was taken while the page was still working.
+	// NetPending > 0 or (DeadlineHit && DOMBusy) means the render was cut off
+	// mid-hydration and the content may be incomplete. NetDenied is filled by the
+	// browser from its per-render request-budget guard (the js layer only sees a
+	// generic error); the rest mirror js.RenderResult.
+	NetRequests int  // subrequests the page attempted
+	NetFailed   int  // subrequests that errored (incl. budget/rate denials)
+	NetPending  int  // subrequests still in flight at snapshot
+	NetDenied   int  // subrequests blocked by the per-render request budget
+	DeadlineHit bool // the JS budget elapsed before the page went quiet
+	DOMBusy     bool // the DOM was still mutating when the snapshot was taken
 }
 
 // PageMeta holds page-level metadata and extracted structure, populated by the

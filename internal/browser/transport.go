@@ -25,6 +25,7 @@ type guardedTransport struct {
 	client *fetch.Client
 	max    int32 // monotonic per-render cap (one-shot); 0 = no per-render cap
 	count  int32
+	denied int32 // requests rejected by the budget/window caps, for render diagnostics
 
 	// Rolling fixed-window cap for persistent (live) sessions, where a monotonic
 	// per-render count doesn't fit: at most windowMax requests per window. Bounds
@@ -39,9 +40,11 @@ type guardedTransport struct {
 // Do enforces the request budget and forwards to the guarded fetch client.
 func (g *guardedTransport) Do(ctx context.Context, method, url string, headers map[string]string, body []byte) (*js.Response, error) {
 	if g.max > 0 && atomic.AddInt32(&g.count, 1) > g.max {
+		atomic.AddInt32(&g.denied, 1)
 		return nil, fmt.Errorf("unblink: JavaScript request budget exceeded (max %d)", g.max)
 	}
 	if g.windowMax > 0 && !g.allowWindow() {
+		atomic.AddInt32(&g.denied, 1)
 		return nil, fmt.Errorf("unblink: JavaScript request rate exceeded (max %d per %s)", g.windowMax, g.window)
 	}
 	res, err := g.client.Fetch(ctx, method, url, headers, body)
@@ -53,6 +56,12 @@ func (g *guardedTransport) Do(ctx context.Context, method, url string, headers m
 		hdr[strings.ToLower(k)] = res.Header.Get(k)
 	}
 	return &js.Response{Status: res.Status, Headers: hdr, Body: res.Body, FinalURL: res.FinalURL}, nil
+}
+
+// Denied reports how many requests the budget/window caps rejected, for render
+// diagnostics ("the page wanted more network than the per-render budget allows").
+func (g *guardedTransport) Denied() int {
+	return int(atomic.LoadInt32(&g.denied))
 }
 
 // allowWindow reports whether a request fits within the current fixed window,

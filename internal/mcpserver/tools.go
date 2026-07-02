@@ -78,6 +78,23 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 	if r.WaitMet != nil && !*r.WaitMet {
 		text += "\n\n---\n_wait_for/wait_text never appeared within the timeout; the expected content may be missing from this render._\n"
 	}
+	// Saturation: the render was cut off while the page was still working, so the
+	// snapshot is likely incomplete. Say which resource ran out so the agent knows
+	// whether a larger wait_timeout would help.
+	if r.NetPending > 0 || (r.RenderBudgetHit && r.DOMBusy) {
+		var busy []string
+		if r.NetPending > 0 {
+			busy = append(busy, fmt.Sprintf("%d network request(s) still in flight", r.NetPending))
+		}
+		if r.DOMBusy {
+			busy = append(busy, "the DOM still mutating")
+		}
+		text += fmt.Sprintf("\n\n---\n_The JavaScript budget elapsed with %s — the page was still loading when this snapshot was taken and content may be incomplete. Retry with a larger wait_timeout (and a wait_for gate for the content you need)._\n",
+			strings.Join(busy, " and "))
+	}
+	if r.NetDenied > 0 {
+		text += fmt.Sprintf("\n\n---\n_%d page request(s) were blocked by the per-render request budget, so JS-loaded data may be missing (server flag --js-max-requests)._\n", r.NetDenied)
+	}
 	if r.ArticleFallback {
 		text += "\n\n---\n_mode=article was requested but no distinct article body was found; this is the full reduced page._\n"
 	}

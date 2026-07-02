@@ -1,6 +1,7 @@
 package js
 
 import (
+	"fmt"
 	"net/url"
 
 	"github.com/dop251/goja"
@@ -14,6 +15,14 @@ const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
 // preludeJS, which is simpler to express in JS.
 func (b *bridge) installGlobals(win *goja.Object) {
 	vm := b.vm
+
+	// console.error sink: frameworks catch fatal boot errors and console.error them
+	// (Angular CLI's main.ts, React error boundaries), which a no-op console would
+	// swallow. The prelude consumes and deletes this hook, routing console.error
+	// into the render diagnostics next to uncaught exceptions.
+	_ = vm.Set("__unblinkConsoleError", func(msg string) {
+		b.recordError(fmt.Errorf("console.error: %s", msg))
+	})
 
 	nav := vm.NewObject()
 	_ = nav.Set("userAgent", userAgent)
@@ -116,8 +125,9 @@ func (b *bridge) updateLocation(u *url.URL) {
 	b.currentURL = u
 }
 
-// resolveNav resolves a (possibly relative) URL string against the current
-// location. Returns the current URL unchanged on empty input or a parse failure.
+// resolveNav resolves a (possibly relative) URL string against the document base
+// (<base href> when present, else the current location). Returns the current URL
+// unchanged on empty input or a parse failure.
 func (b *bridge) resolveNav(raw string) *url.URL {
 	if raw == "" || b.currentURL == nil {
 		return b.currentURL
@@ -126,7 +136,7 @@ func (b *bridge) resolveNav(raw string) *url.URL {
 	if err != nil {
 		return b.currentURL
 	}
-	return b.currentURL.ResolveReference(ref)
+	return b.docBaseNow().ResolveReference(ref)
 }
 
 // maxHistoryStack bounds the JS history stack: a router that pushState-loops
@@ -244,12 +254,55 @@ func rawFragment(f string) string {
 // throw ReferenceError.
 const preludeJS = `
 (function () {
+  // Browsers hand out numeric timer ids; goja's event loop returns a host Timer
+  // object. zone.js stamps __zone_symbol__zoneTask onto non-numeric handles
+  // (host objects reject expando properties) and other code compares ids with
+  // ===, so wrap the natives to return plain numbers backed by a handle table.
+  // (The Go-side keepalive captured the natives before this prelude runs.)
+  (function () {
+    var nativeSet = window.setTimeout, nativeClear = window.clearTimeout;
+    var nativeSetI = window.setInterval, nativeClearI = window.clearInterval;
+    var seq = 1, live = {};
+    function toFn(fn) { return typeof fn === 'function' ? fn : new Function(String(fn)); }
+    window.setTimeout = function (fn, ms) {
+      var args = Array.prototype.slice.call(arguments, 2), cb = toFn(fn), id = seq++;
+      live[id] = nativeSet(function () { delete live[id]; cb.apply(undefined, args); }, ms);
+      return id;
+    };
+    window.clearTimeout = function (id) {
+      var h = live[id]; if (h !== undefined) { delete live[id]; nativeClear(h); }
+    };
+    if (nativeSetI) {
+      window.setInterval = function (fn, ms) {
+        var args = Array.prototype.slice.call(arguments, 2), cb = toFn(fn), id = seq++;
+        live[id] = nativeSetI(function () { cb.apply(undefined, args); }, ms);
+        return id;
+      };
+      window.clearInterval = function (id) {
+        var h = live[id]; if (h !== undefined) { delete live[id]; nativeClearI(h); }
+      };
+    }
+  })();
   // The engine's built-in console is disabled (its printer writes to stdout, which
   // is reserved for MCP). Real browsers always expose console, so provide a no-op
   // one here: page console.* calls stay silent instead of throwing ReferenceError
   // or leaking untrusted page text into the host logs.
   var noop = function () {};
-  window.console = { log: noop, info: noop, warn: noop, error: noop, debug: noop,
+  // console.error feeds the render diagnostics (see __unblinkConsoleError in
+  // installGlobals); everything else stays silent.
+  var reportError = window.__unblinkConsoleError || noop;
+  delete window.__unblinkConsoleError;
+  var consoleError = function () {
+    try {
+      var parts = [];
+      for (var i = 0; i < arguments.length; i++) {
+        var a = arguments[i];
+        parts.push(a && a.stack ? String(a.stack) : String(a));
+      }
+      reportError(parts.join(' '));
+    } catch (e) { /* diagnostics must never throw into page code */ }
+  };
+  window.console = { log: noop, info: noop, warn: noop, error: consoleError, debug: noop,
     trace: noop, dir: noop, assert: noop, group: noop, groupCollapsed: noop,
     groupEnd: noop, table: noop, count: noop, time: noop, timeEnd: noop };
 
@@ -479,27 +532,67 @@ const preludeJS = `
       return core;
     };
 
+    // XHR carries the surface Angular's HttpXhrBackend reads inside its load
+    // handler (getAllResponseHeaders/statusText/responseURL) — their absence
+    // makes the response silently undeliverable. responseType='json' parses like
+    // a real browser (null on bad JSON, never a throw).
     window.XMLHttpRequest = function () {
       var self = this;
-      this.readyState = 0; this.status = 0; this.responseText = ''; this.response = '';
-      this._method = 'GET'; this._url = ''; this._headers = {};
+      this.readyState = 0; this.status = 0; this.statusText = '';
+      this.responseText = ''; this.response = ''; this.responseType = '';
+      this.responseURL = ''; this.withCredentials = false; this.timeout = 0;
+      this._method = 'GET'; this._url = ''; this._headers = {}; this._resHeaders = null;
+      this._listeners = {};
       this.onreadystatechange = null; this.onload = null; this.onerror = null;
+      this.upload = { addEventListener: noop, removeEventListener: noop };
       this.open = function (m, u) { self._method = m; self._url = u; self.readyState = 1; };
       this.setRequestHeader = function (k, v) { self._headers[k] = v; };
-      this.getResponseHeader = function () { return null; };
-      this.addEventListener = function (t, fn) { if (t === 'load') self.onload = fn; else if (t === 'error') self.onerror = fn; };
-      this.removeEventListener = function () {};
-      this.abort = function () {};
+      this.getResponseHeader = function (k) {
+        if (!self._resHeaders) return null;
+        var v = self._resHeaders[String(k).toLowerCase()];
+        return v == null ? null : v;
+      };
+      this.getAllResponseHeaders = function () {
+        if (!self._resHeaders) return '';
+        var out = '';
+        for (var k in self._resHeaders) out += k + ': ' + self._resHeaders[k] + '\r\n';
+        return out;
+      };
+      this.overrideMimeType = noop;
+      this.addEventListener = function (t, fn) { (self._listeners[t] || (self._listeners[t] = [])).push(fn); };
+      this.removeEventListener = function (t, fn) {
+        var a = self._listeners[t]; if (!a) return;
+        var i = a.indexOf(fn); if (i >= 0) a.splice(i, 1);
+      };
+      this.abort = noop;
+      // Handler exceptions propagate (they surface as unhandled rejections in the
+      // render diagnostics rather than vanishing).
+      function fire(type, evt) {
+        evt = evt || { type: type, target: self };
+        var h = self['on' + type];
+        if (h) h.call(self, evt);
+        var a = (self._listeners[type] || []).slice();
+        for (var i = 0; i < a.length; i++) a[i].call(self, evt);
+      }
       this.send = function (body) {
         __unblinkFetch(self._method, self._url, self._headers, body != null ? String(body) : '')
           .then(function (r) {
-            self.status = r.status; self.responseText = r.body; self.response = r.body; self.readyState = 4;
+            self.status = r.status; self.statusText = 'OK';
+            self.responseURL = r.url || self._url; self._resHeaders = r.headers || {};
+            self.responseText = r.body;
+            if (self.responseType === 'json') {
+              try { self.response = r.body === '' ? null : JSON.parse(r.body); } catch (e) { self.response = null; }
+            } else {
+              self.response = r.body;
+            }
+            self.readyState = 4;
             if (self.onreadystatechange) self.onreadystatechange();
-            if (self.onload) self.onload();
+            fire('load'); fire('loadend');
           }, function (e) {
             self.status = 0; self.readyState = 4;
             if (self.onreadystatechange) self.onreadystatechange();
-            if (self.onerror) self.onerror(e);
+            fire('error', { type: 'error', target: self, message: String(e) });
+            fire('loadend');
           });
       };
     };
