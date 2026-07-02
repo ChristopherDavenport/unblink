@@ -29,6 +29,32 @@ func (b *bridge) installGlobals(win *goja.Object) {
 	_ = nav.Set("language", "en-US")
 	_ = nav.Set("languages", []string{"en-US", "en"})
 	_ = nav.Set("platform", "Linux x86_64")
+	_ = nav.Set("cookieEnabled", b.cookies != nil)
+	_ = nav.Set("onLine", true)
+	_ = nav.Set("hardwareConcurrency", 4)
+	_ = nav.Set("maxTouchPoints", 0)
+	_ = nav.Set("vendor", "")
+	_ = nav.Set("doNotTrack", goja.Null())
+	// webdriver is true by default: unblink is automation and says so (the UA
+	// string already carries "unblink"). Under --tls-mimic the caller opts into
+	// fingerprint parity and the browser flips this to false via WithWebdriver.
+	_ = nav.Set("webdriver", b.webdriver)
+	// sendBeacon: accepted-and-dropped. Analytics beacons return true so queued
+	// flush loops don't retry forever; nothing is transmitted.
+	_ = nav.Set("sendBeacon", func(goja.FunctionCall) goja.Value { return vm.ToValue(true) })
+	uaData := vm.NewObject()
+	_ = uaData.Set("brands", []map[string]interface{}{
+		{"brand": "Chromium", "version": "124"},
+		{"brand": "unblink", "version": "1"},
+	})
+	_ = uaData.Set("mobile", false)
+	_ = uaData.Set("platform", "Linux")
+	_ = uaData.Set("getHighEntropyValues", func(goja.FunctionCall) goja.Value {
+		promise, resolve, _ := vm.NewPromise()
+		_ = resolve(uaData)
+		return vm.ToValue(promise)
+	})
+	_ = nav.Set("userAgentData", uaData)
 	_ = vm.Set("navigator", nav)
 	_ = win.Set("navigator", nav)
 
@@ -413,12 +439,9 @@ const preludeJS = `
   };
   window.cancelIdleCallback = function (id) { clearTimeout(id); };
 
-  window.matchMedia = function (q) {
-    return { matches: false, media: q, onchange: null,
-      addListener: function () {}, removeListener: function () {},
-      addEventListener: function () {}, removeEventListener: function () {},
-      dispatchEvent: function () { return false; } };
-  };
+  // matchMedia (a real evaluator against the constant viewport) and the
+  // window.innerWidth/screen/devicePixelRatio constants it reads are installed
+  // by preludeAPIJS (prelude_api.go).
 
   // A frozen zero-rect (no layout engine); shared by the geometry observers below.
   function zeroRect() {
@@ -504,107 +527,10 @@ const preludeJS = `
     s.dispatchEvent(ev);
   };
 
-  var hasNet = (typeof __unblinkFetch === 'function');
-
-  if (hasNet) {
-    function buildResponse(r) {
-      return {
-        ok: r.ok, status: r.status, statusText: '', url: r.url, headers: r.headers,
-        text: function () { return Promise.resolve(r.body); },
-        json: function () { return Promise.resolve(JSON.parse(r.body)); },
-        clone: function () { return this; }
-      };
-    }
-    window.fetch = function (url, opts) {
-      opts = opts || {};
-      var method = opts.method || 'GET';
-      var headers = opts.headers || {};
-      var body = opts.body != null ? String(opts.body) : '';
-      var signal = opts.signal;
-      if (signal && signal.aborted) return Promise.reject(signal.reason || new Error('AbortError'));
-      var core = __unblinkFetch(method, String(url), headers, body).then(buildResponse);
-      if (signal) {
-        return new Promise(function (resolve, reject) {
-          signal.addEventListener('abort', function () { reject(signal.reason || new Error('AbortError')); });
-          core.then(resolve, reject);
-        });
-      }
-      return core;
-    };
-
-    // XHR carries the surface Angular's HttpXhrBackend reads inside its load
-    // handler (getAllResponseHeaders/statusText/responseURL) — their absence
-    // makes the response silently undeliverable. responseType='json' parses like
-    // a real browser (null on bad JSON, never a throw).
-    window.XMLHttpRequest = function () {
-      var self = this;
-      this.readyState = 0; this.status = 0; this.statusText = '';
-      this.responseText = ''; this.response = ''; this.responseType = '';
-      this.responseURL = ''; this.withCredentials = false; this.timeout = 0;
-      this._method = 'GET'; this._url = ''; this._headers = {}; this._resHeaders = null;
-      this._listeners = {};
-      this.onreadystatechange = null; this.onload = null; this.onerror = null;
-      this.upload = { addEventListener: noop, removeEventListener: noop };
-      this.open = function (m, u) { self._method = m; self._url = u; self.readyState = 1; };
-      this.setRequestHeader = function (k, v) { self._headers[k] = v; };
-      this.getResponseHeader = function (k) {
-        if (!self._resHeaders) return null;
-        var v = self._resHeaders[String(k).toLowerCase()];
-        return v == null ? null : v;
-      };
-      this.getAllResponseHeaders = function () {
-        if (!self._resHeaders) return '';
-        var out = '';
-        for (var k in self._resHeaders) out += k + ': ' + self._resHeaders[k] + '\r\n';
-        return out;
-      };
-      this.overrideMimeType = noop;
-      this.addEventListener = function (t, fn) { (self._listeners[t] || (self._listeners[t] = [])).push(fn); };
-      this.removeEventListener = function (t, fn) {
-        var a = self._listeners[t]; if (!a) return;
-        var i = a.indexOf(fn); if (i >= 0) a.splice(i, 1);
-      };
-      this.abort = noop;
-      // Handler exceptions propagate (they surface as unhandled rejections in the
-      // render diagnostics rather than vanishing).
-      function fire(type, evt) {
-        evt = evt || { type: type, target: self };
-        var h = self['on' + type];
-        if (h) h.call(self, evt);
-        var a = (self._listeners[type] || []).slice();
-        for (var i = 0; i < a.length; i++) a[i].call(self, evt);
-      }
-      this.send = function (body) {
-        __unblinkFetch(self._method, self._url, self._headers, body != null ? String(body) : '')
-          .then(function (r) {
-            self.status = r.status; self.statusText = 'OK';
-            self.responseURL = r.url || self._url; self._resHeaders = r.headers || {};
-            self.responseText = r.body;
-            if (self.responseType === 'json') {
-              try { self.response = r.body === '' ? null : JSON.parse(r.body); } catch (e) { self.response = null; }
-            } else {
-              self.response = r.body;
-            }
-            self.readyState = 4;
-            if (self.onreadystatechange) self.onreadystatechange();
-            fire('load'); fire('loadend');
-          }, function (e) {
-            self.status = 0; self.readyState = 4;
-            if (self.onreadystatechange) self.onreadystatechange();
-            fire('error', { type: 'error', target: self, message: String(e) });
-            fire('loadend');
-          });
-      };
-    };
-  } else {
-    window.fetch = function () { return Promise.reject(new Error('unblink: network is disabled in render')); };
-    window.XMLHttpRequest = function () {
-      this.open = function () {}; this.send = function () {}; this.abort = function () {};
-      this.setRequestHeader = function () {}; this.getResponseHeader = function () { return null; };
-      this.addEventListener = function () {}; this.removeEventListener = function () {};
-      this.readyState = 0; this.status = 0; this.responseText = ''; this.response = null;
-    };
-  }
+  // fetch / XMLHttpRequest (and the Headers/Request/Response/Blob/FormData
+  // classes they use) live in preludeAPIJS (prelude_api.go), which runs right
+  // after this prelude — both the network-backed implementations and the
+  // network-disabled rejecting stubs.
 
   // Minimal crypto: getRandomValues + randomUUID, which uuid/nanoid/react-aria's
   // useId need at import/registration time (their absence throws and breaks

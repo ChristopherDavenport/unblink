@@ -128,7 +128,9 @@ func (b *bridge) loadExternalScript(n *html.Node, src string) {
 		}
 		_ = b.loop.RunOnLoop(func(vm *goja.Runtime) {
 			if ok {
+				b.currentScript = n
 				b.compileAndRun("chunk:"+name, string(body))
+				b.currentScript = nil
 				b.fireScriptEvent(n, "load")
 			} else {
 				b.fireScriptEvent(n, "error")
@@ -197,7 +199,9 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 		if strings.TrimSpace(src) == "" {
 			continue
 		}
+		b.currentScript = s
 		b.compileAndRun(fmt.Sprintf("script-%d.js", i), src)
+		b.currentScript = nil
 	}
 }
 

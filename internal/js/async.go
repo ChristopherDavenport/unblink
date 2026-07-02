@@ -23,9 +23,15 @@ func (b *bridge) installAsync() {
 		}
 		rawURL := call.Argument(1).String()
 		headers := b.toStringMap(call.Argument(2))
+		// Body: string, or an ArrayBuffer for binary-faithful uploads (the prelude
+		// serializes Blob/FormData/typed-array bodies to an ArrayBuffer).
 		var body []byte
-		if a := call.Argument(3); !goja.IsUndefined(a) && !goja.IsNull(a) && a.String() != "" {
-			body = []byte(a.String())
+		if a := call.Argument(3); !goja.IsUndefined(a) && !goja.IsNull(a) {
+			if ab, ok := a.Export().(goja.ArrayBuffer); ok {
+				body = ab.Bytes()
+			} else if s := a.String(); s != "" {
+				body = []byte(s)
+			}
 		}
 		return b.fetchPromise(method, rawURL, headers, body)
 	})
@@ -110,6 +116,9 @@ func (b *bridge) responseObject(r *Response) goja.Value {
 	_ = o.Set("ok", r.Status >= 200 && r.Status < 300)
 	_ = o.Set("url", r.FinalURL)
 	_ = o.Set("body", string(r.Body))
+	// bodyBytes carries the raw bytes for Response.arrayBuffer()/blob(); the
+	// string body above stays the fast path for text()/json().
+	_ = o.Set("bodyBytes", vm.NewArrayBuffer(r.Body))
 	h := vm.NewObject()
 	for k, v := range r.Headers {
 		_ = h.Set(strings.ToLower(k), v)
