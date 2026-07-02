@@ -68,8 +68,8 @@ func (b *bridge) fetchPromise(method, rawURL string, headers map[string]string, 
 }
 
 func (b *bridge) resolveURL(rawURL string) (string, error) {
-	if b.base != nil {
-		u, err := b.base.Parse(rawURL)
+	if base := b.docBaseNow(); base != nil {
+		u, err := base.Parse(rawURL)
 		if err != nil {
 			return "", err
 		}

@@ -22,6 +22,17 @@ type RenderResult struct {
 	// PendingNavigation is a URL the page's JS asked to navigate to (location.href /
 	// assign / replace) that unblink did not follow — best-effort, empty when none.
 	PendingNavigation string
+
+	// Saturation: how the settle ended and how much network the page attempted, so
+	// a caller can tell a page that went quiet from one cut off mid-work by the
+	// budget. NetPending > 0 or (DeadlineHit && DOMBusy) means the snapshot was
+	// taken while the page was still working — content may be incomplete. All are
+	// filled by the engine after the settle, not by collectDiagnostics.
+	NetRequests int  // subrequests attempted (fetch/XHR, scripts, modules, dynamic import)
+	NetFailed   int  // subrequests that errored (network failures and budget/rate denials)
+	NetPending  int  // subrequests still in flight when the snapshot was taken
+	DeadlineHit bool // settle closed by the JS budget deadline rather than by quiescence
+	DOMBusy     bool // the DOM was still mutating when the settle closed
 }
 
 // collectDiagnostics snapshots the bridge's diagnostics after a render. Runs on the

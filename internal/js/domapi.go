@@ -65,6 +65,35 @@ func contains(parent, n *html.Node) bool {
 	return false
 }
 
+// treeRoot walks to the topmost ancestor (the document node for connected nodes).
+func treeRoot(n *html.Node) *html.Node {
+	for n.Parent != nil {
+		n = n.Parent
+	}
+	return n
+}
+
+// firstInTreeOrder returns whichever of a or b a pre-order walk from root hits
+// first (nil if neither is under root). Used for document-order comparison.
+func firstInTreeOrder(root, a, b *html.Node) *html.Node {
+	var found *html.Node
+	var walk func(*html.Node) bool
+	walk = func(n *html.Node) bool {
+		if n == a || n == b {
+			found = n
+			return true
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if walk(c) {
+				return true
+			}
+		}
+		return false
+	}
+	walk(root)
+	return found
+}
+
 // cloneNode copies a node, deeply when requested. The clone is detached and
 // uncached (lazily wrapped on first access).
 func cloneNode(n *html.Node, deep bool) *html.Node {

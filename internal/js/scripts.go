@@ -14,10 +14,16 @@ import (
 var selScript = cascadia.MustCompile("script")
 
 // collectScripts returns the classic scripts (inline and external src) in document
-// order. ES modules and non-JS types are skipped.
+// order. ES modules and non-JS types are skipped, as are `nomodule` scripts: the
+// engine executes type=module scripts, so on a differential-loading build
+// (paired -es2015/-es5 bundles) running the nomodule half too would boot the app
+// twice — a modern browser runs only the module set.
 func collectScripts(doc *html.Node) []*html.Node {
 	var out []*html.Node
 	for _, s := range selScript.MatchAll(doc) {
+		if hasAttr(s, "nomodule") {
+			continue
+		}
 		switch strings.ToLower(strings.TrimSpace(getAttr(s, "type"))) {
 		case "", "text/javascript", "application/javascript":
 			out = append(out, s)

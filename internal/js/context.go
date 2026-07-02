@@ -122,13 +122,13 @@ func (c *Context) Dispatch(ctx context.Context, action Action) (DispatchResult, 
 	if action.WaitFor != "" || action.WaitText != "" {
 		cond = &WaitCondition{Selector: action.WaitFor, Text: action.WaitText}
 	}
-	var waitMet bool
+	var st settleStats
 	var before int
-	err := c.run(ctx, true, cond, &waitMet, func(*goja.Runtime) {
+	err := c.run(ctx, true, cond, &st, func(*goja.Runtime) {
 		before = len(c.bridge.diagErrors)
 		c.bridge.runActions(acts)
 	})
-	res := DispatchResult{Matched: acts[0].Matched, WaitMet: waitMet}
+	res := DispatchResult{Matched: acts[0].Matched, WaitMet: st.met}
 	// Read errors recorded during the dispatch + settle window on the loop (which
 	// serializes with the settle above). Best-effort: a failure here loses only
 	// diagnostics, never the dispatch outcome.
@@ -177,7 +177,7 @@ func (c *Context) Close() {
 // run executes fn on the loop goroutine, optionally waiting for the page to settle
 // (with an optional wait condition + met out-param), under a wall-clock cap enforced
 // via vm.Interrupt. Operations are serialized.
-func (c *Context) run(ctx context.Context, waitSettle bool, cond *WaitCondition, met *bool, fn func(vm *goja.Runtime)) error {
+func (c *Context) run(ctx context.Context, waitSettle bool, cond *WaitCondition, stats *settleStats, fn func(vm *goja.Runtime)) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed.Load() {
@@ -199,7 +199,7 @@ func (c *Context) run(ctx context.Context, waitSettle bool, cond *WaitCondition,
 		vm.ClearInterrupt() // clear any flag a previously-interrupted op left armed
 		fn(vm)
 		if waitSettle {
-			settlePoll(c.loop, c.bridge, c.timeout, cond, met, closeDone)
+			settlePoll(c.loop, c.bridge, c.timeout, cond, stats, closeDone)
 		} else {
 			closeDone()
 		}
@@ -251,7 +251,7 @@ func (c *Context) settleThenClose(closeDone func()) {
 // domVersion from the first tick, so with no condition it settles on the same schedule
 // as before — the DOM-quiet gate only adds latency while a framework is rendering. All
 // SetTimeout callbacks run on-loop, so callers must schedule the first tick from there.
-func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond *WaitCondition, met *bool, closeDone func()) {
+func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond *WaitCondition, stats *settleStats, closeDone func()) {
 	deadline := time.Now().Add(budget)
 	quiet := 0
 	var lastVersion uint64
@@ -263,8 +263,8 @@ func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond
 	tick = func(vm *goja.Runtime) {
 		if !condMet && b != nil && cond.satisfied(b.doc) {
 			condMet = true
-			if met != nil {
-				*met = true
+			if stats != nil {
+				stats.met = true
 			}
 		}
 		netIdle := b == nil || b.pending.Load() == 0
@@ -279,7 +279,15 @@ func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond
 		} else {
 			quiet = 0
 		}
-		if (condMet && quiet >= settleQuietTicks) || time.Now().After(deadline) {
+		settled := condMet && quiet >= settleQuietTicks
+		if settled || time.Now().After(deadline) {
+			if stats != nil {
+				stats.deadline = !settled
+				stats.domBusy = !domQuiet
+				if b != nil {
+					stats.pending = b.pending.Load()
+				}
+			}
 			vm.ClearInterrupt()
 			closeDone()
 			return

@@ -1,6 +1,7 @@
 package js
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -100,7 +101,21 @@ func (b *bridge) installPrototypes() {
 	// and `class X extends HTMLElement` consume; concrete construction behaviour
 	// (custom-element upgrade) is layered on in customelements.go.
 	b.defineCtor("EventTarget", b.protoEventTarget)
-	b.defineCtor("Node", b.protoNode)
+	nodeCtor := b.defineCtor("Node", b.protoNode)
+	// Node's numeric constants live on both the interface object and the
+	// prototype (Angular's sanitizer tests nodeType against Node.ELEMENT_NODE and
+	// masks compareDocumentPosition with Node.DOCUMENT_POSITION_CONTAINED_BY).
+	for name, val := range map[string]int{
+		"ELEMENT_NODE": 1, "ATTRIBUTE_NODE": 2, "TEXT_NODE": 3, "CDATA_SECTION_NODE": 4,
+		"PROCESSING_INSTRUCTION_NODE": 7, "COMMENT_NODE": 8, "DOCUMENT_NODE": 9,
+		"DOCUMENT_TYPE_NODE": 10, "DOCUMENT_FRAGMENT_NODE": 11,
+		"DOCUMENT_POSITION_DISCONNECTED": 1, "DOCUMENT_POSITION_PRECEDING": 2,
+		"DOCUMENT_POSITION_FOLLOWING": 4, "DOCUMENT_POSITION_CONTAINS": 8,
+		"DOCUMENT_POSITION_CONTAINED_BY": 16, "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC": 32,
+	} {
+		_ = nodeCtor.Set(name, val)
+		_ = b.protoNode.Set(name, val)
+	}
 	b.defineCtor("CharacterData", b.protoCharacterData)
 	b.defineCtor("Text", b.protoText)
 	b.defineCtor("Comment", b.protoComment)
@@ -117,6 +132,12 @@ func (b *bridge) installPrototypes() {
 	for _, name := range htmlInterfaceNames {
 		b.defineCtor(name, vm.CreateObject(b.protoHTMLElement))
 	}
+	// HTMLAudioElement/HTMLVideoElement chain through HTMLMediaElement as in a
+	// real DOM; zone.js dereferences HTMLMediaElement.prototype unguarded.
+	mediaProto := vm.CreateObject(b.protoHTMLElement)
+	b.defineCtor("HTMLMediaElement", mediaProto)
+	b.defineCtor("HTMLAudioElement", vm.CreateObject(mediaProto))
+	b.defineCtor("HTMLVideoElement", vm.CreateObject(mediaProto))
 	b.defineCtor("SVGElement", vm.CreateObject(b.protoElement))
 }
 
@@ -128,6 +149,16 @@ var htmlInterfaceNames = []string{
 	"HTMLLIElement", "HTMLTableElement", "HTMLTemplateElement", "HTMLStyleElement",
 	"HTMLScriptElement", "HTMLLinkElement", "HTMLSlotElement", "HTMLCanvasElement",
 	"HTMLPreElement", "HTMLHeadingElement", "HTMLBRElement", "HTMLHRElement",
+	// zone.js's property-descriptor patch dereferences these unguarded.
+	"HTMLBodyElement", "HTMLHtmlElement", "HTMLHeadElement", "HTMLFrameElement",
+	"HTMLFrameSetElement", "HTMLMarqueeElement", "HTMLEmbedElement", "HTMLObjectElement",
+	"HTMLSourceElement", "HTMLTrackElement", "HTMLAreaElement", "HTMLBaseElement",
+	"HTMLMapElement", "HTMLMetaElement", "HTMLTitleElement", "HTMLTableRowElement",
+	"HTMLTableCellElement", "HTMLTableSectionElement", "HTMLTableCaptionElement",
+	"HTMLTableColElement", "HTMLDataListElement", "HTMLFieldSetElement", "HTMLLegendElement",
+	"HTMLOptGroupElement", "HTMLOutputElement", "HTMLProgressElement", "HTMLMeterElement",
+	"HTMLDetailsElement", "HTMLDialogElement", "HTMLTimeElement", "HTMLPictureElement",
+	"HTMLDListElement", "HTMLQuoteElement", "HTMLModElement", "HTMLDataElement",
 }
 
 // connect runs the custom-element upgrade hook for a newly-inserted node. It is a
@@ -265,6 +296,23 @@ func (b *bridge) installNodeProto() {
 	b.protoMethod(p, "contains", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		other := b.unwrap(call.Argument(0))
 		return vm.ToValue(contains(n, other))
+	})
+	b.protoMethod(p, "compareDocumentPosition", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		other := b.unwrap(call.Argument(0))
+		switch {
+		case other == nil || other == n:
+			return vm.ToValue(0)
+		case contains(n, other):
+			return vm.ToValue(16 | 4) // CONTAINED_BY | FOLLOWING
+		case contains(other, n):
+			return vm.ToValue(8 | 2) // CONTAINS | PRECEDING
+		case treeRoot(n) != treeRoot(other):
+			return vm.ToValue(1 | 32 | 2) // DISCONNECTED | IMPLEMENTATION_SPECIFIC | PRECEDING
+		case firstInTreeOrder(treeRoot(n), n, other) == n:
+			return vm.ToValue(4) // FOLLOWING (other comes after n)
+		default:
+			return vm.ToValue(2) // PRECEDING
+		}
 	})
 	b.protoMethod(p, "hasChildNodes", func(n *html.Node, _ goja.FunctionCall) goja.Value {
 		return vm.ToValue(n.FirstChild != nil)
@@ -459,6 +507,24 @@ func (b *bridge) installHTMLElementProto() {
 	vm := b.vm
 	p := b.protoHTMLElement
 
+	// Form submission: <form>.elements (its controls) and submit()/requestSubmit()
+	// (which navigate — recorded in pendingNav — since a render never re-fetches).
+	// A JS bot-check interstitial that submits itself on DOMContentLoaded lands here.
+	b.protoGetter(p, "elements", func(n *html.Node) goja.Value {
+		if n.Data != "form" {
+			return goja.Undefined()
+		}
+		return b.htmlCollection(formControls(n))
+	})
+	b.protoMethod(p, "submit", func(n *html.Node, _ goja.FunctionCall) goja.Value {
+		b.submitForm(n, false)
+		return goja.Undefined()
+	})
+	b.protoMethod(p, "requestSubmit", func(n *html.Node, _ goja.FunctionCall) goja.Value {
+		b.submitForm(n, true)
+		return goja.Undefined()
+	})
+
 	// Minimal form-control state so handlers can read/write what was typed.
 	b.protoProp(p, "value",
 		func(n *html.Node) goja.Value {
@@ -498,6 +564,40 @@ func (b *bridge) installHTMLElementProto() {
 				return vm.ToValue(v)
 			},
 			func(n *html.Node, v goja.Value) { b.setAttrMut(n, name, v.String()) })
+	}
+
+	// The anchor-as-URL-parser trick (createElement('a'); a.href = u; read back
+	// a.pathname) is load-bearing in Angular's getBaseHref and many libraries.
+	// Mirror HTMLHyperlinkElementUtils on <a>/<area>: each component resolves the
+	// href attribute against the current location; undefined on other tags.
+	for name, comp := range map[string]func(*url.URL) string{
+		"protocol": func(u *url.URL) string { return u.Scheme + ":" },
+		"host":     func(u *url.URL) string { return u.Host },
+		"hostname": func(u *url.URL) string { return u.Hostname() },
+		"port":     func(u *url.URL) string { return u.Port() },
+		"pathname": func(u *url.URL) string {
+			if u.Path == "" && (u.Scheme == "http" || u.Scheme == "https") {
+				return "/"
+			}
+			return u.Path
+		},
+		"search": func(u *url.URL) string { return rawQuery(u.RawQuery) },
+		"hash":   func(u *url.URL) string { return rawFragment(u.Fragment) },
+		"origin": func(u *url.URL) string { return u.Scheme + "://" + u.Host },
+	} {
+		comp := comp
+		b.protoGetter(p, name, func(n *html.Node) goja.Value {
+			if n.Data != "a" && n.Data != "area" {
+				return goja.Undefined()
+			}
+			if !hasAttr(n, "href") {
+				return vm.ToValue("")
+			}
+			if u := b.resolveNav(getAttr(n, "href")); u != nil {
+				return vm.ToValue(comp(u))
+			}
+			return vm.ToValue("")
+		})
 	}
 
 	b.protoGetter(p, "dataset", func(n *html.Node) goja.Value { return b.datasetFor(n) })

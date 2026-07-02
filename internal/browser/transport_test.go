@@ -97,6 +97,9 @@ func TestGuardedTransportBudget(t *testing.T) {
 	if _, err := g.Do(ctx, "GET", srv.URL, nil, nil); err == nil {
 		t.Error("request 3 should exceed the budget")
 	}
+	if got := g.Denied(); got != 1 {
+		t.Errorf("Denied() = %d, want 1", got)
+	}
 }
 
 func TestGuardedTransportWindow(t *testing.T) {
@@ -117,5 +120,8 @@ func TestGuardedTransportWindow(t *testing.T) {
 	}
 	if _, err := g.Do(ctx, "GET", srv.URL, nil, nil); err == nil {
 		t.Error("request 3 should exceed the rolling window cap")
+	}
+	if got := g.Denied(); got != 1 {
+		t.Errorf("Denied() = %d, want 1", got)
 	}
 }

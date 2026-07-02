@@ -193,7 +193,7 @@ func (b *bridge) moduleResolve(importer, spec string) (string, error) {
 	if strings.HasPrefix(importer, "http://") || strings.HasPrefix(importer, "https://") {
 		base, _ = url.Parse(importer)
 	} else {
-		base = b.base
+		base = b.docBaseNow()
 	}
 	u, err := url.Parse(spec)
 	if err != nil {

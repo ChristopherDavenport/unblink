@@ -19,16 +19,23 @@ import (
 // Object identity (el === el) is preserved via a node→wrapper cache. It also owns
 // the event-listener registry and the async fetch machinery for a single render.
 type bridge struct {
-	vm          *goja.Runtime
-	loop        *eventloop.EventLoop
-	doc         *html.Node
-	base        *url.URL
-	transport   Transport // nil when JS networking is disabled
-	cookies     CookieJar // nil when document.cookie is unavailable
-	storage     Storage   // backs window.localStorage; nil → per-render prelude fallback
-	sessStorage Storage   // backs window.sessionStorage; nil → per-render prelude fallback
-	ctx         context.Context
-	reqTimeout  time.Duration
+	vm   *goja.Runtime
+	loop *eventloop.EventLoop
+	doc  *html.Node
+	// base is the page URL (the document's address): it seeds location/history and
+	// scopes cookies. It is NOT the resolution base for relative URLs — that is
+	// docBaseNow(), which honors an explicit <base href> element. Conflating the
+	// two strips the deep-link path from location and breaks SPA routing.
+	base *url.URL
+	// explicitBase is the resolved <base href> element, or nil when the page has
+	// none (then relative URLs resolve against the current document URL).
+	explicitBase *url.URL
+	transport    Transport // nil when JS networking is disabled
+	cookies      CookieJar // nil when document.cookie is unavailable
+	storage      Storage   // backs window.localStorage; nil → per-render prelude fallback
+	sessStorage  Storage   // backs window.sessionStorage; nil → per-render prelude fallback
+	ctx          context.Context
+	reqTimeout   time.Duration
 
 	cache   map[*html.Node]*goja.Object
 	objNode map[*goja.Object]*html.Node
@@ -113,15 +120,26 @@ type bridge struct {
 	// window). A persistent live Context polls it to detect "network idle" since a
 	// Start()ed loop's jobCount never reaches zero. Written/read on the loop goroutine.
 	pending atomic.Int32
+
+	// netCount is the countingTransport installed over the caller's Transport (nil
+	// when the render has no network); render diagnostics read its totals.
+	netCount *countingTransport
 }
 
 func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration) *bridge {
+	var nc *countingTransport
+	if transport != nil {
+		nc = &countingTransport{inner: transport}
+		transport = nc
+	}
 	return &bridge{
 		vm:                   vm,
 		loop:                 loop,
 		doc:                  doc,
 		base:                 base,
+		explicitBase:         findExplicitBase(doc, base),
 		transport:            transport,
+		netCount:             nc,
 		cookies:              cookies,
 		storage:              storage,
 		sessStorage:          sessStorage,
@@ -292,6 +310,7 @@ func (b *bridge) documentObject() *goja.Object {
 	_ = d.Set("getElementsByClassName", func(call goja.FunctionCall) goja.Value {
 		return b.nodeList(queryAll(b.doc, "."+call.Argument(0).String()))
 	})
+	b.defineGetter(d, "forms", func() goja.Value { return b.htmlCollection(queryAll(b.doc, "form")) })
 	_ = d.Set("createElement", func(call goja.FunctionCall) goja.Value {
 		tag := strings.ToLower(call.Argument(0).String())
 		return b.wrap(b.newElement(tag, ""))
@@ -355,6 +374,77 @@ func (b *bridge) documentObject() *goja.Object {
 			b.cookies.SetCookie(b.base.String(), v.String())
 		})
 
+	impl := vm.NewObject()
+	_ = impl.Set("createHTMLDocument", func(call goja.FunctionCall) goja.Value {
+		title := ""
+		if a := call.Argument(0); !goja.IsUndefined(a) && !goja.IsNull(a) {
+			title = a.String()
+		}
+		return b.detachedHTMLDocument(title)
+	})
+	_ = impl.Set("hasFeature", func(goja.FunctionCall) goja.Value { return vm.ToValue(true) })
+	b.defineGetter(d, "implementation", func() goja.Value { return impl })
+
+	return d
+}
+
+// detachedHTMLDocument backs document.implementation.createHTMLDocument(): a
+// fresh, disconnected <html><head><title/></head><body/></html> tree behind a
+// minimal document facade. Angular's DomSanitizer (behind every [innerHTML]
+// binding) and jQuery's parseHTML build one to parse untrusted markup inertly.
+// The returned nodes share this bridge's prototypes, so innerHTML/querySelector/
+// removeChild work on the inert tree, but nothing connects it to the live page.
+func (b *bridge) detachedHTMLDocument(title string) goja.Value {
+	vm := b.vm
+	docNode := &html.Node{Type: html.DocumentNode}
+	htmlEl := &html.Node{Type: html.ElementNode, Data: "html", DataAtom: atom.Html}
+	headEl := &html.Node{Type: html.ElementNode, Data: "head", DataAtom: atom.Head}
+	titleEl := &html.Node{Type: html.ElementNode, Data: "title", DataAtom: atom.Title}
+	titleEl.AppendChild(&html.Node{Type: html.TextNode, Data: title})
+	bodyEl := &html.Node{Type: html.ElementNode, Data: "body", DataAtom: atom.Body}
+	docNode.AppendChild(htmlEl)
+	htmlEl.AppendChild(headEl)
+	headEl.AppendChild(titleEl)
+	htmlEl.AppendChild(bodyEl)
+
+	d := vm.NewObject()
+	b.defineGetter(d, "documentElement", func() goja.Value { return b.wrap(htmlEl) })
+	b.defineGetter(d, "body", func() goja.Value { return b.wrap(bodyEl) })
+	b.defineGetter(d, "head", func() goja.Value { return b.wrap(headEl) })
+	b.defineGetter(d, "title", func() goja.Value { return vm.ToValue(title) })
+	b.defineGetter(d, "nodeType", func() goja.Value { return vm.ToValue(9) })
+	b.defineGetter(d, "nodeName", func() goja.Value { return vm.ToValue("#document") })
+	_ = d.Set("createElement", func(call goja.FunctionCall) goja.Value {
+		return b.wrap(b.newElement(strings.ToLower(call.Argument(0).String()), ""))
+	})
+	_ = d.Set("createElementNS", func(call goja.FunctionCall) goja.Value {
+		ns := call.Argument(0).String()
+		return b.wrap(b.newElement(strings.ToLower(call.Argument(1).String()), namespaceFor(ns)))
+	})
+	_ = d.Set("createTextNode", func(call goja.FunctionCall) goja.Value {
+		return b.wrap(&html.Node{Type: html.TextNode, Data: call.Argument(0).String()})
+	})
+	_ = d.Set("createComment", func(call goja.FunctionCall) goja.Value {
+		return b.wrap(&html.Node{Type: html.CommentNode, Data: call.Argument(0).String()})
+	})
+	_ = d.Set("createDocumentFragment", func(goja.FunctionCall) goja.Value {
+		return b.wrap(&html.Node{Type: html.DocumentNode})
+	})
+	_ = d.Set("getElementById", func(call goja.FunctionCall) goja.Value {
+		return b.wrap(findByID(docNode, call.Argument(0).String()))
+	})
+	_ = d.Set("querySelector", func(call goja.FunctionCall) goja.Value {
+		return b.wrap(query(docNode, call.Argument(0).String()))
+	})
+	_ = d.Set("querySelectorAll", func(call goja.FunctionCall) goja.Value {
+		return b.nodeList(queryAll(docNode, call.Argument(0).String()))
+	})
+	_ = d.Set("appendChild", func(call goja.FunctionCall) goja.Value {
+		if n := b.unwrap(call.Argument(0)); n != nil && n.Parent == nil {
+			docNode.AppendChild(n)
+		}
+		return call.Argument(0)
+	})
 	return d
 }
 
@@ -447,6 +537,49 @@ func (b *bridge) styleFor(n *html.Node) *goja.Object {
 }
 
 func noop(goja.FunctionCall) goja.Value { return goja.Undefined() }
+
+var selBaseHref = cascadia.MustCompile("base[href]")
+
+// findExplicitBase resolves the document's <base href> element against the page
+// URL, or returns nil when the page declares none.
+func findExplicitBase(doc *html.Node, pageURL *url.URL) *url.URL {
+	if doc == nil {
+		return nil
+	}
+	bn := selBaseHref.MatchFirst(doc)
+	if bn == nil {
+		return nil
+	}
+	href := strings.TrimSpace(getAttr(bn, "href"))
+	if href == "" {
+		return nil
+	}
+	u, err := url.Parse(href)
+	if err != nil {
+		return nil
+	}
+	if u.IsAbs() {
+		return u
+	}
+	if pageURL == nil {
+		return nil
+	}
+	return pageURL.ResolveReference(u)
+}
+
+// docBaseNow is the base for resolving relative URLs (fetch/XHR, script src,
+// module specifiers, link targets): the explicit <base href> when the page has
+// one, otherwise the current document URL (which pushState updates, as in a real
+// browser). location/history never use this — they track the page URL itself.
+func (b *bridge) docBaseNow() *url.URL {
+	if b.explicitBase != nil {
+		return b.explicitBase
+	}
+	if b.currentURL != nil {
+		return b.currentURL
+	}
+	return b.base
+}
 
 // --- *html.Node helpers ---
 

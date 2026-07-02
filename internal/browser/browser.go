@@ -555,11 +555,19 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 		}
 		// Best-effort: a render failure other than cancellation keeps whatever the
 		// scripts produced rather than failing the whole fetch.
-		if err := b.renderer.Render(ctx, p.Doc, dom.BaseURL(p), env); err != nil && ctx.Err() != nil {
+		// The engine gets the page URL (it seeds location, so SPA routers see the
+		// deep link); the engine reads <base href> from the DOM itself for
+		// relative-URL resolution — dom.BaseURL would conflate the two.
+		if err := b.renderer.Render(ctx, p.Doc, renderPageURL(p), env); err != nil && ctx.Err() != nil {
 			return nil, err
 		}
 		p.Rendered = true
 		applyRenderDiag(p, diag, pageURL(p))
+		// The budget guard is browser-side, so the js layer counts its denials only
+		// as generic failures; recover the precise count from the transport.
+		if gt, ok := env.Transport.(*guardedTransport); ok && p.RenderDiag != nil {
+			p.RenderDiag.NetDenied = gt.Denied()
+		}
 	}
 	if err := dom.Extract(p); err != nil {
 		return nil, err
@@ -578,6 +586,14 @@ func pageURL(p *page.Page) string {
 	return ""
 }
 
+// renderPageURL is the page's best-known URL for the JS engine's location.
+func renderPageURL(p *page.Page) *url.URL {
+	if p.FinalURL != nil {
+		return p.FinalURL
+	}
+	return p.RequestURL
+}
+
 // applyRenderDiag records JS render diagnostics on the page and logs them at debug,
 // so a framework that failed to render (uncaught error, unknown framework) is
 // observable without changing the read output.
@@ -589,11 +605,18 @@ func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 		WaitRequested:     diag.WaitRequested,
 		WaitMet:           diag.WaitMet,
 		PendingNavigation: diag.PendingNavigation,
+		NetRequests:       diag.NetRequests,
+		NetFailed:         diag.NetFailed,
+		NetPending:        diag.NetPending,
+		DeadlineHit:       diag.DeadlineHit,
+		DOMBusy:           diag.DOMBusy,
 	}
 	if diag.Framework != "" || len(diag.Errors) > 0 || diag.Upgrades > 0 {
 		slog.Debug("js: render diagnostics",
 			"url", url, "framework", diag.Framework,
-			"upgrades", diag.Upgrades, "errors", len(diag.Errors))
+			"upgrades", diag.Upgrades, "errors", len(diag.Errors),
+			"net_requests", diag.NetRequests, "net_pending", diag.NetPending,
+			"deadline_hit", diag.DeadlineHit)
 	}
 	for _, e := range diag.Errors {
 		slog.Debug("js: uncaught script error", "url", url, "err", e)
@@ -649,6 +672,19 @@ type ReadResult struct {
 	// failed to hydrate is visible here rather than silently thin.
 	Framework string   `json:"framework,omitempty"`
 	JSErrors  []string `json:"js_errors,omitempty"`
+
+	// Render saturation: whether the snapshot was taken while the page was still
+	// working. NetPending > 0 means requests were still in flight; RenderBudgetHit
+	// with DOMBusy means the JS budget elapsed while the page was still rendering —
+	// either way the content may be incomplete and a larger wait_timeout (or a
+	// wait_for gate) would capture more. NetDenied > 0 means the page wanted more
+	// network than the per-render request budget (--js-max-requests) allowed.
+	NetRequests     int  `json:"net_requests,omitempty"`
+	NetFailed       int  `json:"net_failed,omitempty"`
+	NetPending      int  `json:"net_pending,omitempty"`
+	NetDenied       int  `json:"net_denied,omitempty"`
+	RenderBudgetHit bool `json:"render_budget_hit,omitempty"`
+	DOMBusy         bool `json:"dom_busy,omitempty"`
 
 	// ImageBytes/ImageMIME carry the raw image for the MCP layer to base64-encode,
 	// set only when the page is an image and the request asked for include_bytes.
@@ -784,6 +820,12 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		res.PendingNavigation = d.PendingNavigation
 		res.Framework = d.Framework
 		res.JSErrors = capErrors(d.Errors)
+		res.NetRequests = d.NetRequests
+		res.NetFailed = d.NetFailed
+		res.NetPending = d.NetPending
+		res.NetDenied = d.NetDenied
+		res.RenderBudgetHit = d.DeadlineHit
+		res.DOMBusy = d.DOMBusy
 	}
 	if req.IncludeBytes && pc.Kind == page.KindImage {
 		res.ImageBytes = pc.Raw
@@ -1253,7 +1295,7 @@ func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.Liv
 	if b.jsNetwork {
 		env.Transport = b.newLiveTransport(sess.Client())
 	}
-	lc, err := b.liveEngine.Open(ctx, tmp.Doc, dom.BaseURL(tmp), env)
+	lc, err := b.liveEngine.Open(ctx, tmp.Doc, renderPageURL(tmp), env)
 	if err != nil {
 		return nil, err
 	}
