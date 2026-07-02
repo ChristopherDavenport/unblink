@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"text/tabwriter"
+	"time"
 )
 
 // scoredScorer is one scorer's outcome within a case.
@@ -15,6 +17,14 @@ type scoredScorer struct {
 	Axis   Axis
 	Score  float64
 	Detail string
+}
+
+// stepTiming is one tool call's wall-clock time, for the informational
+// latency report (never scored or gated).
+type stepTiming struct {
+	Case string
+	Tool string
+	Dur  time.Duration
 }
 
 // caseResult is the scored outcome of one case.
@@ -26,6 +36,9 @@ type caseResult struct {
 	Mean     float64
 	Pass     bool
 	RunErr   error // non-nil if the world/host could not be built or run
+
+	Dur      time.Duration // total tool-call time across the case's steps
+	StepDurs []stepTiming
 }
 
 // scoreCase runs a case against a fresh world and scores every scorer over the
@@ -39,6 +52,10 @@ func scoreCase(ctx context.Context, c Case) caseResult {
 		return cr
 	}
 	defer cleanup()
+	for i, st := range tr.Steps {
+		cr.Dur += st.Dur
+		cr.StepDurs = append(cr.StepDurs, stepTiming{Case: c.Name, Tool: fmt.Sprintf("%s#%d", st.Tool, i+1), Dur: st.Dur})
+	}
 	var sum float64
 	for _, sc := range c.Scorers {
 		score, detail := sc.Fn(tr)
@@ -66,7 +83,7 @@ func writeReport(w io.Writer, results []caseResult) {
 	fmt.Fprintln(w, "\n=== unblink MCP eval ===")
 
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "CASE\tSCORE\tFLOOR\tRESULT")
+	fmt.Fprintln(tw, "CASE\tSCORE\tFLOOR\tRESULT\tDUR")
 	for _, cr := range results {
 		result := "PASS"
 		switch {
@@ -75,7 +92,7 @@ func writeReport(w io.Writer, results []caseResult) {
 		case !cr.Pass:
 			result = "FAIL"
 		}
-		fmt.Fprintf(tw, "%s\t%.2f\t%.2f\t%s\n", cr.Name, cr.Mean, cr.Floor, result)
+		fmt.Fprintf(tw, "%s\t%.2f\t%.2f\t%s\t%s\n", cr.Name, cr.Mean, cr.Floor, result, cr.Dur.Round(time.Millisecond))
 	}
 	tw.Flush()
 
@@ -115,6 +132,25 @@ func writeReport(w io.Writer, results []caseResult) {
 		fmt.Fprintf(atw, "  %s\t%.2f\t(n=%d)\n", ax, sums[ax]/float64(counts[ax]), counts[ax])
 	}
 	atw.Flush()
+
+	// Slowest tool calls across all cases — a coarse latency trend on every run.
+	// Informational only; timing never gates the eval.
+	var steps []stepTiming
+	for _, cr := range results {
+		steps = append(steps, cr.StepDurs...)
+	}
+	sort.SliceStable(steps, func(i, j int) bool { return steps[i].Dur > steps[j].Dur })
+	if len(steps) > 10 {
+		steps = steps[:10]
+	}
+	if len(steps) > 0 {
+		fmt.Fprintln(w, "\nSLOWEST STEPS (informational)")
+		stw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+		for _, st := range steps {
+			fmt.Fprintf(stw, "  %s\t%s\t%s\n", st.Case, st.Tool, st.Dur.Round(time.Millisecond))
+		}
+		stw.Flush()
+	}
 }
 
 // gate computes the overall score, pass-rate, and the list of hard failures

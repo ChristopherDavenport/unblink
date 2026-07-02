@@ -143,11 +143,16 @@ func (b *bridge) recordList(recs []mutationRecord) goja.Value {
 	return vm.ToValue(out)
 }
 
+// promiseResolveProgram is compiled once and shared across runtimes (a
+// goja.Program is immutable); each render still gets its own resolved promise
+// by running it on that render's runtime.
+var promiseResolveProgram = goja.MustCompile("resolved-promise.js", "Promise.resolve()", false)
+
 // installMutationObserver registers window.MutationObserver as a Go constructor
 // and prepares the microtask scheduler. Replaces the prelude no-op.
 func (b *bridge) installMutationObserver() {
 	vm := b.vm
-	if prom, err := vm.RunString("Promise.resolve()"); err == nil {
+	if prom, err := vm.RunProgram(promiseResolveProgram); err == nil {
 		b.resolvedPromise = prom.ToObject(vm)
 		b.promiseThen, _ = goja.AssertFunction(b.resolvedPromise.Get("then"))
 	}

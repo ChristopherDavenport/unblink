@@ -19,6 +19,12 @@ func sanitizePolicy() *bluemonday.Policy {
 	return p
 }
 
+// ugcPolicy is built once and shared: policy construction compiles a large
+// allowlist/regexp set, and a bluemonday policy is safe for concurrent Sanitize
+// as long as it is never modified after construction. Any future per-request
+// customization must clone/build its own policy, not mutate this one.
+var ugcPolicy = sanitizePolicy()
+
 // sanitizeNode renders an *html.Node to HTML, runs it through the sanitizer, and
 // returns the cleaned HTML string.
 func sanitizeNode(n *html.Node) (string, error) {
@@ -26,5 +32,5 @@ func sanitizeNode(n *html.Node) (string, error) {
 	if err := html.Render(&buf, n); err != nil {
 		return "", fmt.Errorf("render node: %w", err)
 	}
-	return sanitizePolicy().Sanitize(buf.String()), nil
+	return ugcPolicy.Sanitize(buf.String()), nil
 }

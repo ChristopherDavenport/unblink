@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -86,12 +87,14 @@ type Scorer struct {
 
 // StepResult records one executed step: the resolved args, the tool result, and
 // any transport error. Tool-level failures surface as Result.IsError with a nil
-// Err (the SDK contract), so scorers assert on IsError, not Err.
+// Err (the SDK contract), so scorers assert on IsError, not Err. Dur is the
+// wall-clock time of the tool call — informational only, never scored or gated.
 type StepResult struct {
 	Tool   string
 	Args   map[string]any
 	Result *mcp.CallToolResult
 	Err    error
+	Dur    time.Duration
 }
 
 // Transcript is the scored record of a case run, plus the hooks pagination/
@@ -208,8 +211,9 @@ func run(ctx context.Context, c Case) (*Transcript, func(), error) {
 		if step.Path != "" {
 			args["url"] = w.base + step.Path
 		}
+		t0 := time.Now()
 		res, err := w.call(ctx, step.Tool, args)
-		tr.Steps = append(tr.Steps, StepResult{Tool: step.Tool, Args: args, Result: res, Err: err})
+		tr.Steps = append(tr.Steps, StepResult{Tool: step.Tool, Args: args, Result: res, Err: err, Dur: time.Since(t0)})
 	}
 	return tr, w.Close, nil
 }

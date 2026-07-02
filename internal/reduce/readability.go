@@ -6,11 +6,9 @@
 package reduce
 
 import (
-	"bytes"
 	"fmt"
 
 	readability "codeberg.org/readeck/go-readability/v2"
-	"golang.org/x/net/html"
 
 	"github.com/christopherdavenport/unblink/internal/dom"
 	"github.com/christopherdavenport/unblink/internal/page"
@@ -61,23 +59,16 @@ func Article(p *page.Page, stripHidden bool) error {
 }
 
 // Full reduces the entire page (no main-content extraction) into p.Article. It
-// renders and re-parses p.Doc into an independent tree so the canonical document
-// is never mutated by URL rewriting. When stripHidden is set, human-hidden subtrees
-// and comments are removed before sanitizing. Large link-dense regions that repeat
+// deep-clones p.Doc into an independent tree so the canonical document is never
+// mutated by URL rewriting. When stripHidden is set, human-hidden subtrees and
+// comments are removed before sanitizing. Large link-dense regions that repeat
 // verbatim (a desktop nav plus its mobile-drawer twin) are emitted once.
 func Full(p *page.Page, stripHidden bool) error {
 	if p.Doc == nil {
 		return fmt.Errorf("reduce: page has no parsed document")
 	}
 
-	var buf bytes.Buffer
-	if err := html.Render(&buf, p.Doc); err != nil {
-		return fmt.Errorf("reduce: render document: %w", err)
-	}
-	clone, err := html.Parse(&buf)
-	if err != nil {
-		return fmt.Errorf("reduce: reparse document: %w", err)
-	}
+	clone := dom.CloneTree(p.Doc)
 	dom.AbsolutizeURLs(clone, dom.BaseURL(p))
 	if stripHidden {
 		dom.StripHidden(clone)

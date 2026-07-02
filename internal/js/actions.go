@@ -60,7 +60,7 @@ func (b *bridge) runActions(actions []Action) {
 		}
 		a.Matched = true
 		if a.Value != "" {
-			setControlValue(n, a.Value)
+			b.setControlValue(n, a.Value)
 		}
 		switch typ {
 		case "click":
@@ -103,11 +103,18 @@ func (b *bridge) dispatchHover(n *html.Node) {
 }
 
 // setControlValue writes val to a form control the way the .value accessor reads
-// it: as textarea content for <textarea>, otherwise the value attribute.
-func setControlValue(n *html.Node, val string) {
+// it: as textarea content for <textarea>, otherwise the value attribute. It
+// reports through the mutation sink (domVersion is the settle and staleness
+// signal — a value-only write must invalidate live-page snapshots) but not
+// through afterAttr: a .value= property write must not fire a custom element's
+// attributeChangedCallback the way a real setAttribute would.
+func (b *bridge) setControlValue(n *html.Node, val string) {
 	if n.Data == "textarea" {
 		setTextContent(n, val)
+		b.onMutate(mutationRecord{typ: "characterData", target: n})
 		return
 	}
+	old := getAttr(n, "value")
 	setAttr(n, "value", val)
+	b.onMutate(mutationRecord{typ: "attributes", target: n, attr: "value", oldValue: old})
 }

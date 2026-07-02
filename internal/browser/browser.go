@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -90,7 +89,8 @@ type Browser struct {
 	jsMaxRequests  int          // per-render JS request budget
 	jsAllowPrivate bool         // permit JS requests to private/loopback IPs
 	jsReqTimeout   time.Duration
-	jsMaxLive      int // cap on concurrent live JS runtimes (LRU torn down)
+	jsMaxLive      int               // cap on concurrent live JS runtimes (LRU torn down)
+	jsRT           http.RoundTripper // shared conn pool for all JS subrequest clients (SSRF guard baked in)
 
 	limiter *ratelimit.Limiter // shared per-host rate limiter (nil = disabled)
 	retries int                // fetch retries, threaded into JS subrequest clients
@@ -111,6 +111,7 @@ type options struct {
 	jsTimeout      time.Duration
 	jsPrewarm      int
 	jsMaxLive      int
+	jsAssetCache   bool
 	rateRPS        float64
 	rateBurst      int
 	retries        int
@@ -168,6 +169,12 @@ func WithJSAllowPrivate(allow bool) Option { return func(o *options) { o.jsAllow
 // session and page survive — the next interact reopens it). 0 keeps the default.
 func WithJSMaxLive(n int) Option { return func(o *options) { o.jsMaxLive = n } }
 
+// WithJSAssetCache enables/disables the cross-render cache of page-JS asset
+// downloads (external scripts, module sources) and esbuild bundle outputs,
+// TTL'd to the page cache's 60s (default enabled — the same staleness posture
+// as the whole-page cache). Page data requests (fetch/XHR) are never cached.
+func WithJSAssetCache(enabled bool) Option { return func(o *options) { o.jsAssetCache = enabled } }
+
 // WithAllowPrivate permits page fetches (the default + per-session + one-shot
 // clients) to reach private/loopback/metadata addresses. Off by default: direct
 // fetches to localhost/private IPs are blocked by the SSRF dial guard. Enable for
@@ -208,7 +215,7 @@ func WithSafeOutput(enabled bool) Option { return func(o *options) { o.safeOutpu
 func New(opts ...Option) (*Browser, error) {
 	o := options{
 		jsNetwork: true, jsMaxRequests: DefaultJSMaxRequests, jsTimeout: DefaultJSTimeout,
-		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive,
+		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive, jsAssetCache: true,
 		rateRPS: DefaultRateRPS, rateBurst: DefaultRateBurst, retries: DefaultRetries,
 		siteHints: true, safeOutput: true,
 	}
@@ -216,7 +223,11 @@ func New(opts ...Option) (*Browser, error) {
 		opt(&o)
 	}
 	if o.renderer == nil && o.js {
-		o.renderer = js.New(js.WithTimeout(o.jsTimeout), js.WithPrewarm(o.jsPrewarm))
+		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithPrewarm(o.jsPrewarm)}
+		if o.jsAssetCache {
+			jsOpts = append(jsOpts, js.WithAssetCache(DefaultCacheTTL))
+		}
+		o.renderer = js.New(jsOpts...)
 	}
 
 	var limiter *ratelimit.Limiter
@@ -272,9 +283,13 @@ func New(opts ...Option) (*Browser, error) {
 		jsAllowPrivate: o.jsAllowPrivate,
 		jsReqTimeout:   o.jsTimeout,
 		jsMaxLive:      o.jsMaxLive,
-		limiter:        limiter,
-		retries:        o.retries,
-		search:         o.search,
+		// One pool for every render's and live session's subrequest client:
+		// repeat renders reuse keep-alive connections instead of re-dialing.
+		// The SSRF posture is global config, so a single guarded pool is safe.
+		jsRT:    fetch.NewSharedTransport(ssrfControl(o.jsAllowPrivate)),
+		limiter: limiter,
+		retries: o.retries,
+		search:  o.search,
 	}
 	if lr, ok := o.renderer.(liveRenderer); ok {
 		b.liveEngine = lr
@@ -544,9 +559,12 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 		deriveNonHTMLMeta(p)
 		return p, nil
 	}
+	t0 := time.Now()
 	if err := dom.Parse(p); err != nil {
 		return nil, err
 	}
+	parseDur := time.Since(t0)
+	var renderDur time.Duration
 	if ro.render && b.renderer != nil {
 		var diag js.RenderResult
 		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, SessionStorage: ro.sessStorage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout}
@@ -568,10 +586,14 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 		if gt, ok := env.Transport.(*guardedTransport); ok && p.RenderDiag != nil {
 			p.RenderDiag.NetDenied = gt.Denied()
 		}
+		renderDur = p.RenderDiag.TotalDur
 	}
+	t1 := time.Now()
 	if err := dom.Extract(p); err != nil {
 		return nil, err
 	}
+	slog.Debug("page: stage timings", "url", pageURL(p),
+		"parse", parseDur, "render", renderDur, "extract", time.Since(t1))
 	return p, nil
 }
 
@@ -610,14 +632,18 @@ func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 		NetPending:        diag.NetPending,
 		DeadlineHit:       diag.DeadlineHit,
 		DOMBusy:           diag.DOMBusy,
+		SetupDur:          diag.SetupDur,
+		ExecDur:           diag.ExecDur,
+		SettleDur:         diag.SettleDur,
+		TotalDur:          diag.TotalDur,
 	}
-	if diag.Framework != "" || len(diag.Errors) > 0 || diag.Upgrades > 0 {
-		slog.Debug("js: render diagnostics",
-			"url", url, "framework", diag.Framework,
-			"upgrades", diag.Upgrades, "errors", len(diag.Errors),
-			"net_requests", diag.NetRequests, "net_pending", diag.NetPending,
-			"deadline_hit", diag.DeadlineHit)
-	}
+	slog.Debug("js: render diagnostics",
+		"url", url, "framework", diag.Framework,
+		"upgrades", diag.Upgrades, "errors", len(diag.Errors),
+		"net_requests", diag.NetRequests, "net_pending", diag.NetPending,
+		"deadline_hit", diag.DeadlineHit,
+		"setup", diag.SetupDur, "exec", diag.ExecDur,
+		"settle", diag.SettleDur, "total", diag.TotalDur)
 	for _, e := range diag.Errors {
 		slog.Debug("js: uncaught script error", "url", url, "err", e)
 	}
@@ -720,10 +746,13 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	default:
 		return nil, errf(ErrBadInput, "invalid mode %q (valid: article, full)", mode)
 	}
+	t0 := time.Now()
 	p, _, err := b.resolve(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	resolveDur := time.Since(t0)
+	var reduceDur, emitDur time.Duration
 
 	articleFallback := false
 	pc := *p
@@ -748,6 +777,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	default:
 		switch pc.Kind {
 		case "", page.KindHTML:
+			tr := time.Now()
 			switch mode {
 			case "full":
 				mode, err = "full", reduce.Full(&pc, b.safeOutput)
@@ -757,14 +787,17 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 			if err != nil {
 				return nil, fmt.Errorf("reduce: %w", err)
 			}
+			reduceDur = time.Since(tr)
 			// Report what actually ran: readability finding no article falls back to
 			// the full reduction, and pretending otherwise misleads the agent.
 			if mode == "article" && pc.Article != nil && pc.Article.Source == "full" {
 				mode, articleFallback = "full", true
 			}
+			te := time.Now()
 			if err := emit.Markdown(&pc); err != nil {
 				return nil, fmt.Errorf("emit: %w", err)
 			}
+			emitDur = time.Since(te)
 		default:
 			// Non-HTML: convert to Markdown in place (lazily, on the copy) and report
 			// the kind as the mode so the caller sees what happened.
@@ -785,6 +818,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	if maxTokens > MaxReadTokens {
 		maxTokens = MaxReadTokens
 	}
+	tp := time.Now()
 	chunks := tokens.Paginate(pc.Markdown, maxTokens)
 	fp := tokens.Fingerprint(pc.Markdown)
 	idx, err := tokens.DecodeCursor(cursor, fp)
@@ -831,6 +865,9 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		res.ImageBytes = pc.Raw
 		res.ImageMIME = pc.ContentType
 	}
+	slog.Debug("read: stage timings", "url", pageURL(p), "mode", mode,
+		"resolve", resolveDur, "reduce", reduceDur, "emit", emitDur,
+		"paginate", time.Since(tp), "total", time.Since(t0))
 	return res, nil
 }
 
@@ -1244,11 +1281,18 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 		event = "click"
 	}
 
-	before := docFingerprint(cur.Doc)
 	lc, err := b.ensureLive(ctx, sess)
 	if err != nil {
 		return nil, err
 	}
+	// Changed is version-bracketed: the live DOM's mutation counter before vs
+	// after the dispatch+settle window. This replaces hashing two full tree
+	// serializations per interact. Semantic nuance: a handler that rewrites a
+	// value to itself now reports true (the page reacted) where a byte-hash
+	// reported false. Version read errors degrade to Changed=true (never
+	// under-report). A freshly opened runtime replays scripts before v0 is
+	// read, so first-interact bracketing still covers only the dispatch.
+	v0, v0err := lc.DOMVersion(ctx)
 	res, err := lc.Dispatch(ctx, js.Action{Selector: selector, Type: event, Value: value})
 	if err != nil {
 		return nil, err
@@ -1261,13 +1305,14 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 	if err != nil {
 		return nil, err
 	}
+	v1, v1err := lc.DOMVersion(ctx)
 
 	return &InteractResult{
 		Summary:           summarize(np),
 		Selector:          selector,
 		Event:             event,
 		Matched:           res.Matched,
-		Changed:           docFingerprint(np.Doc) != before,
+		Changed:           v0err != nil || v1err != nil || v1 != v0,
 		Controls:          np.Meta.Controls,
 		JSErrors:          capErrors(res.Errors),
 		PendingNavigation: nav,
@@ -1333,9 +1378,20 @@ func (b *Browser) trimLiveContexts(opening *session.Session) {
 // detached tree, extracts its structure, and stores it as the session's current
 // page (so the read pipeline never touches the loop-owned live tree). On snapshot
 // failure it degrades to the last stored page.
+//
+// The serialize -> parse -> extract round trip is skipped entirely when the live
+// DOM hasn't mutated since the stored page was snapshotted: the bridge bumps a
+// version counter on every tree mutation, and the session remembers the version
+// its stored page corresponds to. A freshly opened runtime always takes the
+// full path (SetLive resets the recorded version).
 func (b *Browser) refreshFromLive(ctx context.Context, sess *session.Session, lc js.LiveContext) (*page.Page, error) {
 	cur := sess.Current()
-	snap, err := lc.Snapshot(ctx)
+	if v, err := lc.DOMVersion(ctx); err == nil {
+		if pv, ok := sess.LiveSyncVersion(); ok && pv == v {
+			return cur, nil
+		}
+	}
+	snap, ver, err := lc.Snapshot(ctx)
 	if err != nil {
 		return cur, nil
 	}
@@ -1352,18 +1408,8 @@ func (b *Browser) refreshFromLive(ctx context.Context, sess *session.Session, lc
 		return cur, nil
 	}
 	sess.ReplaceCurrentPage(&np)
+	sess.SetLiveSyncVersion(ver)
 	return &np, nil
-}
-
-// docFingerprint hashes a rendered tree so an interaction can report whether it
-// changed the DOM. nil hashes to 0.
-func docFingerprint(doc *html.Node) uint64 {
-	if doc == nil {
-		return 0
-	}
-	h := fnv.New64a()
-	_ = html.Render(h, doc)
-	return h.Sum64()
 }
 
 func selectForm(forms []page.Form, ref string) (page.Form, bool) {

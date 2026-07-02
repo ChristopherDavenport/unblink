@@ -3,6 +3,7 @@ package dom
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/andybalholm/cascadia"
@@ -238,17 +239,23 @@ func extractHeadings(doc *html.Node) []page.Heading {
 // extractInteractive collects the page's non-anchor interactive controls, each
 // with a stable selector the interact tool can replay. An element matching more
 // than one sub-selector (e.g. <button onclick>) appears once (dedup by node).
+// The uniqueness index is built once (one walk) on the first control, replacing
+// a full-document query per control on control-dense pages.
 func extractInteractive(doc *html.Node) []page.Control {
 	var out []page.Control
 	seen := map[*html.Node]bool{}
+	var ix *selIndex
 	for _, n := range selInteractive.MatchAll(doc) {
 		if seen[n] {
 			continue
 		}
 		seen[n] = true
+		if ix == nil {
+			ix = buildSelIndex(doc)
+		}
 		out = append(out, page.Control{
 			Text:     controlLabel(n),
-			Selector: selectorFor(doc, n),
+			Selector: selectorFor(ix, doc, n),
 			Kind:     controlKind(n),
 			Role:     attr(n, "role"),
 			Disabled: hasAttr(n, "disabled"),
@@ -298,16 +305,149 @@ func controlKind(n *html.Node) string {
 // an id first, then a tag+class combination, then an :nth-of-type path from the
 // nearest id-bearing ancestor (or the document root). The result always compiles,
 // so the JS engine's query() can replay it.
-func selectorFor(doc, n *html.Node) string {
-	if id := strings.TrimSpace(attr(n, "id")); id != "" {
-		if sel := "#" + id; uniqueMatch(doc, sel, n) {
+//
+// The index proves most selectors unique in O(1); anything it can't prove (or
+// any identifier too exotic to embed unescaped) falls back to uniqueMatch's
+// compile+query, so the output is identical to the pre-index implementation.
+func selectorFor(ix *selIndex, doc, n *html.Node) string {
+	rawID := attr(n, "id")
+	if id := strings.TrimSpace(rawID); id != "" {
+		if rawID == id && cssSafeIdent(id) {
+			if ix.idCount[id] == 1 {
+				return "#" + id
+			}
+			// Duplicated id: "#id" can't resolve uniquely; try tag+class.
+		} else if sel := "#" + id; uniqueMatch(doc, sel, n) {
 			return sel
 		}
 	}
-	if sel := tagClassSelector(n); uniqueMatch(doc, sel, n) {
+	if sel, ok, proven := ix.uniqueTagClass(n); proven {
+		if ok {
+			return sel
+		}
+	} else if sel := tagClassSelector(n); uniqueMatch(doc, sel, n) {
 		return sel
 	}
 	return nthOfTypePath(n)
+}
+
+// selIndex holds one walk's worth of uniqueness facts about a document, so
+// selectorFor can prove selectors unique without a full-document query per
+// control. Counts are keyed by raw attribute values, matching cascadia's exact
+// id semantics; class tokens are deduped per element (class="a a" counts once).
+type selIndex struct {
+	idCount   map[string]int // elements per raw id value
+	tagCount  map[string]int // elements per tag name
+	pairCount map[string]int // elements per tag+"\x00"+class token
+	sigCount  map[string]int // elements per tag+"\x00"+sorted-deduped-class signature
+}
+
+func buildSelIndex(doc *html.Node) *selIndex {
+	ix := &selIndex{
+		idCount: map[string]int{}, tagCount: map[string]int{},
+		pairCount: map[string]int{}, sigCount: map[string]int{},
+	}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			if id := attr(n, "id"); id != "" {
+				ix.idCount[id]++
+			}
+			ix.tagCount[n.Data]++
+			if classes := dedupSorted(strings.Fields(attr(n, "class"))); len(classes) > 0 {
+				for _, c := range classes {
+					ix.pairCount[n.Data+"\x00"+c]++
+				}
+				ix.sigCount[n.Data+"\x00"+strings.Join(classes, "\x00")]++
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return ix
+}
+
+// dedupSorted returns the unique class tokens in sorted order (a canonical
+// signature: class order is irrelevant to selector matching).
+func dedupSorted(fields []string) []string {
+	if len(fields) < 2 {
+		return fields
+	}
+	sort.Strings(fields)
+	out := fields[:1]
+	for _, c := range fields[1:] {
+		if c != out[len(out)-1] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// uniqueTagClass decides n's tag+class selector from the index alone.
+// proven=false means the index can't answer (exotic identifiers, or every
+// class shared) and the caller must fall back to compile+query. With classes,
+// uniqueness is provable only when some class of n appears on exactly one
+// element of n's tag: class selectors match supersets (div.a matches
+// class="a b"), so an exact-signature count alone would over-claim.
+func (ix *selIndex) uniqueTagClass(n *html.Node) (sel string, ok, proven bool) {
+	// The selector parser lowercases tag names, so a camelCase foreign element
+	// (svg foreignObject) can't be proven from Data-keyed counts — fall back.
+	if !cssSafeIdent(n.Data) || strings.ToLower(n.Data) != n.Data {
+		return "", false, false
+	}
+	classes := strings.Fields(attr(n, "class"))
+	if len(classes) == 0 {
+		return n.Data, ix.tagCount[n.Data] == 1, true
+	}
+	for _, c := range classes {
+		if !cssSafeIdent(c) {
+			return "", false, false
+		}
+	}
+	canon := dedupSorted(append([]string(nil), classes...))
+	for _, c := range canon {
+		if ix.pairCount[n.Data+"\x00"+c] == 1 {
+			// Some class of n appears on exactly one element of n's tag (n
+			// itself): no other element can match the full selector.
+			return tagClassSelector(n), true, true
+		}
+	}
+	if ix.sigCount[n.Data+"\x00"+strings.Join(canon, "\x00")] >= 2 {
+		// Another element has the identical tag+class set, and it matches n's
+		// selector too — provably not unique, skip straight to nth-of-type.
+		return "", false, true
+	}
+	// Every class is shared but no identical twin exists; a superset match may
+	// or may not exist — not provable from counts.
+	return "", false, false
+}
+
+// cssSafeIdent reports whether s can be embedded in a selector without
+// escaping: ASCII letters, digits, hyphen, underscore; no leading digit; no
+// leading hyphen followed by a digit or hyphen. Exotic identifiers take the
+// compile+query fallback instead.
+func cssSafeIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_', c == '-':
+		case c >= '0' && c <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	if s[0] == '-' && (len(s) == 1 || s[1] == '-' || (s[1] >= '0' && s[1] <= '9')) {
+		return false
+	}
+	return true
 }
 
 // uniqueMatch reports whether selector compiles and resolves to exactly n.

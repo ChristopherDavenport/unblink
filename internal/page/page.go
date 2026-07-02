@@ -84,6 +84,13 @@ type RenderDiag struct {
 	NetDenied   int  // subrequests blocked by the per-render request budget
 	DeadlineHit bool // the JS budget elapsed before the page went quiet
 	DOMBusy     bool // the DOM was still mutating when the snapshot was taken
+
+	// Timing: where the render's wall clock went (setup / script execution /
+	// settle poll). Debug-observability only — never surfaced in tool output.
+	SetupDur  time.Duration
+	ExecDur   time.Duration
+	SettleDur time.Duration
+	TotalDur  time.Duration
 }
 
 // PageMeta holds page-level metadata and extracted structure, populated by the

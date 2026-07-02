@@ -49,7 +49,7 @@ func openContextWith(t *testing.T, pageHTML string, timeout time.Duration, tr js
 
 func snapshot(t *testing.T, lc js.LiveContext) string {
 	t.Helper()
-	b, err := lc.Snapshot(context.Background())
+	b, _, err := lc.Snapshot(context.Background())
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}

@@ -22,7 +22,8 @@ type fakeLive struct{ closed bool }
 func (f *fakeLive) Dispatch(context.Context, js.Action) (js.DispatchResult, error) {
 	return js.DispatchResult{}, nil
 }
-func (f *fakeLive) Snapshot(context.Context) ([]byte, error)          { return nil, nil }
+func (f *fakeLive) Snapshot(context.Context) ([]byte, uint64, error)  { return nil, 0, nil }
+func (f *fakeLive) DOMVersion(context.Context) (uint64, error)        { return 0, nil }
 func (f *fakeLive) PendingNavigation(context.Context) (string, error) { return "", nil }
 func (f *fakeLive) Close()                                            { f.closed = true }
 

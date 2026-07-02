@@ -737,3 +737,10 @@ const preludeJS = `
   }
 })();
 `
+
+// preludeProgram is the prelude compiled once at init and shared across every
+// render and live context: a goja.Program is immutable and safe to run in
+// multiple runtimes concurrently, and re-parsing the ~27KB source per render
+// was the single largest fixed setup cost. MustCompile panics at init on a
+// broken prelude, which any test run catches immediately.
+var preludeProgram = goja.MustCompile("prelude.js", preludeJS, false)

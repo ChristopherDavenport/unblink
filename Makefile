@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval fuzz vet fmt tidy clean
+.PHONY: all build run version test eval fuzz bench vet fmt tidy clean
 
 all: build
 
@@ -46,6 +46,17 @@ fuzz:
 	go test ./internal/content/pdf -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
 	go test ./internal/robots -run '^$$' -fuzz '^FuzzParse$$' -fuzztime $(FUZZTIME)
 	go test ./internal/tokens -run '^$$' -fuzz '^FuzzPaginateCursor$$' -fuzztime $(FUZZTIME)
+
+# Performance benchmarks over the hot-path packages. Workflow for proving an
+# optimization: `make bench > /tmp/base.txt` on the baseline, apply the change,
+# `make bench > /tmp/new.txt`, then compare with
+# `go run golang.org/x/perf/cmd/benchstat@latest /tmp/base.txt /tmp/new.txt`.
+# Narrow with BENCH (regexp) and trade time for precision with BENCHCOUNT.
+BENCH ?= .
+BENCHCOUNT ?= 10
+bench:
+	go test -run '^$$' -bench '$(BENCH)' -benchmem -count $(BENCHCOUNT) \
+		./internal/js ./internal/reduce ./internal/dom ./internal/emit ./internal/browser ./internal/session
 
 vet:
 	go vet ./...

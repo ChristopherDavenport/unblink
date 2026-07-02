@@ -92,9 +92,10 @@ func (b *Browser) newRenderTransport(client *fetch.Client, reqTimeout time.Durat
 		fetch.WithTimeout(reqTimeout),
 		fetch.WithRateLimiter(b.limiter),
 		fetch.WithRetries(b.retries),
-	}
-	if ctrl := ssrfControl(b.jsAllowPrivate); ctrl != nil {
-		opts = append(opts, fetch.WithDialControl(ctrl))
+		// The shared pool carries the SSRF dial guard and keeps subrequest
+		// connections reusable across renders (a fresh client per render used
+		// to mean a fresh pool and a TCP+TLS handshake per script).
+		fetch.WithSharedTransport(b.jsRT),
 	}
 	// Carry the page client's origin-scoped credentials so same-origin in-page
 	// fetch/XHR authenticate (cross-origin subrequests are excluded by the scope).
@@ -116,9 +117,7 @@ func (b *Browser) newLiveTransport(client *fetch.Client) js.Transport {
 		fetch.WithTimeout(b.jsReqTimeout),
 		fetch.WithRateLimiter(b.limiter),
 		fetch.WithRetries(b.retries),
-	}
-	if ctrl := ssrfControl(b.jsAllowPrivate); ctrl != nil {
-		opts = append(opts, fetch.WithDialControl(ctrl))
+		fetch.WithSharedTransport(b.jsRT), // SSRF-guarded shared pool (see newRenderTransport)
 	}
 	// Carry the page client's origin-scoped credentials so same-origin in-page
 	// fetch/XHR authenticate (cross-origin subrequests are excluded by the scope).
