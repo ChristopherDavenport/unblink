@@ -23,6 +23,7 @@ make build     # go build (version stamped from the nearest v* tag)
 make test      # go test ./... (includes every fuzz target's seed corpus)
 make eval      # offline in-process MCP eval gate (build tag `eval`; scorecard on stderr)
 make fuzz      # coverage-guided fuzzing of the untrusted-input parsers (FUZZTIME=15s each)
+make bench     # perf benchmarks over the hot-path packages (narrow: BENCH=regexp, repeat: BENCHCOUNT=N)
 make vet       # go vet ./...
 make fmt       # gofmt -w .
 make tidy      # go mod tidy
@@ -35,6 +36,12 @@ Run a single test (not in the Makefile — standard Go):
 GOTOOLCHAIN=auto go test ./internal/js -run TestName -v
 GOTOOLCHAIN=auto go test ./internal/dom -run TestExtract/subtest -v
 ```
+
+Proving a performance change: `make bench > /tmp/base.txt` on the baseline
+commit, apply the change, `make bench > /tmp/new.txt`, then
+`go run golang.org/x/perf/cmd/benchstat@latest /tmp/base.txt /tmp/new.txt`.
+Include the benchstat table in the PR. JS render benchmarks each pay the
+~60ms settle floor by design — engine wins appear as absolute deltas.
 
 **Go-version gotcha:** the MCP SDK needs Go ≥ 1.25. The Makefile exports
 `GOTOOLCHAIN=auto` so `go` downloads the toolchain pinned in `go.mod`

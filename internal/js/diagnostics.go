@@ -1,6 +1,8 @@
 package js
 
 import (
+	"time"
+
 	"github.com/dop251/goja"
 )
 
@@ -33,6 +35,16 @@ type RenderResult struct {
 	NetPending  int  // subrequests still in flight when the snapshot was taken
 	DeadlineHit bool // settle closed by the JS budget deadline rather than by quiescence
 	DOMBusy     bool // the DOM was still mutating when the settle closed
+
+	// Timing: where the render's wall clock went, filled by the engine after the
+	// settle. SetupDur covers loop acquisition + bridge install + prelude; ExecDur
+	// covers script/module execution + lifecycle events; SettleDur covers the settle
+	// poll (including any wait_for gate) up to loop teardown. TotalDur is the whole
+	// render excluding time queued on the concurrency semaphore.
+	SetupDur  time.Duration
+	ExecDur   time.Duration
+	SettleDur time.Duration
+	TotalDur  time.Duration
 }
 
 // collectDiagnostics snapshots the bridge's diagnostics after a render. Runs on the

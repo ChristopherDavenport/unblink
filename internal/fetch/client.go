@@ -444,6 +444,7 @@ func (c *Client) do(req *http.Request) (*page.Page, error) {
 func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, *url.URL, error) {
 	c.setHeaders(req)
 	ctx := req.Context()
+	start := time.Now()
 
 	var resp *http.Response
 	var lastErr error
@@ -511,7 +512,7 @@ func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, *url.UR
 		// On any charset error, keep the raw bytes rather than failing the fetch on
 		// a charset quirk.
 	}
-	slog.Debug("fetch", "method", req.Method, "url", redactURL(req.URL), "status", resp.StatusCode, "bytes", len(body))
+	slog.Debug("fetch", "method", req.Method, "url", redactURL(req.URL), "status", resp.StatusCode, "bytes", len(body), "dur", time.Since(start))
 	return resp.StatusCode, resp.Header, body, resp.Request.URL, nil
 }
 

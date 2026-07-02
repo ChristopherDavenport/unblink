@@ -544,9 +544,12 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 		deriveNonHTMLMeta(p)
 		return p, nil
 	}
+	t0 := time.Now()
 	if err := dom.Parse(p); err != nil {
 		return nil, err
 	}
+	parseDur := time.Since(t0)
+	var renderDur time.Duration
 	if ro.render && b.renderer != nil {
 		var diag js.RenderResult
 		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, SessionStorage: ro.sessStorage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout}
@@ -568,10 +571,14 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 		if gt, ok := env.Transport.(*guardedTransport); ok && p.RenderDiag != nil {
 			p.RenderDiag.NetDenied = gt.Denied()
 		}
+		renderDur = p.RenderDiag.TotalDur
 	}
+	t1 := time.Now()
 	if err := dom.Extract(p); err != nil {
 		return nil, err
 	}
+	slog.Debug("page: stage timings", "url", pageURL(p),
+		"parse", parseDur, "render", renderDur, "extract", time.Since(t1))
 	return p, nil
 }
 
@@ -610,14 +617,18 @@ func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 		NetPending:        diag.NetPending,
 		DeadlineHit:       diag.DeadlineHit,
 		DOMBusy:           diag.DOMBusy,
+		SetupDur:          diag.SetupDur,
+		ExecDur:           diag.ExecDur,
+		SettleDur:         diag.SettleDur,
+		TotalDur:          diag.TotalDur,
 	}
-	if diag.Framework != "" || len(diag.Errors) > 0 || diag.Upgrades > 0 {
-		slog.Debug("js: render diagnostics",
-			"url", url, "framework", diag.Framework,
-			"upgrades", diag.Upgrades, "errors", len(diag.Errors),
-			"net_requests", diag.NetRequests, "net_pending", diag.NetPending,
-			"deadline_hit", diag.DeadlineHit)
-	}
+	slog.Debug("js: render diagnostics",
+		"url", url, "framework", diag.Framework,
+		"upgrades", diag.Upgrades, "errors", len(diag.Errors),
+		"net_requests", diag.NetRequests, "net_pending", diag.NetPending,
+		"deadline_hit", diag.DeadlineHit,
+		"setup", diag.SetupDur, "exec", diag.ExecDur,
+		"settle", diag.SettleDur, "total", diag.TotalDur)
 	for _, e := range diag.Errors {
 		slog.Debug("js: uncaught script error", "url", url, "err", e)
 	}
@@ -720,10 +731,13 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	default:
 		return nil, errf(ErrBadInput, "invalid mode %q (valid: article, full)", mode)
 	}
+	t0 := time.Now()
 	p, _, err := b.resolve(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	resolveDur := time.Since(t0)
+	var reduceDur, emitDur time.Duration
 
 	articleFallback := false
 	pc := *p
@@ -748,6 +762,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	default:
 		switch pc.Kind {
 		case "", page.KindHTML:
+			tr := time.Now()
 			switch mode {
 			case "full":
 				mode, err = "full", reduce.Full(&pc, b.safeOutput)
@@ -757,14 +772,17 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 			if err != nil {
 				return nil, fmt.Errorf("reduce: %w", err)
 			}
+			reduceDur = time.Since(tr)
 			// Report what actually ran: readability finding no article falls back to
 			// the full reduction, and pretending otherwise misleads the agent.
 			if mode == "article" && pc.Article != nil && pc.Article.Source == "full" {
 				mode, articleFallback = "full", true
 			}
+			te := time.Now()
 			if err := emit.Markdown(&pc); err != nil {
 				return nil, fmt.Errorf("emit: %w", err)
 			}
+			emitDur = time.Since(te)
 		default:
 			// Non-HTML: convert to Markdown in place (lazily, on the copy) and report
 			// the kind as the mode so the caller sees what happened.
@@ -785,6 +803,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	if maxTokens > MaxReadTokens {
 		maxTokens = MaxReadTokens
 	}
+	tp := time.Now()
 	chunks := tokens.Paginate(pc.Markdown, maxTokens)
 	fp := tokens.Fingerprint(pc.Markdown)
 	idx, err := tokens.DecodeCursor(cursor, fp)
@@ -831,6 +850,9 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		res.ImageBytes = pc.Raw
 		res.ImageMIME = pc.ContentType
 	}
+	slog.Debug("read: stage timings", "url", pageURL(p), "mode", mode,
+		"resolve", resolveDur, "reduce", reduceDur, "emit", emitDur,
+		"paginate", time.Since(tp), "total", time.Since(t0))
 	return res, nil
 }
 

@@ -180,11 +180,15 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		}
 	}
 
+	start := time.Now()
 	loop := e.takeLoop()
 	loop.Start()
 	var vmRef atomic.Pointer[goja.Runtime]
 	var b *bridge
 	var stats settleStats
+	// setupDone/execDone are written on the loop goroutine and read only after
+	// loop.Terminate() joins it (same happens-before edge as b/stats below).
+	var setupDone, execDone time.Time
 	done := make(chan struct{})
 	var once sync.Once
 	closeDone := func() { once.Do(func() { close(done) }) }
@@ -205,11 +209,13 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// Stubs simplest to express in JS (storage, observers, rAF, and the
 		// network-aware fetch/XHR). Failure here is non-fatal.
 		_, _ = vm.RunString(preludeJS)
+		setupDone = time.Now()
 		b.runScripts(scripts)
 		if len(modules) > 0 {
 			b.runModules(modules, parseImportMap(doc))
 		}
 		b.fireLifecycle()
+		execDone = time.Now()
 		if env.Diag != nil {
 			*env.Diag = b.collectDiagnostics()
 		}
@@ -248,6 +254,21 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	// the happens-before edge for the b/stats reads below.
 	loop.Terminate()
 	if env.Diag != nil {
+		// Timing: a wedged script can leave setupDone/execDone unset; attribute the
+		// whole elapsed time to the last stage that was reached.
+		end := time.Now()
+		env.Diag.TotalDur = end.Sub(start)
+		switch {
+		case setupDone.IsZero():
+			env.Diag.SetupDur = env.Diag.TotalDur
+		case execDone.IsZero():
+			env.Diag.SetupDur = setupDone.Sub(start)
+			env.Diag.ExecDur = end.Sub(setupDone)
+		default:
+			env.Diag.SetupDur = setupDone.Sub(start)
+			env.Diag.ExecDur = execDone.Sub(setupDone)
+			env.Diag.SettleDur = end.Sub(execDone)
+		}
 		env.Diag.WaitRequested = !env.Wait.empty()
 		env.Diag.WaitMet = stats.met
 		env.Diag.DeadlineHit = stats.deadline || interrupted
