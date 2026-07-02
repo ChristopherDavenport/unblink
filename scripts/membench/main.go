@@ -35,6 +35,7 @@ func main() {
 	root := flag.String("root", ".", "repo root (for bin/unblink and testdata)")
 	chromePath := flag.String("chrome", "", "path to a chrome/chromium binary (auto-detected if empty)")
 	concurrency := flag.Int("concurrency", 8, "number of concurrent renders/tabs for the steady-state measurement")
+	perfIters := flag.Int("perf-iters", 5, "iterations per fixture for the latency/throughput pass")
 	flag.Parse()
 
 	srv, err := serveFixtures(*root)
@@ -48,25 +49,33 @@ func main() {
 		urls[i] = srv.URL + f.path
 	}
 
-	fmt.Fprintf(os.Stderr, "membench: %d fixtures, concurrency=%d, machine=%s/%s\n",
-		len(fx), *concurrency, runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(os.Stderr, "membench: %d fixtures, concurrency=%d, perf-iters=%d, machine=%s/%s\n",
+		len(fx), *concurrency, *perfIters, runtime.GOOS, runtime.GOARCH)
 
 	var results []result
-	results = append(results, measureUnblink(*root, urls, *concurrency))
+	var perf []perfResult
+	res, pr := measureUnblink(*root, fx, urls, *concurrency, *perfIters)
+	results = append(results, res)
+	perf = append(perf, pr)
 
 	chrome := resolveChrome(*chromePath)
 	if chrome == "" {
 		fmt.Fprintln(os.Stderr, "membench: no chrome/chromium found (set -chrome or install one); skipping the Chromium baseline")
 	} else {
 		fmt.Fprintf(os.Stderr, "membench: chromium at %s\n", chrome)
-		results = append(results, measureChrome(chrome, urls, *concurrency))
+		res, pr := measureChrome(chrome, fx, urls, *concurrency, *perfIters)
+		results = append(results, res)
+		perf = append(perf, pr)
 	}
 
 	printTable(results)
+	printPerfTable(perf)
 }
 
-// measureUnblink builds/locates bin/unblink and drives it over stdio.
-func measureUnblink(root string, urls []string, concurrency int) result {
+// measureUnblink builds/locates bin/unblink, drives it over stdio, and returns
+// both the footprint and the latency/throughput results (measured on the same
+// live process before it is torn down).
+func measureUnblink(root string, fx []fixture, urls []string, concurrency, perfIters int) (result, perfResult) {
 	bin := filepath.Join(root, "bin", "unblink")
 	if _, err := os.Stat(bin); err != nil {
 		die("bin/unblink not found at %s — run `make build` first", bin)
@@ -102,18 +111,21 @@ func measureUnblink(root string, urls []string, concurrency int) result {
 		fmt.Fprintf(os.Stderr, "membench: unblink concurrent reads: %v\n", err)
 	}
 	r.concurRSSMB = mb(s2.peakKiB())
-	return r
+
+	pr := measurePerfUnblink(u, fx, urls, perfIters, concurrency)
+	return r, pr
 }
 
-// measureChrome drives headless Chromium through the same corpus.
-func measureChrome(chrome string, urls []string, concurrency int) result {
+// measureChrome drives headless Chromium through the same corpus, returning both
+// footprint and latency/throughput.
+func measureChrome(chrome string, fx []fixture, urls []string, concurrency, perfIters int) (result, perfResult) {
 	r := result{engine: "chromium (headless)"}
 	r.binaryMB = fileMB(chrome)
 
 	cr, ready, err := startChrome(chrome)
 	if err != nil {
 		r.note = "launch failed: " + err.Error()
-		return r
+		return r, perfResult{engine: r.engine, note: r.note}
 	}
 	defer cr.Close()
 	r.coldStartMS = ready.Milliseconds()
@@ -137,7 +149,9 @@ func measureChrome(chrome string, urls []string, concurrency int) result {
 	s2 := newSampler(cr.pid)
 	cr.renderConcurrent(urls, concurrency)
 	r.concurRSSMB = mb(s2.peakKiB())
-	return r
+
+	pr := measurePerfChrome(cr, fx, urls, perfIters, concurrency)
+	return r, pr
 }
 
 // resolveChrome returns the given path, or auto-detects a common chrome binary.
