@@ -47,7 +47,7 @@ func TestSessionReadTracksLiveMutations(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	if r, err := b.Interact(ctx, "s", "#inc", "click", ""); err != nil || !r.Matched {
+	if r, err := b.Interact(ctx, "s", "#inc", "click", "", ""); err != nil || !r.Matched {
 		t.Fatalf("interact 1: matched=%v err=%v", r != nil && r.Matched, err)
 	}
 	first := readSession(t, b, "s")
@@ -62,7 +62,7 @@ func TestSessionReadTracksLiveMutations(t *testing.T) {
 		t.Errorf("repeat read of unchanged live page differs\nfirst:  %s\nsecond: %s", first, second)
 	}
 
-	if r, err := b.Interact(ctx, "s", "#inc", "click", ""); err != nil || !r.Matched {
+	if r, err := b.Interact(ctx, "s", "#inc", "click", "", ""); err != nil || !r.Matched {
 		t.Fatalf("interact 2: matched=%v err=%v", r != nil && r.Matched, err)
 	}
 	third := readSession(t, b, "s")
@@ -79,7 +79,7 @@ func TestInteractChangedTracksMutation(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	r, err := b.Interact(ctx, "s", "#inc", "click", "")
+	r, err := b.Interact(ctx, "s", "#inc", "click", "", "")
 	if err != nil {
 		t.Fatalf("interact inc: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestInteractChangedTracksMutation(t *testing.T) {
 		t.Error("mutating click reported Changed=false")
 	}
 
-	r, err = b.Interact(ctx, "s", "#noop", "click", "")
+	r, err = b.Interact(ctx, "s", "#noop", "click", "", "")
 	if err != nil {
 		t.Fatalf("interact noop: %v", err)
 	}

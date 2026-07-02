@@ -224,6 +224,38 @@ func (b *bridge) newUIEvent(typ string, bubbles, cancelable bool, target goja.Va
 	return ev
 }
 
+// newKeyEvent builds a synthetic KeyboardEvent carrying the key identity fields
+// handlers read (key/code/keyCode/which/charCode) plus the trusted/composed
+// markers, modeled on newUIEvent. keypress carries charCode (printable keys
+// only); keydown/keyup report charCode 0, matching browsers.
+func (b *bridge) newKeyEvent(typ string, info keyInfo, bubbles, cancelable bool, target goja.Value) *domEvent {
+	o := b.vm.NewObject()
+	_ = o.Set("type", typ)
+	_ = o.Set("bubbles", bubbles)
+	_ = o.Set("cancelable", cancelable)
+	_ = o.Set("isTrusted", true)
+	_ = o.Set("composed", true)
+	_ = o.Set("key", info.key)
+	_ = o.Set("code", info.code)
+	_ = o.Set("keyCode", info.keyCode)
+	_ = o.Set("which", info.keyCode)
+	if typ == "keypress" && info.printable {
+		_ = o.Set("charCode", []rune(info.char)[0])
+	} else {
+		_ = o.Set("charCode", 0)
+	}
+	_ = o.Set("repeat", false)
+	_ = o.Set("location", 0)
+	_ = o.Set("ctrlKey", false)
+	_ = o.Set("shiftKey", false)
+	_ = o.Set("altKey", false)
+	_ = o.Set("metaKey", false)
+	_ = o.Set("getModifierState", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
+	ev := &domEvent{typ: typ, bubbles: bubbles, cancelable: cancelable, js: o}
+	b.bindEvent(o, ev, target)
+	return ev
+}
+
 // wrapEvent augments a user-constructed event object (from dispatchEvent) with the
 // dispatch machinery, preserving its own fields (e.g. clientX on a MouseEvent).
 func (b *bridge) wrapEvent(o *goja.Object, target goja.Value) *domEvent {
