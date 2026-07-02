@@ -59,8 +59,15 @@ and `document.cookie` (backed by the session jar). Page-JS network requests are
 guarded — requests to private/loopback/metadata IPs are blocked and a per-render
 request budget applies (`--js-no-network`, `--js-allow-private`,
 `--js-max-requests`). A background pool of fresh runtimes keeps render latency low
-(`--js-prewarm`, `0` disables). With a session, `interact` keeps a **live runtime**
-alive for the page so JS state persists across calls (a true browser-tab session).
+(`--js-prewarm`, `0` disables); the per-render budget defaults to 5s (`--js-timeout`).
+With a session, `interact` keeps a **live runtime**
+alive for the page so JS state persists across calls (a true browser-tab session);
+live runtimes are capped (`--js-max-live`, LRU torn down) and both
+`window.localStorage` and `window.sessionStorage` persist per session (a session
+is a tab), so SPA auth/state flows survive across calls. Common globals
+that bundles use without feature-detection are covered: `structuredClone`, a
+connection-less `WebSocket` stub (error→close), inert `Worker`, append-mode
+`document.write`, and `hashchange`.
 Under `--js` the engine renders the **mainstream SPA frameworks** (React, Vue,
 Preact, Svelte, Lit / web components) via a flat-DOM model — a real
 Node/Element/HTMLElement prototype chain, MutationObserver, custom-element upgrade,
@@ -108,12 +115,12 @@ results rather than logged away.
 | `forms`       | `{ url?, session?, use_current? }`                 | The page's forms and their fields (name, type, required, options).      |
 | `find`        | `{ url?, session?, use_current?, query, max_hits? }` | Matching text snippets with the heading path locating each.           |
 | `site`        | `{ url?, session?, use_current? }`                 | A host's agent-facing metadata: robots.txt summary (allow/disallow for a browser agent, crawl-delay, sitemaps) + llms.txt content + whether llms-full.txt exists. Context only — never blocks a fetch. |
-| `click`       | `{ session, link_index? \| match? }`               | Follows a link from the session's current page (cookies carried); returns a summary. |
-| `submit_form` | `{ session, form?, values? }`                      | Submits a form from the current page (cookies carried); returns a summary. |
+| `click`       | `{ session, link_index? \| match?, render? }`      | Follows a link from the session's current page (cookies carried); returns a summary. `render=true` runs the destination's JavaScript first (needs `--js`). |
+| `submit_form` | `{ session, form?, values?, render? }`             | Submits a form from the current page (cookies carried); returns a summary. `render=true` runs the result page's JavaScript first (needs `--js`). |
 | `controls`    | `{ url?, session?, use_current? }`                 | Non-link interactive controls (buttons, `role=button`, `onclick`/`tabindex`, submit/reset inputs, tabs, summaries), each with a stable CSS selector for `interact`. |
 | `interact`    | `{ session, selector, event?, value? }`            | Dispatches an interaction at a selector and runs the page's JS so its handlers fire, then returns the updated page. `event` defaults to `click`, which emulates a **full primary-button press** (`pointerdown`→`mousedown`→focus→`pointerup`→`mouseup`→`click`) so press/pointer-based widgets (react-aria/Radix tabs, toggles, menus) actually activate — not just plain `onclick`; also `hover` (reveal hover menus/tooltips), `focus` (focus-triggered dropdowns), `input`, `change`, `keydown`, `submit`. The session keeps a **live JS runtime**, so state (variables, listeners, timers, fetched data) persists across calls. Requires `--js`. Does not navigate — but a handler that requests a cross-document navigation (`location.href`/`assign`/`replace`) surfaces the target as `pending_navigation` so you can follow it with `read`/`click`. |
 | `data`        | `{ url?, session?, use_current?, kind? }`          | Machine-readable structured data embedded in a page: JSON-LD (schema.org), HTML data tables (caption/headers/rows), and microdata (itemscope/itemprop). `kind` selects `jsonld`, `tables`, `microdata`, or `all` (default). HTML only. *(Tables: colspan is expanded, rowspan ignored; microdata `itemref` unsupported; JSON-LD `@graph` is flattened. `raw_html` returns source with relative URLs left as-is.)* |
-| `session`     | `{ action: new\|list\|state\|history\|back\|forward\|close, session?, url?, headers?, cookies?, auth? }` | Manage a session's lifecycle and navigation. `new` accepts `url` + `headers`/`cookies`/`auth` to attach credentials for that origin (see [Authentication](#authentication)); re-creating a live id with new credentials errors (close it first). `list` returns every live session's state. |
+| `session`     | `{ action: new\|list\|state\|history\|back\|forward\|close, session?, url?, headers?, cookies?, auth? }` | Manage a session's lifecycle and navigation. `new` accepts `url` + `headers`/`cookies`/`auth` to attach credentials for that origin (see [Authentication](#authentication)); re-creating a live id with new credentials errors (close it first). `list` returns every live session's state (including `live_js`, whether a persistent runtime is attached). |
 | `map`         | `{ url, max_urls?, max_depth? }`                   | Discover a site's URLs: harvests sitemap.xml (robots.txt + `/sitemap.xml`, following sitemap indexes) and crawls same-origin links breadth-first from the seed. Returns a bounded, de-duplicated list tagged `source=sitemap\|crawl` with depth. Exposure-grade — surfaces robots.txt but never gates on it. |
 | `search`      | `{ query, count?, site? }`                         | Web search via the configured provider (SearXNG or Brave): ranked results (title, url, snippet). `site` restricts to one domain. Requires `--search-provider` (see [Search](#search)); errors cleanly otherwise. |
 

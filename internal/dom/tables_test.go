@@ -69,3 +69,56 @@ func TestTablesNestedFolded(t *testing.T) {
 		t.Errorf("nested text should fold into the outer cell: %#v", tables[0].Rows)
 	}
 }
+
+func TestTablesRowspanExpanded(t *testing.T) {
+	// The "West" cell spans two rows; both rows must show it so columns align
+	// (previously rowspan was ignored and row 2 shifted left).
+	doc := parseDoc(t, `<!doctype html><html><body>
+	<table>
+	  <tr><th>Region</th><th>City</th><th>Pop</th></tr>
+	  <tr><td rowspan="2">West</td><td>SF</td><td>800k</td></tr>
+	  <tr><td>LA</td><td>4m</td></tr>
+	  <tr><td>East</td><td>NYC</td><td>8m</td></tr>
+	</table></body></html>`)
+	tbl := dom.Tables(doc)[0]
+	want := [][]string{
+		{"West", "SF", "800k"},
+		{"West", "LA", "4m"},
+		{"East", "NYC", "8m"},
+	}
+	if len(tbl.Rows) != len(want) {
+		t.Fatalf("rows = %v", tbl.Rows)
+	}
+	for i := range want {
+		if strings.Join(tbl.Rows[i], "|") != strings.Join(want[i], "|") {
+			t.Errorf("row %d = %v, want %v", i, tbl.Rows[i], want[i])
+		}
+	}
+}
+
+func TestTablesRowspanColspanCombo(t *testing.T) {
+	// A 2x2 merged block: both spanned rows repeat it across both columns.
+	doc := parseDoc(t, `<!doctype html><html><body>
+	<table>
+	  <tr><td rowspan="2" colspan="2">A</td><td>B</td></tr>
+	  <tr><td>C</td></tr>
+	</table></body></html>`)
+	tbl := dom.Tables(doc)[0]
+	if strings.Join(tbl.Rows[0], "|") != "A|A|B" || strings.Join(tbl.Rows[1], "|") != "A|A|C" {
+		t.Errorf("rows = %v, want [A A B] [A A C]", tbl.Rows)
+	}
+}
+
+func TestTablesTrailingRowspanGap(t *testing.T) {
+	// A rowspan in the last column with the next row having fewer cells: the gap
+	// pads empty and the carried cell stays in its own column.
+	doc := parseDoc(t, `<!doctype html><html><body>
+	<table>
+	  <tr><td>a</td><td>b</td><td rowspan="2">note</td></tr>
+	  <tr><td>c</td></tr>
+	</table></body></html>`)
+	tbl := dom.Tables(doc)[0]
+	if strings.Join(tbl.Rows[1], "|") != "c||note" {
+		t.Errorf("row 1 = %v, want [c  note]", tbl.Rows[1])
+	}
+}

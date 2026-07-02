@@ -336,9 +336,15 @@ func (b *bridge) templateContent(n *html.Node) *goja.Object {
 	return o
 }
 
+// maxDiagErrors bounds the per-context error buffer: a long-lived live session
+// with a crash-looping timer must not grow it forever. New errors past the cap
+// are dropped (keeping the earliest — indexes into the slice stay stable for
+// Dispatch's per-window capture).
+const maxDiagErrors = 64
+
 // recordError appends a script/upgrade exception for render diagnostics (Phase E).
 func (b *bridge) recordError(err error) {
-	if err != nil {
+	if err != nil && len(b.diagErrors) < maxDiagErrors {
 		b.diagErrors = append(b.diagErrors, err.Error())
 	}
 }

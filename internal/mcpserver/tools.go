@@ -43,7 +43,7 @@ type readArgs struct {
 	// has hydrated (both imply render=true and need the server started with --js).
 	WaitFor     string `json:"wait_for,omitempty" jsonschema:"CSS selector to wait for in the rendered DOM before returning; implies render=true (requires --js). wait_met in the result reports whether it appeared"`
 	WaitText    string `json:"wait_text,omitempty" jsonschema:"visible-text substring to wait for in the rendered DOM before returning; implies render=true (requires --js)"`
-	WaitTimeout int    `json:"wait_timeout,omitempty" jsonschema:"seconds to wait for wait_for/wait_text before giving up (default ~2s, capped at 30s)"`
+	WaitTimeout int    `json:"wait_timeout,omitempty" jsonschema:"seconds to wait for wait_for/wait_text before giving up (default ~5s, capped at 30s)"`
 	// One-shot credentials for a stateless fetch (no session), scoped to url's origin.
 	// For anything sensitive or reused, prefer session(action=new, auth=...).
 	Headers map[string]string `json:"headers,omitempty" jsonschema:"one-shot request headers, sent only to url's origin (stateless fetch)"`
@@ -233,10 +233,11 @@ type clickArgs struct {
 	Session   string `json:"session" jsonschema:"the session to navigate (required)"`
 	LinkIndex int    `json:"link_index,omitempty" jsonschema:"index of the link to follow, from the links tool (default 0)"`
 	Match     string `json:"match,omitempty" jsonschema:"substring of link text or href to follow instead of an index"`
+	Render    bool   `json:"render,omitempty" jsonschema:"run the destination page's JavaScript before summarizing (requires --js) — parity with read's render"`
 }
 
 func (s *Server) handleClick(ctx context.Context, _ *mcp.CallToolRequest, args clickArgs) (*mcp.CallToolResult, browser.BrowseResult, error) {
-	r, err := s.browser.Click(ctx, args.Session, args.LinkIndex, args.Match)
+	r, err := s.browser.Click(ctx, args.Session, args.LinkIndex, args.Match, args.Render)
 	if err != nil {
 		return errorResult(err), browser.BrowseResult{}, nil
 	}
@@ -249,10 +250,11 @@ type submitArgs struct {
 	Session string            `json:"session" jsonschema:"the session to submit within (required)"`
 	Form    string            `json:"form,omitempty" jsonschema:"form id, name, or index; optional when the page has one form"`
 	Values  map[string]string `json:"values,omitempty" jsonschema:"field name -> value, merged over the form's defaults"`
+	Render  bool              `json:"render,omitempty" jsonschema:"run the result page's JavaScript before summarizing (requires --js) — parity with read's render"`
 }
 
 func (s *Server) handleSubmit(ctx context.Context, _ *mcp.CallToolRequest, args submitArgs) (*mcp.CallToolResult, browser.BrowseResult, error) {
-	r, err := s.browser.Submit(ctx, args.Session, args.Form, args.Values)
+	r, err := s.browser.Submit(ctx, args.Session, args.Form, args.Values, args.Render)
 	if err != nil {
 		return errorResult(err), browser.BrowseResult{}, nil
 	}

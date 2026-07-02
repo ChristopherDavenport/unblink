@@ -481,6 +481,25 @@ func (b *bridge) installHTMLElementProto() {
 			}
 		})
 
+	// href/src reflect their attributes (the getter resolves to an absolute URL,
+	// as real browsers do), so `a.href = "/x"` on a created element produces a
+	// link that extraction sees — not a wrapper-only property.
+	for _, attrName := range []string{"href", "src"} {
+		name := attrName
+		b.protoProp(p, name,
+			func(n *html.Node) goja.Value {
+				v := getAttr(n, name)
+				if v == "" {
+					return vm.ToValue("")
+				}
+				if u := b.resolveNav(v); u != nil {
+					return vm.ToValue(u.String())
+				}
+				return vm.ToValue(v)
+			},
+			func(n *html.Node, v goja.Value) { b.setAttrMut(n, name, v.String()) })
+	}
+
 	b.protoGetter(p, "dataset", func(n *html.Node) goja.Value { return b.datasetFor(n) })
 	b.protoGetter(p, "style", func(n *html.Node) goja.Value { return b.styleFor(n) })
 

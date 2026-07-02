@@ -23,9 +23,11 @@ import (
 	"golang.org/x/net/html"
 )
 
-// Defaults for the engine.
+// Defaults for the engine. The 5s render budget fits real code-split SPAs
+// (shell + lazy chunks + data fetches); 2s proved too tight for them, and a
+// settled page returns well before the budget anyway.
 const (
-	DefaultTimeout       = 2 * time.Second
+	DefaultTimeout       = 5 * time.Second
 	DefaultMaxConcurrent = 4
 	// maxRenderBudget caps an Env.Timeout override so a caller's wait_timeout can't
 	// pin a runtime (and its concurrency slot) open indefinitely.
@@ -198,7 +200,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		vmRef.Store(vm)
 		// reqTimeout is the render budget so a wait_timeout override also gives the
 		// page's own fetches longer to complete (else the awaited content never lands).
-		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, ctx, budget)
+		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget)
 		b.install()
 		// Stubs simplest to express in JS (storage, observers, rAF, and the
 		// network-aware fetch/XHR). Failure here is non-fatal.

@@ -35,6 +35,7 @@ func main() {
 	jsAllowPrivate := flag.Bool("js-allow-private", false, "permit page-JS requests to private/loopback IPs (internal/dev use)")
 	jsMaxRequests := flag.Int("js-max-requests", browser.DefaultJSMaxRequests, "max page-JS network requests per render")
 	jsPrewarm := flag.Int("js-prewarm", browser.DefaultJSPrewarm, "number of pre-warmed JS runtimes kept ready (0 disables)")
+	jsMaxLive := flag.Int("js-max-live", browser.DefaultJSMaxLive, "max concurrent live per-session JS runtimes (LRU torn down over the cap)")
 	sessionTTL := flag.Duration("session-ttl", 0, "idle time before a session is evicted (default 30m)")
 	sessionCap := flag.Int("session-cap", 0, "maximum concurrent sessions, oldest evicted on overflow (default 256)")
 	searchProvider := flag.String("search-provider", "", "web search provider for the search tool: searxng|brave (empty disables it)")
@@ -68,6 +69,7 @@ func main() {
 			browser.WithJSAllowPrivate(*jsAllowPrivate),
 			browser.WithJSMaxRequests(*jsMaxRequests),
 			browser.WithJSPrewarm(*jsPrewarm),
+			browser.WithJSMaxLive(*jsMaxLive),
 		)
 	}
 	if *searchProvider != "" {

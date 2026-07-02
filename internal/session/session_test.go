@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"testing"
 	"time"
@@ -252,5 +253,20 @@ func TestHistoryNavigation(t *testing.T) {
 	urls, pos := s.HistoryURLs()
 	if len(urls) != 3 || pos != 2 || urls[2] != "https://e.com/4" {
 		t.Fatalf("history = %v pos=%d", urls, pos)
+	}
+}
+
+func TestHistoryCapped(t *testing.T) {
+	m := session.NewManager(0, 0, newClient, nil)
+	s, _ := m.GetOrCreate("long")
+	for i := 0; i < 75; i++ {
+		s.Visit(makePage(fmt.Sprintf("https://e.com/%d", i)))
+	}
+	urls, pos := s.HistoryURLs()
+	if len(urls) > 50 {
+		t.Errorf("history len = %d, want <= 50 (each entry retains a full DOM)", len(urls))
+	}
+	if pos != len(urls)-1 || urls[pos] != "https://e.com/74" {
+		t.Errorf("current = %q at %d, want the latest visit last", urls[pos], pos)
 	}
 }
