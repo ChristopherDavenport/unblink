@@ -30,7 +30,7 @@ explicit about both directions.
 | | **unblink** | **Playwright MCP** | **Charlotte** | **Obscura** | **Lightpanda** |
 |---|---|---|---|---|---|
 | Engine | Pure Go, hand-rolled DOM (no browser engine) | Real Chrome / Firefox / WebKit / Edge | Real headless Chromium (Puppeteer/CDP) | From-scratch engine in Rust | From-scratch engine in Zig |
-| JavaScript | goja (Go interpreter), opt-in `--js`; renders React/Vue/Preact/Svelte/Lit via a flat-DOM model | Full (real browser) | Full (real Chromium) | Embedded V8 | Embedded V8; beta — "hundreds of Web APIs" unimplemented |
+| JavaScript | goja (Go interpreter), opt-in `--js`; renders React/Vue/Preact/Svelte 4/Lit via a flat-DOM model (Svelte 5 trips a goja VM bug → graceful degradation) | Full (real browser) | Full (real Chromium) | Embedded V8 | Embedded V8; beta — "hundreds of Web APIs" unimplemented |
 | Agent protocol | MCP (stdio), 14 tools | MCP (Node), 50+ tools | MCP (Node ≥ 20), 43 tools in profiles (7/23/43) | CDP (Puppeteer/Playwright drop-in) + MCP (11 tools) | CDP (WebSocket) + MCP (stdio) + CLI agent mode |
 | Page representation | Reduced Markdown (article or full page) + structured tools (outline, links, forms, JSON-LD/tables) | Accessibility-tree snapshots | Typed page decomposition, 3 detail levels, targeted `find` queries | DOM automation primitives (navigate/click/fill/evaluate) | DOM automation primitives; some semantic extraction |
 | Screenshots / pixels | No — permanent non-goal | Yes, plus video, tracing, PDF export | Yes (real Chromium) | Not a focus | No — no graphical rendering |

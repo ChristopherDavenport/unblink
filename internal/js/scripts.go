@@ -215,9 +215,39 @@ func (b *bridge) compileAndRun(name, src string) {
 		b.recordError(err) // original goja error preserves today's diagnostic text
 		return
 	}
-	if _, err := b.vm.RunProgram(prog); err != nil {
+	b.runProgram(prog)
+}
+
+// runProgram runs a compiled program, turning a goja Go-level *panic* — an
+// interpreter limitation or bug hit by a specific construct (e.g. Svelte 5's
+// private-field-heavy Boundary class trips a goja definePrivateProp assertion),
+// as opposed to a JS exception, which is returned as err — into a recorded
+// diagnostic instead of unwinding the whole render. Without this a single script
+// that panics goja leaves a silent blank page (the panic skips the rest of the
+// pipeline before diagnostics are collected); with it the failure surfaces as a
+// js_error and whatever else the page rendered is kept. The runtime is single-use
+// and discarded after the render, so recovering and continuing cannot leak a
+// corrupted VM across renders. vm.Interrupt (budget/cancel/memory guard) arrives
+// as an err, not a panic, so it is unaffected.
+func (b *bridge) runProgram(prog *goja.Program) {
+	if err := b.runProgramErr(prog); err != nil {
 		b.recordError(err)
 	}
+}
+
+// runProgramErr runs prog and returns any error, converting a goja Go-level panic
+// into an error value (so callers that thread a result — the dynamic-import
+// loader — can reject rather than crash the render). See runProgram for why.
+func (b *bridge) runProgramErr(prog *goja.Program) (rerr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			rerr = fmt.Errorf("js engine could not execute a script (goja limitation): %v", r)
+		}
+	}()
+	if _, err := b.vm.RunProgram(prog); err != nil {
+		return err
+	}
+	return nil
 }
 
 // classicProgram resolves the Program for a classic script: goja compile with

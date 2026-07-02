@@ -141,8 +141,10 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   pages: the flat-DOM model (Phase 8) lets React/Vue/Lit actually mount, so the
   handlers they attach during hydration fire.
 - **Phase 8 — Framework rendering (flat-DOM model).** ✅ Client-side rendering and
-  hydration for the mainstream SPA frameworks (React, Vue, Preact, Svelte, and
-  Lit / web components), always-on under `--js`. The goja↔DOM bridge gained a real
+  hydration for the mainstream SPA frameworks (React, Vue, Preact, Svelte 4, and
+  Lit / web components), always-on under `--js`. (**Svelte 5** is the exception —
+  its client runtime instantiates a private-field-heavy `Boundary` class that
+  trips a goja VM bug; see the graceful-degradation note under Phase 21.) The goja↔DOM bridge gained a real
   `Node`/`Element`/`HTMLElement`/`Text`/`Comment`/`DocumentFragment`/`Document`
   prototype chain (so `instanceof` and prototype-patching work; `internal/js/proto.go`),
   the DOM-tree APIs frameworks call at mount (`createComment`/`createDocumentFragment`/
@@ -497,13 +499,33 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     budget is clamped to fire in-budget (intervals never clamped) and the settle
     poll holds open until it does, so deferred content lands instead of silently
     vanishing; timers still pending at snapshot surface as `timers_pending`.
+  - **Graceful degradation on a goja engine panic** (`bridge.runProgram`): a page
+    whose JS trips a goja *interpreter* bug — a Go panic, distinct from a JS
+    exception (which already comes back as an error) — used to skip the rest of the
+    pipeline before diagnostics were collected, leaving a **silent blank render**.
+    Script/module/dynamic-import execution now recovers such a panic into a
+    `js_errors` diagnostic and keeps rendering. The canonical case is **Svelte 5**:
+    its client runtime instantiates a private-field-heavy `Boundary` class, and
+    goja's `definePrivateProp` opcode asserts the field-init frame is a
+    `classFuncObject` — for this class the frame base is a plain object, so goja
+    panics (`interface conversion: *goja.baseObject, not *goja.classFuncObject`).
+    Lowering the private fields via esbuild only trades this for goja's separate
+    WeakMap bug (the Phase-15-documented dead end), so both native and lowered
+    paths are goja engine bugs, not unblink DOM gaps — a proper fix belongs
+    upstream in goja (ADR 0002 territory). Until then Svelte 5 degrades to its
+    server-rendered content plus a visible `js_errors` note instead of a blank
+    page; Svelte **4** renders fully (`testdata/frameworks/svelte-app.iife.js`).
+    Regression fixture: `testdata/frameworks/svelte5-app.iife.js` +
+    `internal/js/svelte5_test.go`.
   - **Eval grew 40 → 47 must-pass cases**: starved-render diagnostics,
     `net_denied`, keydown search, Svelte + Lit render, a tier-1 API smoke page.
-  - **Measured footprint**: `scripts/membench` (a separate module with chromedp,
-    invisible to the root `./...`) benchmarks unblink vs. headless Chromium on
-    identical fixtures; `docs/comparison.md` carries the numbers (≈15× lighter and
-    faster to start). ADR 0003 added; README gains an MCP-client-config section, a
-    flags table, `SECURITY.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`.
+  - **Measured footprint & render speed**: `scripts/membench` (a separate module
+    with chromedp, invisible to the root `./...`) benchmarks unblink vs. headless
+    Chromium on identical fixtures; `docs/comparison.md` carries the numbers
+    (≈15× lighter, ≈15× faster to start, ~50× faster on static pages; ~1.7× slower
+    on heavy SPA renders — goja interpreter vs. V8 JIT). ADR 0003 added; README
+    gains an MCP-client-config section, a flags table, `SECURITY.md`,
+    `CONTRIBUTING.md`, and `CHANGELOG.md`.
 
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are

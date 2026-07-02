@@ -101,9 +101,7 @@ func (b *bridge) runModules(modules []*html.Node, importMap map[string]string) {
 			b.recordError(err)
 			continue
 		}
-		if _, err := b.vm.RunProgram(prog); err != nil {
-			b.recordError(err)
-		}
+		b.runProgram(prog)
 	}
 }
 

@@ -18,6 +18,7 @@ Upgrades must be deliberate: bump the version here and re-pin.
 | `htm.umd.js`                  | htm       | 3.1.1    | Apache-2.0 | unpkg.com/htm@3.1.1/dist/htm.umd.js                              |
 | `lit-all.min.js`              | Lit       | 3.2.0    | BSD-3-Clause | cdn.jsdelivr.net/gh/lit/dist@3.2.0/all/lit-all.min.js          |
 | `svelte-app.iife.js`          | Svelte    | 4.2.20   | MIT        | compiled locally (see below)                                     |
+| `svelte5-app.iife.js`         | Svelte    | 5.56.4   | MIT        | compiled locally — graceful-degradation fixture (see below)      |
 
 React / Vue / Preact load as classic UMD `<script src>` (the goja path, no esbuild).
 Lit is an ES module bundle, so it exercises the esbuild → ES2017 → goja path.
@@ -36,9 +37,20 @@ esbuild entry.js --bundle --format=iife --minify --outfile=svelte-app.iife.js \
   --plugin:esbuild-svelte   # compilerOptions: { css: 'injected' }
 ```
 
-Svelte 4 (not 5): the v4 compiled runtime uses conventional
+Svelte 4 renders fully: the v4 compiled runtime uses conventional
 createElement/appendChild/setData DOM manipulation, which the flat-DOM engine
-renders faithfully; v5's comment-anchor hydration model is out of scope.
+renders faithfully.
+
+`svelte5-app.iife.js` is the **same** minimal component compiled with Svelte 5
+(`new App(...)` → `mount(App, ...)` in `entry.js`, production build). It does
+*not* render: Svelte 5's client runtime instantiates a private-field-heavy
+`Boundary` class that trips a goja VM bug (`definePrivateProp` asserts a
+`classFuncObject` frame; goja panics on this class). It is vendored as the
+**graceful-degradation** fixture — `internal/js/svelte5_test.go` asserts the
+engine records a `js_errors` diagnostic and keeps rendering rather than crashing
+or returning a silent blank. See `docs/architecture.md` (Phase 21). If a future
+goja bump fixes the private-field bug, this bundle will simply start rendering and
+the test accepts that.
 
 Each project's full license text is available from its repository; these are
 unmodified redistributions of the published artifacts for testing only.
