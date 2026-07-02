@@ -208,7 +208,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		b.install()
 		// Stubs simplest to express in JS (storage, observers, rAF, and the
 		// network-aware fetch/XHR). Failure here is non-fatal.
-		_, _ = vm.RunString(preludeJS)
+		_, _ = vm.RunProgram(preludeProgram)
 		setupDone = time.Now()
 		b.runScripts(scripts)
 		if len(modules) > 0 {

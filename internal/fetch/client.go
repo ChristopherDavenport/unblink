@@ -221,9 +221,13 @@ func (c *Client) buildTransport() http.RoundTripper {
 		return newUTLSRoundTripper(dialer, c.tlsInsecure)
 	}
 	return &http.Transport{
-		DialContext:           dialer.DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
+		DialContext:       dialer.DialContext,
+		ForceAttemptHTTP2: true,
+		MaxIdleConns:      100,
+		// The stdlib default of 2 idle conns per host makes concurrent same-host
+		// work (page + subresources, parallel agent reads) pay fresh TCP+TLS
+		// handshakes; 8 keeps a small burst's connections reusable.
+		MaxIdleConnsPerHost:   8,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,

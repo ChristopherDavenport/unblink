@@ -46,7 +46,7 @@ func BenchmarkBridgeInstall(b *testing.B) {
 		loop.RunOnLoop(func(vm *goja.Runtime) {
 			br := newBridge(vm, loop, doc, base, nil, nil, nil, nil, context.Background(), time.Second)
 			br.install()
-			_, _ = vm.RunString(preludeJS)
+			_, _ = vm.RunProgram(preludeProgram)
 			close(done)
 		})
 		<-done

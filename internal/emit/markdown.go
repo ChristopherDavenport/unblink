@@ -8,10 +8,19 @@ import (
 	"regexp"
 	"strings"
 
-	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
 
 	"github.com/christopherdavenport/unblink/internal/page"
+)
+
+// mdConverter is built once and shared — the same plugin set the v2
+// ConvertString convenience wrapper constructs per call. A Converter is
+// documented safe for concurrent use (internally mutex-guarded); per-call
+// options like WithDomain are passed to ConvertString, not baked in here.
+var mdConverter = converter.NewConverter(
+	converter.WithPlugins(base.NewBasePlugin(), commonmark.NewCommonmarkPlugin()),
 )
 
 // mdImage matches a Markdown inline image: ![alt](url) with an optional title.
@@ -57,7 +66,7 @@ func Markdown(p *page.Page) error {
 		opts = append(opts, converter.WithDomain(p.FinalURL.Scheme+"://"+p.FinalURL.Host))
 	}
 
-	body, err := htmltomarkdown.ConvertString(p.Article.ContentHTML, opts...)
+	body, err := mdConverter.ConvertString(p.Article.ContentHTML, opts...)
 	if err != nil {
 		return fmt.Errorf("emit: convert to markdown: %w", err)
 	}
