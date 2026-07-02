@@ -79,7 +79,7 @@ Three load-bearing decisions hold the design together:
 - `internal/page` — core data model (`Page`, `Article`, `Link`, `Form`…). Pure types.
 - `internal/fetch` — HTTP-client-as-browser: cookies, redirects, brotli/gzip/deflate, charset→UTF-8, rate limit, retries, optional utls TLS mimic.
 - `internal/dom` — **the only importer of `x/net/html`/`cascadia`**: parse, extraction, find.
-- `internal/reduce` — readability extraction + bluemonday sanitize (`Article` vs `Full`).
+- `internal/reduce` — readability extraction + bluemonday sanitize (`Article` vs `Full`); `Full` also suppresses repeated link-dense blocks (desktop nav + mobile-drawer twin) via `dom.StripDuplicateBlocks`.
 - `internal/emit` — serialize reduced content to Markdown + heading outline.
 - `internal/tokens` — token estimation + Markdown cursor pagination.
 - `internal/session` — per-session cookie jar + navigation history + a live `js.LiveContext` (persistent JS runtime) bound to the current page; navigation/eviction/close tears it down (manager `onEvict` hook).
