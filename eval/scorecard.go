@@ -58,7 +58,7 @@ func scoreCase(ctx context.Context, c Case) caseResult {
 var axisOrder = []Axis{
 	AxisRegistration, AxisJunk, AxisRecall, AxisToken, AxisPagination,
 	AxisStructure, AxisFind, AxisSession, AxisSite, AxisRender, AxisError,
-	AxisContent, AxisAuth, AxisDiscovery,
+	AxisContent, AxisAuth, AxisDiscovery, AxisSafety,
 }
 
 // writeReport prints the per-case table, per-axis rollup, and overall line.

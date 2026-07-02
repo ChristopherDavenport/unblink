@@ -81,7 +81,7 @@ func TestMapSitemapAndCrawl(t *testing.T) {
 	base, other := discoverServers(t)
 	b := newBrowser(t)
 
-	res, err := b.Map(context.Background(), req(base), 100, 3)
+	res, err := b.Map(context.Background(), req(base), 100, 3, nil)
 	if err != nil {
 		t.Fatalf("map: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestMapSitemapAndCrawl(t *testing.T) {
 func TestMapRespectsCap(t *testing.T) {
 	base, _ := discoverServers(t)
 	b := newBrowser(t)
-	res, err := b.Map(context.Background(), req(base), 1, 3)
+	res, err := b.Map(context.Background(), req(base), 1, 3, nil)
 	if err != nil {
 		t.Fatalf("map: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestMapRespectsCap(t *testing.T) {
 
 func TestMapRequiresURL(t *testing.T) {
 	b := newBrowser(t)
-	if _, err := b.Map(context.Background(), browser.Request{}, 0, 0); err == nil {
+	if _, err := b.Map(context.Background(), browser.Request{}, 0, 0, nil); err == nil {
 		t.Error("expected error for missing url")
 	}
 }

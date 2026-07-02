@@ -115,7 +115,9 @@ func (s *Server) registerTools() {
 		Annotations: writeAnn,
 		Description: "Within a session, submit a form from the current page with the given field " +
 			"values (merged over the form's defaults), carrying cookies. Returns a summary of the " +
-			"result page.",
+			"result page. Forms declaring enctype=multipart/form-data are encoded as multipart " +
+			"automatically; attach file uploads via files (inline content or content_base64 — " +
+			"file bytes are supplied by you, never read from disk).",
 	}, s.handleSubmit)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
@@ -171,7 +173,8 @@ func (s *Server) registerTools() {
 			"seed url. Returns a bounded, de-duplicated list of URLs, each tagged source=sitemap|crawl with " +
 			"its crawl depth, plus the sitemaps consulted. Exposure-grade: it surfaces robots.txt as context " +
 			"but never skips disallowed paths. Bound the walk with max_urls and max_depth; read a URL with the " +
-			"read tool.",
+			"read tool. Send a progress token (_meta.progressToken) to receive progress notifications while " +
+			"the walk runs (it can take up to 60s on a large site).",
 	}, s.handleMap)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{

@@ -15,10 +15,13 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/textproto"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -230,6 +233,16 @@ func (c *Client) buildTransport() http.RoundTripper {
 // Get fetches rawURL and returns a *page.Page with the transport fields and Raw
 // (the UTF-8-decoded body) populated. It does not parse HTML.
 func (c *Client) Get(ctx context.Context, rawURL string) (*page.Page, error) {
+	return c.GetConditional(ctx, rawURL, "", "")
+}
+
+// GetConditional fetches rawURL like Get, but performs an HTTP conditional
+// request using cache validators from a previously fetched copy: etag becomes
+// If-None-Match and lastModified becomes If-Modified-Since (either may be
+// empty). When the origin answers 304 Not Modified, the returned page carries
+// StatusCode == http.StatusNotModified and no body — the caller keeps its
+// cached copy. With both validators empty it is exactly Get.
+func (c *Client) GetConditional(ctx context.Context, rawURL, etag, lastModified string) (*page.Page, error) {
 	reqURL, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: parse url %q: %w", rawURL, err)
@@ -241,19 +254,23 @@ func (c *Client) Get(ctx context.Context, rawURL string) (*page.Page, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch: build request: %w", err)
 	}
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+	if lastModified != "" {
+		req.Header.Set("If-Modified-Since", lastModified)
+	}
 	return c.do(req)
 }
 
-// Submit submits an HTML form. For GET the values become the query string; for
-// POST they are sent url-encoded as the body. Multipart/file uploads are not
-// supported. Redirects and cookies are handled by the underlying http.Client.
+// Submit submits an HTML form url-encoded. For GET the values become the query
+// string; for POST they are sent url-encoded as the body. Forms declaring
+// enctype=multipart/form-data (and any file upload) go through SubmitMultipart.
+// Redirects and cookies are handled by the underlying http.Client.
 func (c *Client) Submit(ctx context.Context, method, action string, values url.Values) (*page.Page, error) {
-	actionURL, err := url.Parse(action)
+	actionURL, err := parseActionURL(action)
 	if err != nil {
-		return nil, fmt.Errorf("fetch: parse action %q: %w", action, err)
-	}
-	if actionURL.Scheme != "http" && actionURL.Scheme != "https" {
-		return nil, fmt.Errorf("fetch: unsupported scheme %q (want http/https)", actionURL.Scheme)
+		return nil, err
 	}
 
 	method = strings.ToUpper(strings.TrimSpace(method))
@@ -278,6 +295,88 @@ func (c *Client) Submit(ctx context.Context, method, action string, values url.V
 		return nil, fmt.Errorf("fetch: build request: %w", err)
 	}
 	return c.do(req)
+}
+
+// FilePart is one file in a multipart form submission. Data is content supplied
+// by the caller — unblink never reads a file from local disk for an upload, so a
+// page (or a manipulated agent) cannot exfiltrate server-side files.
+type FilePart struct {
+	Field    string // form field name the file is attached to
+	Filename string
+	MIME     string // optional; defaults to application/octet-stream
+	Data     []byte
+}
+
+// SubmitMultipart submits a form as multipart/form-data: text fields first (in
+// sorted-key order, for determinism), then file parts. Multipart is POST-only —
+// that is the only method the HTML spec gives it meaning for.
+func (c *Client) SubmitMultipart(ctx context.Context, action string, values url.Values, files []FilePart) (*page.Page, error) {
+	actionURL, err := parseActionURL(action)
+	if err != nil {
+		return nil, err
+	}
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range values[k] {
+			if err := w.WriteField(k, v); err != nil {
+				return nil, fmt.Errorf("fetch: multipart field %q: %w", k, err)
+			}
+		}
+	}
+	for _, f := range files {
+		if f.Field == "" {
+			return nil, fmt.Errorf("fetch: multipart file part is missing its form field name")
+		}
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`,
+			escapeQuotes(f.Field), escapeQuotes(f.Filename)))
+		mimeType := f.MIME
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		h.Set("Content-Type", mimeType)
+		part, err := w.CreatePart(h)
+		if err != nil {
+			return nil, fmt.Errorf("fetch: multipart file %q: %w", f.Field, err)
+		}
+		if _, err := part.Write(f.Data); err != nil {
+			return nil, fmt.Errorf("fetch: multipart file %q: %w", f.Field, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		return nil, fmt.Errorf("fetch: finalize multipart body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, actionURL.String(), bytes.NewReader(body.Bytes()))
+	if err != nil {
+		return nil, fmt.Errorf("fetch: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	return c.do(req)
+}
+
+// escapeQuotes matches mime/multipart's quoting of names in Content-Disposition.
+func escapeQuotes(s string) string {
+	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(s)
+}
+
+// parseActionURL validates a form action URL (http/https only).
+func parseActionURL(action string) (*url.URL, error) {
+	actionURL, err := url.Parse(action)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: parse action %q: %w", action, err)
+	}
+	if actionURL.Scheme != "http" && actionURL.Scheme != "https" {
+		return nil, fmt.Errorf("fetch: unsupported scheme %q (want http/https)", actionURL.Scheme)
+	}
+	return actionURL, nil
 }
 
 // Jar returns the client's cookie jar, so a separate (e.g. SSRF-guarded) client

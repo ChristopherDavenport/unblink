@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
@@ -22,10 +23,17 @@ const (
 // utlsRoundTripper presents a recent-Chrome TLS ClientHello (uTLS) — keeping a
 // genuine Chrome JA3/JA4 — and dispatches to HTTP/2 or HTTP/1.1 based on the ALPN
 // the server negotiates (a stock http.Transport.DialTLSContext can only do h1, and
-// real CDNs negotiate h2, so we must handle both). It does not pool connections —
-// one TLS conn per request — which is acceptable for unblink's occasional fetches
-// plus its page cache. The SSRF Control dialer is reused for the TCP dial, so the
-// guard still applies.
+// real CDNs negotiate h2, so we must handle both). The SSRF Control dialer is
+// reused for the TCP dial, so the guard still applies.
+//
+// HTTP/2 connections are pooled per host:port and reused while the server keeps
+// them open (a real browser never handshakes per request, and neither should the
+// mimic — repeat fetches to one host skip the TCP+TLS round trips). A pooled
+// connection that has died (GOAWAY, server close) is detected via
+// CanTakeNewRequest/RoundTrip failure and replaced with a fresh dial. HTTP/1.1
+// remains one connection per request — h1 servers are the rare case on the
+// mimic path, and a portable h1 pool over a pre-established TLS conn is not
+// worth the machinery.
 //
 // The h2 SETTINGS are best-effort tuned toward Chrome (see the consts above), so
 // the HTTP/2 layer no longer fingerprints as Go's default. What stock
@@ -37,6 +45,9 @@ type utlsRoundTripper struct {
 	insecure bool // test-only
 	helloID  utls.ClientHelloID
 	h2       *http2.Transport
+
+	mu    sync.Mutex
+	conns map[string]*http2.ClientConn // pooled h2 connections by host:port
 }
 
 func newUTLSRoundTripper(dialer *net.Dialer, insecure bool) *utlsRoundTripper {
@@ -49,6 +60,7 @@ func newUTLSRoundTripper(dialer *net.Dialer, insecure bool) *utlsRoundTripper {
 			MaxDecoderHeaderTableSize: chromeH2HeaderTableSize,
 			MaxHeaderListSize:         chromeH2MaxHeaderListSize,
 		},
+		conns: make(map[string]*http2.ClientConn),
 	}
 }
 
@@ -59,8 +71,30 @@ func (rt *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	if port == "" {
 		port = "443"
 	}
+	addr := net.JoinHostPort(host, port)
 
-	raw, err := rt.dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	// Reuse a pooled h2 connection when one is alive. A failure here usually
+	// means the server closed it since last use; retry once on a fresh dial
+	// (safe: page fetches are GETs or carry a rewindable GetBody).
+	if cc := rt.pooled(addr); cc != nil {
+		resp, err := cc.RoundTrip(req)
+		if err == nil {
+			return resp, nil
+		}
+		rt.drop(addr, cc)
+		if req.Body != nil && req.GetBody == nil {
+			return nil, err
+		}
+		if req.GetBody != nil {
+			b, gerr := req.GetBody()
+			if gerr != nil {
+				return nil, err
+			}
+			req.Body = b
+		}
+	}
+
+	raw, err := rt.dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -76,12 +110,14 @@ func (rt *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 			_ = uconn.Close()
 			return nil, err
 		}
+		rt.store(addr, cc)
 		resp, err := cc.RoundTrip(req)
 		if err != nil {
+			rt.drop(addr, cc)
 			_ = cc.Close()
 			return nil, err
 		}
-		resp.Body = &closeConnBody{ReadCloser: resp.Body, conn: cc}
+		// The connection stays pooled; the response body does NOT close it.
 		return resp, nil
 	}
 
@@ -99,8 +135,44 @@ func (rt *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	return resp, nil
 }
 
-// closeConnBody closes the underlying connection when the response body is closed,
-// since this transport does not pool connections.
+// pooled returns a live pooled h2 connection for addr, discarding a dead one.
+func (rt *utlsRoundTripper) pooled(addr string) *http2.ClientConn {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	cc := rt.conns[addr]
+	if cc == nil {
+		return nil
+	}
+	if !cc.CanTakeNewRequest() {
+		delete(rt.conns, addr)
+		go cc.Close()
+		return nil
+	}
+	return cc
+}
+
+// store pools cc for addr, closing any previous connection it replaces.
+func (rt *utlsRoundTripper) store(addr string, cc *http2.ClientConn) {
+	rt.mu.Lock()
+	old := rt.conns[addr]
+	rt.conns[addr] = cc
+	rt.mu.Unlock()
+	if old != nil && old != cc {
+		go old.Close()
+	}
+}
+
+// drop removes cc from the pool if it is still the pooled conn for addr.
+func (rt *utlsRoundTripper) drop(addr string, cc *http2.ClientConn) {
+	rt.mu.Lock()
+	if rt.conns[addr] == cc {
+		delete(rt.conns, addr)
+	}
+	rt.mu.Unlock()
+}
+
+// closeConnBody closes the underlying connection when the response body is
+// closed. Used only on the (unpooled) HTTP/1.1 path.
 type closeConnBody struct {
 	io.ReadCloser
 	conn io.Closer

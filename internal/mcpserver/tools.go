@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -250,11 +251,71 @@ type submitArgs struct {
 	Session string            `json:"session" jsonschema:"the session to submit within (required)"`
 	Form    string            `json:"form,omitempty" jsonschema:"form id, name, or index; optional when the page has one form"`
 	Values  map[string]string `json:"values,omitempty" jsonschema:"field name -> value, merged over the form's defaults"`
+	Files   []fileArg         `json:"files,omitempty" jsonschema:"files to upload (multipart/form-data); content is supplied inline, never read from disk"`
 	Render  bool              `json:"render,omitempty" jsonschema:"run the result page's JavaScript before summarizing (requires --js) — parity with read's render"`
 }
 
+// fileArg is one inline file for a multipart form submission. Exactly one of
+// content/content_base64 supplies the bytes.
+type fileArg struct {
+	Field         string `json:"field" jsonschema:"form field name the file is attached to (required)"`
+	Filename      string `json:"filename,omitempty" jsonschema:"file name presented to the server (default upload.bin)"`
+	MIME          string `json:"mime,omitempty" jsonschema:"content type of the file (default application/octet-stream)"`
+	Content       string `json:"content,omitempty" jsonschema:"file content as UTF-8 text"`
+	ContentBase64 string `json:"content_base64,omitempty" jsonschema:"file content as base64 (for binary data)"`
+}
+
+// Upload budgets: submit_form is for attaching agent-authored documents, not
+// bulk transfer; the caps keep a single call's memory bounded.
+const (
+	maxUploadFiles = 8
+	maxUploadBytes = 4 << 20 // total across all files
+)
+
+// filesOf validates and decodes the tool-level file args into browser parts.
+func filesOf(args []fileArg) ([]browser.FilePart, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	if len(args) > maxUploadFiles {
+		return nil, fmt.Errorf("too many files: %d (max %d)", len(args), maxUploadFiles)
+	}
+	total := 0
+	out := make([]browser.FilePart, 0, len(args))
+	for i, f := range args {
+		if strings.TrimSpace(f.Field) == "" {
+			return nil, fmt.Errorf("files[%d]: field is required", i)
+		}
+		if f.Content != "" && f.ContentBase64 != "" {
+			return nil, fmt.Errorf("files[%d]: give content or content_base64, not both", i)
+		}
+		data := []byte(f.Content)
+		if f.ContentBase64 != "" {
+			var err error
+			data, err = base64.StdEncoding.DecodeString(f.ContentBase64)
+			if err != nil {
+				return nil, fmt.Errorf("files[%d]: invalid base64: %v", i, err)
+			}
+		}
+		total += len(data)
+		if total > maxUploadBytes {
+			return nil, fmt.Errorf("upload too large: over %d bytes total", maxUploadBytes)
+		}
+		name := f.Filename
+		if name == "" {
+			name = "upload.bin"
+		}
+		out = append(out, browser.FilePart{Field: f.Field, Filename: name, MIME: f.MIME, Data: data})
+	}
+	return out, nil
+}
+
 func (s *Server) handleSubmit(ctx context.Context, _ *mcp.CallToolRequest, args submitArgs) (*mcp.CallToolResult, browser.BrowseResult, error) {
-	r, err := s.browser.Submit(ctx, args.Session, args.Form, args.Values, args.Render)
+	files, err := filesOf(args.Files)
+	if err != nil {
+		return errorResult(&browser.Error{Code: browser.ErrBadInput, Message: err.Error()}), browser.BrowseResult{}, nil
+	}
+	r, err := s.browser.Submit(ctx, args.Session, args.Form, args.Values, files, args.Render)
 	if err != nil {
 		return errorResult(err), browser.BrowseResult{}, nil
 	}
@@ -342,8 +403,22 @@ type mapArgs struct {
 	MaxDepth int `json:"max_depth,omitempty" jsonschema:"maximum crawl depth from the seed url (default 2, hard-capped at 5)"`
 }
 
-func (s *Server) handleMap(ctx context.Context, _ *mcp.CallToolRequest, args mapArgs) (*mcp.CallToolResult, browser.MapResult, error) {
-	r, err := s.browser.Map(ctx, args.request(), args.MaxURLs, args.MaxDepth)
+func (s *Server) handleMap(ctx context.Context, req *mcp.CallToolRequest, args mapArgs) (*mcp.CallToolResult, browser.MapResult, error) {
+	// When the client sent a progress token, bridge the crawl's progress to MCP
+	// notifications so the host can show a long map (up to 60s) advancing.
+	var progress browser.MapProgress
+	if tok := req.Params.GetProgressToken(); tok != nil {
+		sess := req.Session
+		progress = func(done, total int, msg string) {
+			_ = sess.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+				ProgressToken: tok,
+				Progress:      float64(done),
+				Total:         float64(total),
+				Message:       msg,
+			})
+		}
+	}
+	r, err := s.browser.Map(ctx, args.request(), args.MaxURLs, args.MaxDepth, progress)
 	if err != nil {
 		return errorResult(err), browser.MapResult{}, nil
 	}
