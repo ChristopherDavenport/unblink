@@ -39,5 +39,6 @@ func FuzzParseExtract(f *testing.F) {
 		_ = dom.Microdata(p.Doc, base)
 		_ = dom.Find(p.Doc, "a", 5)
 		_ = dom.Text(p.Doc, true)
+		dom.StripDuplicateBlocks(p.Doc) // mutates, so keep it last
 	})
 }

@@ -1,6 +1,7 @@
 package reduce_test
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -78,6 +79,30 @@ func TestFullStripHiddenVariants(t *testing.T) {
 				t.Errorf("stripped=%v, want %v:\n%s", !got, tc.stripped, p.Article.ContentHTML)
 			}
 		})
+	}
+}
+
+// Full emits a page's repeated boilerplate region (desktop nav + mobile-drawer
+// twin) only once, while distinct content is untouched.
+func TestFullStripsDuplicateBlocks(t *testing.T) {
+	var nav strings.Builder
+	nav.WriteString(`<nav><p>NAVDUP menu covering world, politics, sports and business coverage.</p>`)
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&nav, `<a href="/hub/%d">Hub %d with a reasonably long section label</a> `, i, i)
+	}
+	nav.WriteString(`</nav>`)
+
+	p := newPage(t, `<header class="desktop">`+nav.String()+`</header>`+
+		`<main><p>Unique page content.</p></main>`+
+		`<div class="mobile-drawer">`+nav.String()+`</div>`)
+	if err := reduce.Full(p, true); err != nil {
+		t.Fatalf("Full: %v", err)
+	}
+	if got := strings.Count(p.Article.ContentHTML, "NAVDUP menu"); got != 1 {
+		t.Errorf("duplicated nav should be emitted once, got %d:\n%s", got, p.Article.ContentHTML)
+	}
+	if !strings.Contains(p.Article.ContentHTML, "Unique page content.") {
+		t.Errorf("unique content lost:\n%s", p.Article.ContentHTML)
 	}
 }
 

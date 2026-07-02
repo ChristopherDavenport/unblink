@@ -2,6 +2,7 @@ package browser_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -182,6 +183,38 @@ func TestReadArticle(t *testing.T) {
 		if !strings.Contains(res.Markdown, want) {
 			t.Errorf("markdown missing %q", want)
 		}
+	}
+}
+
+// Unknown mode/format values are rejected as bad_input instead of silently
+// falling back to the defaults, and crossed-wire values (mode passed as format
+// or vice versa) name the argument the caller meant. The URL is unresolvable:
+// getting bad_input rather than a fetch error proves validation runs first.
+func TestReadRejectsUnknownEnums(t *testing.T) {
+	b := newBrowser(t)
+	for _, tc := range []struct {
+		name, mode, format, hint string
+	}{
+		{"unknown mode", "artcle", "", "valid: article, full"},
+		{"format passed as mode", "raw_html", "", "pass format"},
+		{"unknown format", "", "fancy", "valid: markdown, raw_html, text"},
+		{"mode passed as format", "", "full", "pass mode"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := req("http://unresolvable.invalid/")
+			r.Format = tc.format
+			_, err := b.Read(context.Background(), r, tc.mode, 6000, "")
+			if err == nil {
+				t.Fatal("expected an error for an invalid enum value")
+			}
+			var be *browser.Error
+			if !errors.As(err, &be) || be.Code != browser.ErrBadInput {
+				t.Errorf("error = %v, want code %s", err, browser.ErrBadInput)
+			}
+			if !strings.Contains(err.Error(), tc.hint) {
+				t.Errorf("error %q missing guidance %q", err, tc.hint)
+			}
+		})
 	}
 }
 

@@ -45,7 +45,7 @@ re-fetch or re-parse. See `internal/page/page.go`.
 | `internal/page`      | Core data model (`Page`, `Article`, `Link`, `Form`, …). Pure types.   |
 | `internal/fetch`     | HTTP client-as-browser: cookies, redirects, gzip, charset → UTF-8, UA.|
 | `internal/dom`       | The only importer of `x/net/html`/`cascadia`: parse + extraction + find.|
-| `internal/reduce`    | Semantic reduction: readability extraction + bluemonday sanitize.     |
+| `internal/reduce`    | Semantic reduction: readability extraction + bluemonday sanitize. Full mode also drops repeated link-dense blocks (`dom.StripDuplicateBlocks` — desktop nav + its mobile-drawer twin emit once). |
 | `internal/emit`      | Serialize reduced content to Markdown + heading outline.              |
 | `internal/session`   | Per-session cookie jar (own `fetch.Client`) + navigation history + per-page interaction replay log (imports `js` for `js.Action`). |
 | `internal/robots`    | Exposure-grade robots.txt (REP) parser: groups, `*`, Allow/Disallow (`*`/`$`), Crawl-delay, Sitemaps. No external deps; **never enforces**. |

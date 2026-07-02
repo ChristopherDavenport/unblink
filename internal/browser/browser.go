@@ -665,6 +665,25 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	if (req.WaitFor != "" || req.WaitText != "") && b.renderer == nil {
 		return nil, errf(ErrJSRequired, "wait_for/wait_text require JavaScript; start the server with --js")
 	}
+	// Reject unknown enum values before fetching anything: a silent fallback to
+	// the default would hand the agent the wrong output with no signal that its
+	// arguments were bad. The crossed-wire values get a redirecting hint.
+	format := strings.ToLower(strings.TrimSpace(req.Format))
+	switch format {
+	case "", "markdown", "raw_html", "text":
+	case "article", "full":
+		return nil, errf(ErrBadInput, "invalid format %q: article/full select the reduction mode — pass mode=%q instead (format selects markdown, raw_html, or text)", req.Format, format)
+	default:
+		return nil, errf(ErrBadInput, "invalid format %q (valid: markdown, raw_html, text)", req.Format)
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "", "article", "full":
+	case "markdown", "raw_html", "text":
+		return nil, errf(ErrBadInput, "invalid mode %q: markdown/raw_html/text select the output format — pass format=%q instead (mode selects article or full)", mode, mode)
+	default:
+		return nil, errf(ErrBadInput, "invalid mode %q (valid: article, full)", mode)
+	}
 	p, _, err := b.resolve(ctx, req)
 	if err != nil {
 		return nil, err
@@ -672,7 +691,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 
 	articleFallback := false
 	pc := *p
-	switch format := strings.ToLower(strings.TrimSpace(req.Format)); format {
+	switch format {
 	case "raw_html", "text":
 		// Escape hatch past semantic reduction. Binary bodies have no text/DOM to
 		// surface, so refuse them (the caller can use include_bytes instead).
@@ -693,7 +712,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	default:
 		switch pc.Kind {
 		case "", page.KindHTML:
-			switch strings.ToLower(strings.TrimSpace(mode)) {
+			switch mode {
 			case "full":
 				mode, err = "full", reduce.Full(&pc, b.safeOutput)
 			default:
