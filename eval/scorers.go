@@ -790,6 +790,57 @@ func WaitMet(at int, want bool) Scorer {
 	}}
 }
 
+// RenderSaturation asserts the starved-render diagnostics on a read step: the
+// render_budget_hit / dom_busy flags and a minimum net_denied count. These are
+// the "visible failure modes" the engine emits when a snapshot is taken while
+// the page is still working or requests were budget-blocked — gated here so the
+// diagnostics can't silently regress to always-zero.
+func RenderSaturation(at int, wantBudgetHit, wantDOMBusy bool, minNetDenied int) Scorer {
+	return Scorer{Name: "render-saturation", Axis: AxisRender, Fn: func(tr *Transcript) (float64, string) {
+		r, why, ok := resultAt(tr, at)
+		if !ok {
+			return 0, why
+		}
+		var rr browser.ReadResult
+		if err := into(r.sr.Result, &rr); err != nil {
+			return 0, "decode read: " + err.Error()
+		}
+		checks, passed := 0, 0
+		checks++
+		if rr.RenderBudgetHit == wantBudgetHit {
+			passed++
+		}
+		checks++
+		if rr.DOMBusy == wantDOMBusy {
+			passed++
+		}
+		checks++
+		if rr.NetDenied >= minNetDenied {
+			passed++
+		}
+		return frac(passed, checks), fmt.Sprintf("render_budget_hit=%v (want %v), dom_busy=%v (want %v), net_denied=%d (want ≥%d)",
+			rr.RenderBudgetHit, wantBudgetHit, rr.DOMBusy, wantDOMBusy, rr.NetDenied, minNetDenied)
+	}}
+}
+
+// InteractChanged asserts an interact step's Changed/Matched outcome — proof the
+// dispatched event actually reached a handler and mutated the live DOM.
+func InteractChanged(at int, want bool) Scorer {
+	return Scorer{Name: "interact-changed", Axis: AxisRender, Fn: func(tr *Transcript) (float64, string) {
+		r, why, ok := resultAt(tr, at)
+		if !ok {
+			return 0, why
+		}
+		var ir browser.InteractResult
+		if err := into(r.sr.Result, &ir); err != nil {
+			return 0, "decode interact: " + err.Error()
+		}
+		matchOK := boolScore(ir.Matched)
+		changedOK := boolScore(ir.Changed == want)
+		return (matchOK + changedOK) / 2, fmt.Sprintf("matched=%v, changed=%v (want %v)", ir.Matched, ir.Changed, want)
+	}}
+}
+
 // PendingNavigation asserts an interact surfaced the expected JS-requested navigation.
 func PendingNavigation(at int, wantURL string) Scorer {
 	return Scorer{Name: "pending-navigation", Axis: AxisRender, Fn: func(tr *Transcript) (float64, string) {

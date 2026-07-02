@@ -99,6 +99,151 @@ fetch('/api').then(function(r){ return r.json(); }).then(function(j){
 	}
 }
 
+// starvedRenderHost serves a page whose script mutates the DOM forever on a
+// tight setInterval, so a short render budget always closes mid-work — the
+// starved-render diagnostics (render_budget_hit + dom_busy) must fire. Static
+// content present before the loop still survives (best-effort render).
+func starvedRenderHost() Host {
+	return func() (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/robots.txt", "/llms.txt", "/llms-full.txt":
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, `<!doctype html><html><body>
+<article><h1>Static Headline</h1><p>static-sentinel-content present before the busy loop, with enough prose to survive reduction and stay in the output.</p></article>
+<div id="feed"></div>
+<script>
+var n = 0;
+setInterval(function () {
+  var d = document.createElement('p');
+  d.textContent = 'appended row ' + (n++);
+  document.getElementById('feed').appendChild(d);
+}, 5);
+</script></body></html>`)
+		}), nil
+	}
+}
+
+// budgetDeniedHost serves a page that fires more subrequests than the per-render
+// request budget allows. With a low --js-max-requests the excess requests are
+// budget-denied, so net_denied ≥ 1. Static content still survives.
+func budgetDeniedHost() Host {
+	return func() (http.Handler, error) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ok":true}`)
+		})
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/robots.txt", "/llms.txt", "/llms-full.txt":
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, `<!doctype html><html><body>
+<article><h1>Guarded</h1><p>guarded-page-sentinel body with sufficient prose to survive reduction and stay present.</p></article>
+<script>
+// Fire well past the request budget; the excess are budget-denied.
+for (var i = 0; i < 12; i++) { fetch('/api?n=' + i).catch(function(){}); }
+</script></body></html>`)
+		})
+		return mux, nil
+	}
+}
+
+// keydownSearchHost serves a search box whose Enter keydown handler reads
+// e.key and renders a results region — exercising interact event=keydown with
+// a key and typed value end to end.
+func keydownSearchHost() Host {
+	return func() (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/robots.txt", "/llms.txt", "/llms-full.txt":
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, `<!doctype html><html><body>
+<h1>Search</h1>
+<input id="q" type="text">
+<div id="results">placeholder</div>
+<script>
+document.getElementById('q').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') {
+    document.getElementById('results').textContent =
+      'keydown-results-sentinel for "' + e.target.value + '": the Enter keydown carried its key field and rendered a results region with enough prose to survive reduction.';
+  }
+});
+</script></body></html>`)
+		}), nil
+	}
+}
+
+// deferredTimerHost serves a page that injects its real content from a
+// setTimeout well beyond the render budget — the timer clamp must pull it in so
+// the content still materializes.
+func deferredTimerHost() Host {
+	return func() (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/robots.txt", "/llms.txt", "/llms-full.txt":
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, `<!doctype html><html><body><div id="app">loading</div>
+<script>
+setTimeout(function () {
+  document.getElementById('app').innerHTML =
+    '<article><h1>Deferred</h1><p>deferred-timer-sentinel content injected from a 7s timeout, clamped into the budget so it still appears, with enough prose to survive reduction.</p></article>';
+}, 7000);
+</script></body></html>`)
+		}), nil
+	}
+}
+
+// apiSmokeHost serves a page whose inline script exercises every Phase-21
+// tier-1 API cluster and appends an api-N-ok marker for each that works — the
+// MCP-level regression net for the whole browser-API surface.
+func apiSmokeHost() Host {
+	return func() (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/robots.txt", "/llms.txt", "/llms-full.txt":
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, `<!doctype html><html><body>
+<article><h1>API Smoke</h1><div id="out"></div></article>
+<script>
+var ok = [];
+function mark(n, cond) { if (cond) ok.push('api-' + n + '-ok'); }
+mark(1, atob(btoa('x')) === 'x');
+mark(2, new TextDecoder().decode(new TextEncoder().encode('café €')) === 'café €');
+mark(3, typeof performance.now() === 'number');
+mark(4, matchMedia('(min-width: 1000px)').matches && !matchMedia('(max-width: 600px)').matches);
+mark(5, new Intl.NumberFormat('en-US').format(1234567) === '1,234,567');
+mark(6, new WeakRef({v:1}).deref().v === 1);
+mark(7, new DOMParser().parseFromString('<p>hi</p>', 'text/html').querySelector('p').textContent === 'hi');
+mark(8, (function(){ var fd = new FormData(); fd.append('a','b'); return fd.get('a') === 'b'; })());
+new Response('resp-body').text().then(function (t) {
+  mark(9, t === 'resp-body');
+  window.postMessage({ ping: 1 }, '*');
+});
+window.addEventListener('message', function (e) {
+  mark(10, e.data.ping === 1);
+  document.getElementById('out').textContent = ok.join(' ');
+});
+</script></body></html>`)
+		}), nil
+	}
+}
+
 // navHost serves a page whose button navigates via location.href, so a case can
 // exercise interact surfacing a pending (cross-document) navigation.
 func navHost() Host {
@@ -415,6 +560,22 @@ const (
   Vue.createApp({ template: '<article><h1>{{ t }}</h1><p>{{ p }}</p></article>',
     data() { return { t: 'Vue Rendered Title', p: 'A real Vue bundle rendered this article under unblink, with enough prose for the reducer to keep it as the page content.' }; } }).mount('#app');
 </script></body></html>`
+
+	// svelteApp mounts a precompiled Svelte bundle (see testdata/frameworks).
+	svelteApp = `<!doctype html><html><body><div id="app">loading</div>
+<script src="/fw/svelte-app.iife.js"></script></body></html>`
+
+	// litApp defines a LitElement rendering shadow content (flattened + visible to
+	// extraction) and exercises the constructable-stylesheet degradation path.
+	litApp = "<!doctype html><html><body><my-article></my-article>\n" +
+		`<script type="module">
+  import { LitElement, html, css } from '/fw/lit-all.min.js';
+  class MyArticle extends LitElement {
+    static styles = css` + "`p { color: rebeccapurple; }`" + `;
+    render() { return html` + "`<article><h1>Lit Rendered Title</h1><p>A real Lit component rendered this article under unblink, with enough prose for the reducer to keep it as the page content.</p></article>`" + `; }
+  }
+  customElements.define('my-article', MyArticle);
+</script></body></html>`
 )
 
 // allToolNames is the full set of tools the server must register.
@@ -698,6 +859,114 @@ func cases() []Case {
 				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
 			},
 			Scorers:  []Scorer{RenderPresence(0, []string{"Vue Rendered Title"}, 1, []string{"Vue Rendered Title"})},
+			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			Name:    "svelte-render",
+			Host:    frameworkHost(svelteApp, map[string]string{"/fw/svelte-app.iife.js": "../testdata/frameworks/svelte-app.iife.js"}),
+			Browser: []browser.Option{browser.WithJS(5 * time.Second), browser.WithJSAllowPrivate(true)},
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": false}},
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
+			},
+			Scorers:  []Scorer{RenderPresence(0, []string{"Svelte Rendered Title"}, 1, []string{"Svelte Rendered Title"})},
+			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			Name:    "lit-render",
+			Host:    frameworkHost(litApp, map[string]string{"/fw/lit-all.min.js": "../testdata/frameworks/lit-all.min.js"}),
+			Browser: []browser.Option{browser.WithJS(5 * time.Second), browser.WithJSAllowPrivate(true)},
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": false}},
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
+			},
+			// The shadow content (flattened) must survive extraction after render.
+			Scorers:  []Scorer{RenderPresence(0, []string{"Lit Rendered Title"}, 1, []string{"Lit Rendered Title"})},
+			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			// A tight setInterval mutates the DOM forever, so a short budget always
+			// closes mid-work: the starved-render diagnostics (render_budget_hit +
+			// dom_busy) must fire, and static content still survives.
+			Name:    "render-starved-diagnostics",
+			Host:    starvedRenderHost(),
+			Browser: []browser.Option{browser.WithJS(300 * time.Millisecond), browser.WithJSAllowPrivate(true)},
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
+			},
+			Scorers: []Scorer{
+				RenderSaturation(0, true, true, 0),
+				Recall(0, "static-sentinel-content"),
+			},
+			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			// The page fires 12 subrequests against a --js-max-requests budget of 3,
+			// so the excess are budget-denied: net_denied ≥ 1. Static content survives.
+			Name:    "render-net-denied",
+			Host:    budgetDeniedHost(),
+			Browser: []browser.Option{browser.WithJS(2 * time.Second), browser.WithJSAllowPrivate(true), browser.WithJSMaxRequests(3)},
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
+			},
+			Scorers: []Scorer{
+				RenderSaturation(0, false, false, 1),
+				Recall(0, "guarded-page-sentinel"),
+			},
+			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			// The full search gesture through MCP: type a query into a box and press
+			// Enter; the keydown handler (reading e.key) renders the results region.
+			Name:    "interact-keydown-search",
+			Host:    keydownSearchHost(),
+			Browser: []browser.Option{browser.WithJS(2 * time.Second)},
+			Steps: []Step{
+				{Tool: "session", Args: map[string]any{"action": "new", "session": "kd"}},
+				{Tool: "browse", Path: "/", Args: map[string]any{"session": "kd"}},
+				{Tool: "interact", Args: map[string]any{"session": "kd", "selector": "#q", "event": "keydown", "value": "pomegranate", "key": "Enter"}},
+				{Tool: "read", Args: map[string]any{"session": "kd", "use_current": true, "mode": "full"}},
+			},
+			Scorers: []Scorer{
+				InteractChanged(2, true),
+				Recall(3, "keydown-results-sentinel", "pomegranate"),
+			},
+			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			// A setTimeout 7s past a 2s budget: the timer clamp pulls it in so the
+			// deferred content still materializes (pre-Phase-21 it vanished).
+			Name:    "timer-deferred-content",
+			Host:    deferredTimerHost(),
+			Browser: []browser.Option{browser.WithJS(2 * time.Second), browser.WithJSAllowPrivate(true)},
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
+			},
+			Scorers: []Scorer{
+				Recall(0, "deferred-timer-sentinel"),
+			},
+			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			// One page exercising every Phase-21 tier-1 API cluster; each cluster that
+			// works appends an api-N-ok marker. The MCP-level regression net.
+			Name:    "js-api-smoke",
+			Host:    apiSmokeHost(),
+			Browser: []browser.Option{browser.WithJS(2 * time.Second)},
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
+			},
+			Scorers: []Scorer{
+				Recall(0, "api-1-ok", "api-2-ok", "api-3-ok", "api-4-ok", "api-5-ok",
+					"api-6-ok", "api-7-ok", "api-8-ok", "api-9-ok", "api-10-ok"),
+			},
 			Floor:    0.9,
 			MustPass: true,
 		},
