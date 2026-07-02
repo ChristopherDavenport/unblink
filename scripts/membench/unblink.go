@@ -105,6 +105,14 @@ func (u *unblinkProc) read(url string) error {
 	return err
 }
 
+// readTimed times one render — URL to agent-ready Markdown (fetch + parse +
+// render + reduce + emit), the whole end-to-end round trip a tool call is.
+func (u *unblinkProc) readTimed(url string) (time.Duration, error) {
+	t0 := time.Now()
+	err := u.read(url)
+	return time.Since(t0), err
+}
+
 // readConcurrent pipelines n read requests (distinct ids) onto the single stdio
 // connection, then drains n responses. The MCP server dispatches each request in
 // its own goroutine, so the peak-RSS sampler sees n renders in flight at once —

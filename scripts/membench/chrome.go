@@ -67,30 +67,43 @@ func browserPID(ctx context.Context) int {
 // render navigates a fresh tab to url, waits for the load event plus a short
 // settle, and returns after the DOM is ready — comparable to unblink's render.
 func (r *chromeRunner) render(url string) error {
+	return r.renderSettle(url, 150*time.Millisecond)
+}
+
+// renderSettle is render with a caller-chosen quiet window, so the latency pass
+// can match unblink's ~60ms settle for a fair engine-speed comparison.
+func (r *chromeRunner) renderSettle(url string, settle time.Duration) error {
 	tab, cancel := chromedp.NewContext(r.browser)
 	defer cancel()
 	return chromedp.Run(tab,
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),
-		chromedp.Sleep(150*time.Millisecond),
+		chromedp.Sleep(settle),
 	)
+}
+
+// renderTimed times one navigate → DOM-ready → settle, with a settle window
+// matched to unblink's quiet period.
+func (r *chromeRunner) renderTimed(url string, settle time.Duration) (time.Duration, error) {
+	t0 := time.Now()
+	err := r.renderSettle(url, settle)
+	return time.Since(t0), err
 }
 
 // renderConcurrent opens n tabs against the given urls (cycled) at once, holding
 // them open so the peak-RSS sampler sees the concurrent footprint.
 func (r *chromeRunner) renderConcurrent(urls []string, n int) {
+	r.renderConcurrentSettle(urls, n, 400*time.Millisecond)
+}
+
+// renderConcurrentSettle is renderConcurrent with a chosen settle window.
+func (r *chromeRunner) renderConcurrentSettle(urls []string, n int, settle time.Duration) {
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()
-			tab, cancel := chromedp.NewContext(r.browser)
-			defer cancel()
-			_ = chromedp.Run(tab,
-				chromedp.Navigate(u),
-				chromedp.WaitReady("body"),
-				chromedp.Sleep(400*time.Millisecond),
-			)
+			_ = r.renderSettle(u, settle)
 		}(urls[i%len(urls)])
 	}
 	wg.Wait()

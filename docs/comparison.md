@@ -210,6 +210,35 @@ short-lived (a goja heap + event loop, torn down after the snapshot), so eight
 simultaneous renders barely move its RSS, while each Chromium tab adds a renderer
 process.
 
+### Render speed
+
+Same harness, timing each engine's URL→ready round trip on a cache miss (both
+engines get the same ~60 ms quiet window; unblink's number includes the full
+`read` — fetch, parse, JS render, semantic reduction, Markdown emit):
+
+| Page | unblink | Chromium (headless) |
+|---|---|---|
+| Static / server-rendered article | **~2 ms** | ~110 ms |
+| React SPA render | ~200 ms | ~120 ms |
+| Vue SPA render | ~200 ms | ~120 ms |
+| Lit SPA render | ~200 ms | ~115 ms |
+| Throughput (mixed corpus, sequential) | ~5 pages/s | ~8 pages/s |
+
+Two honest halves. On **static and server-rendered pages** — the bulk of what an
+agent reads (articles, docs, product pages, most content sites) — unblink is
+~**50× faster**: no browser to drive, just fetch → parse → reduce. On a **heavy
+client-side SPA** unblink is ~**1.7× slower** per page: goja is a tree-walking
+interpreter, Chromium's V8 is a JIT, and executing a full React/Vue bundle is
+exactly where that gap shows. The mixed-corpus throughput here is dragged down by
+its 3:1 SPA-to-static ratio; a realistic reading corpus (mostly SSR/static) tilts
+hard the other way.
+
+Both figures are per-call latency: over one MCP stdio connection the server is
+single-flight (an agent awaits each tool result), so unblink does not run a
+Chromium-style tab farm — throughput is `1 / latency`, not parallel tabs. The
+takeaway matches the thesis: unblink is a fast **semantic reducer** for the pages
+agents mostly read, not a faster **renderer** than Chrome for the SPAs it doesn't.
+
 **Honest caveats.** This is not a like-for-like capability comparison — Chromium
 does full layout, paint, and compositing (and can screenshot); unblink does
 semantic reduction and never rasterizes a pixel. The numbers are machine-specific
