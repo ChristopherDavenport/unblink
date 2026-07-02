@@ -100,8 +100,10 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		c.vm.Store(vm)
 		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, c.ctx, e.timeout)
 		b.assets = e.assets
+		b.webdriver = e.webdriver
 		b.install()
 		_, _ = vm.RunProgram(preludeProgram)
+		_, _ = vm.RunProgram(preludeAPIProgram)
 		b.runScripts(scripts)
 		if len(modules) > 0 {
 			b.runModules(modules, parseImportMap(doc))

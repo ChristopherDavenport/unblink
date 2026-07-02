@@ -74,6 +74,16 @@ type bridge struct {
 	// focus()/blur() and the interact press gesture so focus-driven reveals work.
 	activeEl *html.Node
 
+	// currentScript backs document.currentScript: the classic <script> element
+	// whose source is executing right now (nil between scripts and for modules,
+	// per spec). Loop-goroutine owned.
+	currentScript *html.Node
+
+	// webdriver backs navigator.webdriver. True by default (unblink is
+	// automation); the engine flips it to false when the operator opted into
+	// fingerprint parity (--tls-mimic).
+	webdriver bool
+
 	// SPA history/location. locationObj's fields are rewritten on pushState/
 	// replaceState/back/forward so client-side routers see the active path.
 	locationObj  *goja.Object
@@ -166,6 +176,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		winListeners:         make(map[string][]listenerEntry),
 		docListeners:         make(map[string][]listenerEntry),
 		nodeListeners:        make(map[*html.Node]map[string][]listenerEntry),
+		webdriver:            true,
 	}
 }
 
@@ -211,9 +222,27 @@ func (b *bridge) install() {
 	b.installNodeFilter()
 	b.installMutationObserver()
 	b.installCustomElements(win)
+	b.installParsers()
 	b.installAsync()
 	b.installDynamicImport()
 	b.trackRejections()
+}
+
+// installParsers exposes DOMParser. parseFromString returns a detached document
+// facade over a freshly parsed tree (the same facade createHTMLDocument uses).
+// XML input is parsed with the HTML parser — best-effort; unblink has no XML DOM.
+func (b *bridge) installParsers() {
+	vm := b.vm
+	_ = vm.Set("DOMParser", func(call goja.ConstructorCall) *goja.Object {
+		_ = call.This.Set("parseFromString", func(c goja.FunctionCall) goja.Value {
+			docNode, err := html.Parse(strings.NewReader(c.Argument(0).String()))
+			if err != nil {
+				docNode = &html.Node{Type: html.DocumentNode}
+			}
+			return b.documentFacade(docNode)
+		})
+		return nil
+	})
 }
 
 // trackRejections records promise rejections that never get a handler, so async
@@ -299,6 +328,69 @@ func (b *bridge) documentObject() *goja.Object {
 	b.defineGetter(d, "readyState", func() goja.Value { return vm.ToValue("complete") })
 	b.defineGetter(d, "hidden", func() goja.Value { return vm.ToValue(false) })
 	b.defineGetter(d, "visibilityState", func() goja.Value { return vm.ToValue("visible") })
+	// title reads/writes the live <title> element so a SPA's document.title
+	// assignment lands in the tree extraction sees. The write goes through the
+	// mutation sink: domVersion is the settle/staleness signal.
+	b.defineProp(d, "title",
+		func() goja.Value {
+			if t := findTag(b.doc, "title"); t != nil {
+				return vm.ToValue(textContent(t))
+			}
+			return vm.ToValue("")
+		},
+		func(v goja.Value) {
+			t := findTag(b.doc, "title")
+			if t == nil {
+				parent := findTag(b.doc, "head")
+				if parent == nil {
+					parent = findTag(b.doc, "html")
+				}
+				if parent == nil {
+					return
+				}
+				t = &html.Node{Type: html.ElementNode, Data: "title", DataAtom: atom.Title}
+				parent.AppendChild(t)
+			}
+			setTextContent(t, v.String())
+			b.onMutate(mutationRecord{typ: "characterData", target: t})
+		})
+	docURL := func() goja.Value {
+		if b.currentURL == nil {
+			return vm.ToValue("")
+		}
+		return vm.ToValue(b.currentURL.String())
+	}
+	b.defineGetter(d, "URL", docURL)
+	b.defineGetter(d, "documentURI", docURL)
+	// document.location aliases window.location; assignment navigates, like the
+	// location.href accessor.
+	b.defineProp(d, "location",
+		func() goja.Value { return b.locationObjValue() },
+		func(v goja.Value) { b.navigate(v.String()) })
+	b.defineGetter(d, "referrer", func() goja.Value { return vm.ToValue("") })
+	b.defineGetter(d, "characterSet", func() goja.Value { return vm.ToValue("UTF-8") })
+	b.defineGetter(d, "charset", func() goja.Value { return vm.ToValue("UTF-8") })
+	b.defineGetter(d, "inputEncoding", func() goja.Value { return vm.ToValue("UTF-8") })
+	b.defineGetter(d, "compatMode", func() goja.Value { return vm.ToValue("CSS1Compat") })
+	b.defineGetter(d, "contentType", func() goja.Value { return vm.ToValue("text/html") })
+	b.defineGetter(d, "currentScript", func() goja.Value { return b.wrap(b.currentScript) })
+	// getElementsByName matches the name attribute with a manual walk (not a
+	// cascadia selector, so arbitrary name values need no escaping).
+	_ = d.Set("getElementsByName", func(call goja.FunctionCall) goja.Value {
+		name := call.Argument(0).String()
+		var out []*html.Node
+		var walk func(*html.Node)
+		walk = func(nd *html.Node) {
+			if nd.Type == html.ElementNode && getAttr(nd, "name") == name {
+				out = append(out, nd)
+			}
+			for c := nd.FirstChild; c != nil; c = c.NextSibling {
+				walk(c)
+			}
+		}
+		walk(b.doc)
+		return b.nodeList(out)
+	})
 
 	_ = d.Set("getElementById", func(call goja.FunctionCall) goja.Value {
 		return b.wrap(findByID(b.doc, call.Argument(0).String()))
@@ -393,14 +485,20 @@ func (b *bridge) documentObject() *goja.Object {
 	return d
 }
 
+// locationObjValue returns the live location object (document.location aliases
+// window.location), or undefined before installGlobals has run.
+func (b *bridge) locationObjValue() goja.Value {
+	if b.locationObj == nil {
+		return goja.Undefined()
+	}
+	return b.locationObj
+}
+
 // detachedHTMLDocument backs document.implementation.createHTMLDocument(): a
 // fresh, disconnected <html><head><title/></head><body/></html> tree behind a
 // minimal document facade. Angular's DomSanitizer (behind every [innerHTML]
 // binding) and jQuery's parseHTML build one to parse untrusted markup inertly.
-// The returned nodes share this bridge's prototypes, so innerHTML/querySelector/
-// removeChild work on the inert tree, but nothing connects it to the live page.
 func (b *bridge) detachedHTMLDocument(title string) goja.Value {
-	vm := b.vm
 	docNode := &html.Node{Type: html.DocumentNode}
 	htmlEl := &html.Node{Type: html.ElementNode, Data: "html", DataAtom: atom.Html}
 	headEl := &html.Node{Type: html.ElementNode, Data: "head", DataAtom: atom.Head}
@@ -411,12 +509,26 @@ func (b *bridge) detachedHTMLDocument(title string) goja.Value {
 	htmlEl.AppendChild(headEl)
 	headEl.AppendChild(titleEl)
 	htmlEl.AppendChild(bodyEl)
+	return b.documentFacade(docNode)
+}
+
+// documentFacade wraps a detached document tree (createHTMLDocument, DOMParser)
+// in a minimal document object. The returned nodes share this bridge's
+// prototypes, so innerHTML/querySelector/removeChild work on the inert tree,
+// but nothing connects it to the live page.
+func (b *bridge) documentFacade(docNode *html.Node) goja.Value {
+	vm := b.vm
 
 	d := vm.NewObject()
-	b.defineGetter(d, "documentElement", func() goja.Value { return b.wrap(htmlEl) })
-	b.defineGetter(d, "body", func() goja.Value { return b.wrap(bodyEl) })
-	b.defineGetter(d, "head", func() goja.Value { return b.wrap(headEl) })
-	b.defineGetter(d, "title", func() goja.Value { return vm.ToValue(title) })
+	b.defineGetter(d, "documentElement", func() goja.Value { return b.wrap(findTag(docNode, "html")) })
+	b.defineGetter(d, "body", func() goja.Value { return b.wrap(findTag(docNode, "body")) })
+	b.defineGetter(d, "head", func() goja.Value { return b.wrap(findTag(docNode, "head")) })
+	b.defineGetter(d, "title", func() goja.Value {
+		if t := findTag(docNode, "title"); t != nil {
+			return vm.ToValue(textContent(t))
+		}
+		return vm.ToValue("")
+	})
 	b.defineGetter(d, "nodeType", func() goja.Value { return vm.ToValue(9) })
 	b.defineGetter(d, "nodeName", func() goja.Value { return vm.ToValue("#document") })
 	_ = d.Set("createElement", func(call goja.FunctionCall) goja.Value {

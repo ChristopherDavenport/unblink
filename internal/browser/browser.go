@@ -223,7 +223,9 @@ func New(opts ...Option) (*Browser, error) {
 		opt(&o)
 	}
 	if o.renderer == nil && o.js {
-		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithPrewarm(o.jsPrewarm)}
+		// navigator.webdriver is true (honest) by default; --tls-mimic is the
+		// operator's opt-in to fingerprint parity, so it extends to the JS env.
+		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic)}
 		if o.jsAssetCache {
 			jsOpts = append(jsOpts, js.WithAssetCache(DefaultCacheTTL))
 		}

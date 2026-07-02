@@ -43,6 +43,7 @@ type Engine struct {
 	stop      chan struct{}
 	closeOnce sync.Once
 	assets    *assetCache // TTL'd script/module/bundle cache; nil when disabled
+	webdriver bool        // navigator.webdriver; true unless the operator opted into --tls-mimic parity
 }
 
 // Option configures an Engine.
@@ -53,6 +54,7 @@ type config struct {
 	concurrent int
 	prewarm    int
 	assetTTL   time.Duration
+	webdriver  bool
 }
 
 // WithTimeout sets the wall-clock budget for a single render.
@@ -71,10 +73,16 @@ func WithPrewarm(n int) Option { return func(c *config) { c.prewarm = n } }
 // requests (fetch/XHR) are never cached. 0 disables (the default).
 func WithAssetCache(ttl time.Duration) Option { return func(c *config) { c.assetTTL = ttl } }
 
+// WithWebdriver sets navigator.webdriver. The default is true — unblink is
+// automation and self-identifies (the UA string carries "unblink" too). The
+// browser passes false when the operator enables --tls-mimic, extending that
+// opt-in fingerprint parity to the JS environment.
+func WithWebdriver(v bool) Option { return func(c *config) { c.webdriver = v } }
+
 // New returns an Engine. If a pre-warm pool is configured, call Close to stop its
 // background refiller.
 func New(opts ...Option) *Engine {
-	c := config{timeout: DefaultTimeout, concurrent: DefaultMaxConcurrent}
+	c := config{timeout: DefaultTimeout, concurrent: DefaultMaxConcurrent, webdriver: true}
 	for _, opt := range opts {
 		opt(&c)
 	}
@@ -84,7 +92,7 @@ func New(opts ...Option) *Engine {
 	if c.concurrent <= 0 {
 		c.concurrent = DefaultMaxConcurrent
 	}
-	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent), assets: newAssetCache(c.assetTTL)}
+	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent), assets: newAssetCache(c.assetTTL), webdriver: c.webdriver}
 	if c.prewarm > 0 {
 		e.pool = make(chan *eventloop.EventLoop, c.prewarm)
 		e.stop = make(chan struct{})
@@ -213,10 +221,13 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// page's own fetches longer to complete (else the awaited content never lands).
 		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget)
 		b.assets = e.assets
+		b.webdriver = e.webdriver
 		b.install()
-		// Stubs simplest to express in JS (storage, observers, rAF, and the
-		// network-aware fetch/XHR). Failure here is non-fatal.
+		// Stubs simplest to express in JS (storage, observers, rAF), then the
+		// web-platform API layer (encoding, fetch classes, viewport/matchMedia,
+		// Intl, messaging). Failure here is non-fatal.
 		_, _ = vm.RunProgram(preludeProgram)
+		_, _ = vm.RunProgram(preludeAPIProgram)
 		setupDone = time.Now()
 		b.runScripts(scripts)
 		if len(modules) > 0 {
