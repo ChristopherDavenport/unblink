@@ -137,7 +137,7 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
 - **Framework rendering (flat-DOM model)**: under `--js` the engine renders
-  mainstream SPA frameworks (React/Vue/Preact/Svelte/Lit) — a real Node/Element
+  mainstream SPA frameworks (React/Vue/Preact/Svelte 4/Lit) — a real Node/Element
   prototype chain, MutationObserver, custom-element upgrade, and a *flattened*
   (non-encapsulating) Shadow DOM whose content is visible to extraction. **Still
   permanent non-goals** (no layout engine): real *element* layout/geometry and
@@ -147,4 +147,8 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   `devicePixelRatio` are a truthful constant 1280×720@1x and `matchMedia`
   evaluates against it, so responsive code takes its real branch. Untrusted page
   JS is also bounded on heap (`--js-memory-limit`, ADR 0003), time, network, and
-  live-runtime count. See `docs/architecture.md` (Phases 8 and 21).
+  live-runtime count. When a bundle trips a goja *interpreter* bug (a Go panic,
+  not a JS exception) — e.g. **Svelte 5**'s Boundary class hits goja's
+  `definePrivateProp` assertion — `bridge.runProgram` recovers it into a
+  `js_errors` diagnostic and keeps rendering, so it degrades visibly instead of a
+  silent blank. See `docs/architecture.md` (Phases 8 and 21).

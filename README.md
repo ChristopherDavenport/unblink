@@ -101,12 +101,15 @@ that bundles use without feature-detection are covered: `structuredClone`, a
 connection-less `WebSocket` stub (error→close), inert `Worker`, append-mode
 `document.write`, and `hashchange`.
 Under `--js` the engine renders the **mainstream SPA frameworks** (React, Vue,
-Preact, Svelte, Lit / web components) via a flat-DOM model — a real
+Preact, Svelte 4, Lit / web components) via a flat-DOM model — a real
 Node/Element/HTMLElement prototype chain, MutationObserver, custom-element upgrade,
 and a flattened (non-encapsulating) Shadow DOM whose content is visible to
 extraction. Layout/geometry is constant-stubbed (no pixel layout engine), and
 canvas/WebGL, Workers/WebSocket/IndexedDB, and true Shadow-DOM encapsulation remain
-out of scope.
+out of scope. When a page's JavaScript trips a limitation of the goja interpreter
+itself (e.g. **Svelte 5**'s runtime hits a goja private-field VM bug), the render
+degrades gracefully — the failure is recorded as a `js_errors` diagnostic and any
+server-rendered content is kept, rather than silently returning a blank page.
 
 ## Try it
 

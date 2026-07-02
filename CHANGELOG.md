@@ -34,9 +34,16 @@ back the footprint pitch with measured numbers.
 - **Timer clamp + `timers_pending`**: a one-shot `setTimeout` past the render
   budget is clamped to fire in-budget so its deferred content still materializes;
   any timer still pending at snapshot is reported.
-- **Measured footprint**: `make membench` (a separate module) benchmarks unblink
-  vs. headless Chromium; `docs/comparison.md` gains real numbers (≈15× lighter and
-  faster to start on identical pages).
+- **Measured footprint & render speed**: `make membench` (a separate module)
+  benchmarks unblink vs. headless Chromium; `docs/comparison.md` gains real numbers
+  (≈15× lighter, ≈15× faster to start, ~50× faster on static pages; ~1.7× slower on
+  heavy SPA renders — goja interpreter vs. V8 JIT).
+- **Graceful degradation on a goja engine panic**: a page whose JS trips a goja
+  interpreter bug (a Go panic, not a JS exception) now records a `js_errors`
+  diagnostic and keeps rendering instead of silently returning a blank page. The
+  canonical case is **Svelte 5**, whose runtime trips a goja private-field VM bug;
+  it now degrades to its server-rendered content plus a visible error. Svelte 4
+  renders fully.
 - `SECURITY.md`, `CONTRIBUTING.md`, this changelog, a README MCP-client-config
   section, and a consolidated flags table.
 

@@ -93,8 +93,10 @@ func (b *bridge) loadDynamicChunk(spec string) (goja.Value, error) {
 		return nil, err
 	}
 	// Re-entrant RunProgram is safe: goja pushes/pops the caller's frame when the call
-	// stack is non-empty (we are inside the lowered import's .then microtask).
-	if _, err := b.vm.RunProgram(prog); err != nil {
+	// stack is non-empty (we are inside the lowered import's .then microtask). A goja
+	// Go-panic in the chunk is converted to an error so it rejects the import instead
+	// of unwinding the whole render (see bridge.runProgram).
+	if err := b.runProgramErr(prog); err != nil {
 		return nil, err
 	}
 	ns := b.vm.Get(dynImportResultGlobal)
