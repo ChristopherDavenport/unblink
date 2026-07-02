@@ -14,12 +14,15 @@ fetch(url) → parse HTML5 → [optionally execute JS] → semantic reduction �
 
 ## Status
 
-**v0.16.0.** The full pipeline works end to end: 14 MCP tools covering reading,
+**v0.17.0.** The full pipeline works end to end: 14 MCP tools covering reading,
 navigation, sessions, forms, structured data, site discovery, and search. The
 static read path turns most server-rendered pages into clean Markdown with zero
 JavaScript; the opt-in JavaScript engine (`--js`) renders mainstream SPA
-frameworks and powers live interactive sessions (`interact`). See
-[docs/architecture.md](docs/architecture.md) for the full design (phases 0–16)
+frameworks and powers live interactive sessions (`interact`). It ships as one
+static binary (~36 MB) with a ~25 MB idle footprint — roughly **15× lighter and
+15× faster to start than a headless Chromium** on identical pages
+([measured](docs/comparison.md#measured-footprint)). See
+[docs/architecture.md](docs/architecture.md) for the full design (phases 0–21)
 and its non-goals, and [docs/comparison.md](docs/comparison.md) for how unblink
 compares to other AI web-browsing tools (Playwright MCP, Charlotte, Obscura,
 Lightpanda).
@@ -39,7 +42,34 @@ GOTOOLCHAIN=auto go install github.com/christopherdavenport/unblink/cmd/unblink@
 ```
 
 Or download a prebuilt binary from the GitHub releases page, or build from
-source:
+source (see [Build & run](#build--run)).
+
+## Use it with an MCP client
+
+unblink speaks MCP over stdio, so any MCP-capable client launches it as a
+subprocess. For **Claude Code**:
+
+```sh
+claude mcp add unblink -- /path/to/unblink --js
+```
+
+For **Claude Desktop** (or any client using the `mcpServers` config shape), add
+to `claude_desktop_config.json`:
+
+```jsonc
+{
+  "mcpServers": {
+    "unblink": {
+      "command": "/path/to/unblink",
+      "args": ["--js"]
+    }
+  }
+}
+```
+
+Drop `--js` for the zero-JavaScript static read path (lighter, still handles most
+server-rendered pages). Add flags like `--search-provider` or `--tls-mimic` to
+`args` as needed — see [Configuration](#configuration).
 
 ## Build & run
 
@@ -120,7 +150,7 @@ results rather than logged away.
 | `click`       | `{ session, link_index? \| match?, render? }`      | Follows a link from the session's current page (cookies carried); returns a summary. `render=true` runs the destination's JavaScript first (needs `--js`). |
 | `submit_form` | `{ session, form?, values?, files?, render? }`     | Submits a form from the current page (cookies carried); returns a summary. Forms declaring `enctype=multipart/form-data` are encoded as multipart automatically; `files` attaches uploads (`{field, filename?, mime?, content \| content_base64}`, capped 8 files / 4 MiB — content is supplied inline, never read from disk; needs a POST form). `render=true` runs the result page's JavaScript first (needs `--js`). |
 | `controls`    | `{ url?, session?, use_current? }`                 | Non-link interactive controls (buttons, `role=button`, `onclick`/`tabindex`, submit/reset inputs, tabs, summaries), each with a stable CSS selector for `interact`. |
-| `interact`    | `{ session, selector, event?, value? }`            | Dispatches an interaction at a selector and runs the page's JS so its handlers fire, then returns the updated page. `event` defaults to `click`, which emulates a **full primary-button press** (`pointerdown`→`mousedown`→focus→`pointerup`→`mouseup`→`click`) so press/pointer-based widgets (react-aria/Radix tabs, toggles, menus) actually activate — not just plain `onclick`; also `hover` (reveal hover menus/tooltips), `focus` (focus-triggered dropdowns), `input`, `change`, `keydown`, `submit`. The session keeps a **live JS runtime**, so state (variables, listeners, timers, fetched data) persists across calls. Requires `--js`. Does not navigate — but a handler that requests a cross-document navigation (`location.href`/`assign`/`replace`) surfaces the target as `pending_navigation` so you can follow it with `read`/`click`. |
+| `interact`    | `{ session, selector, event?, value?, key? }`      | Dispatches an interaction at a selector and runs the page's JS so its handlers fire, then returns the updated page. `event` defaults to `click`, which emulates a **full primary-button press** (`pointerdown`→`mousedown`→focus→`pointerup`→`mouseup`→`click`) so press/pointer-based widgets (react-aria/Radix tabs, toggles, menus) actually activate — not just plain `onclick`; also `hover` (reveal hover menus/tooltips), `focus` (focus-triggered dropdowns), `input`, `change`, `keydown`/`keyup`/`keypress`, `submit`. For key events, `key` names the key (`Enter`, `Escape`, `ArrowDown`, a single character…; defaults to `Enter`) so handlers reading `e.key`/`e.keyCode` fire — and **`Enter` on a control inside a form submits it**; combine with `value` to type-then-press (`{event:"keydown", value:"query", key:"Enter"}` drives a search box). The session keeps a **live JS runtime**, so state (variables, listeners, timers, fetched data) persists across calls. Requires `--js`. Does not navigate — but a handler that requests a cross-document navigation (`location.href`/`assign`/`replace`) surfaces the target as `pending_navigation` so you can follow it with `read`/`click`. |
 | `data`        | `{ url?, session?, use_current?, kind? }`          | Machine-readable structured data embedded in a page: JSON-LD (schema.org), HTML data tables (caption/headers/rows), and microdata (itemscope/itemprop). `kind` selects `jsonld`, `tables`, `microdata`, or `all` (default). HTML only. *(Tables: colspan and rowspan are expanded onto the real grid; microdata `itemref` unsupported; JSON-LD `@graph` is flattened. `raw_html` returns source with relative URLs left as-is.)* |
 | `session`     | `{ action: new\|list\|state\|history\|back\|forward\|close, session?, url?, headers?, cookies?, auth? }` | Manage a session's lifecycle and navigation. `new` accepts `url` + `headers`/`cookies`/`auth` to attach credentials for that origin (see [Authentication](#authentication)); re-creating a live id with new credentials errors (close it first). `list` returns every live session's state (including `live_js`, whether a persistent runtime is attached). |
 | `map`         | `{ url, max_urls?, max_depth? }`                   | Discover a site's URLs: harvests sitemap.xml (robots.txt + `/sitemap.xml`, following sitemap indexes) and crawls same-origin links breadth-first from the seed. Returns a bounded, de-duplicated list tagged `source=sitemap\|crawl` with depth. Exposure-grade — surfaces robots.txt but never gates on it. Send an MCP progress token (`_meta.progressToken`) to stream progress while the walk (up to 60s) runs. |
@@ -207,6 +237,49 @@ a fetch on them. `browse` folds in lightweight presence hints (host-cached, so
 repeat browses are free); `--no-site-hints` disables that probe while the `site`
 tool stays available.
 
+## Configuration
+
+All configuration is via CLI flags (pass them in your MCP client's `args`).
+`--version` prints the build and exits.
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--log-level` | `warn` | Log level (`debug`/`info`/`warn`/`error`); logs go to stderr, stdout is reserved for MCP. |
+| `--rate-limit` | `5.0` | Per-host requests/sec (0 disables). |
+| `--rate-burst` | `10` | Per-host request burst. |
+| `--retries` | `2` | Retries for transient fetch failures (429/5xx, honoring `Retry-After`). |
+| `--tls-mimic` | off | Present a Chrome TLS/h2 fingerprint (utls) to get past naive anti-bot blocks; also sets `navigator.webdriver=false`. |
+| `--allow-private` | off | Permit page fetches to private/loopback/metadata IPs (needed for localhost/internal targets). |
+| `--no-site-hints` | off | Omit robots.txt/llms.txt presence hints from `browse`. |
+| `--no-safe-output` | off | Disable the untrusted-content safety pass (fence, hidden-text strip, image-beacon defang) — return raw reduction. |
+| `--js` | off | Enable opt-in JavaScript rendering (the `render` tool arg + `interact`). |
+| `--js-timeout` | `5s` | Per-render wall-clock budget for JavaScript. |
+| `--js-no-network` | off | Disable page-JS network requests (DOM-only render). |
+| `--js-allow-private` | off | Permit page-JS subrequests to private/loopback IPs. |
+| `--js-max-requests` | `50` | Max page-JS network requests per render. |
+| `--js-prewarm` | `4` | Pre-warmed JS runtimes kept ready (0 disables). |
+| `--js-max-live` | `16` | Max concurrent live per-session JS runtimes (LRU torn down over the cap). |
+| `--js-memory-limit` | `1024` | MiB of Go heap page JS may grow before every render is interrupted (0 disables the guard). |
+| `--js-asset-cache` | on | Cache page-JS script/module/bundle downloads across renders for 60s (data fetch/XHR never cached). |
+| `--session-ttl` | `30m` | Idle time before a session is evicted. |
+| `--session-cap` | `256` | Max concurrent sessions (oldest evicted on overflow). |
+| `--search-provider` | none | Web-search backend for the `search` tool: `searxng` or `brave` (empty disables it). |
+| `--search-endpoint` | none | Search endpoint URL (SearXNG base URL; optional Brave override). API key comes from `UNBLINK_SEARCH_API_KEY`. |
+
 ## License
+
+[MIT](LICENSE)
+
+## Security
+
+unblink runs untrusted page content (and, under `--js`, untrusted page
+JavaScript) as part of its job. See [SECURITY.md](SECURITY.md) for the threat
+model and how to report a vulnerability.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the build/test workflow, the eval
+gate, and the ADR process. Changes to the JS engine or dependency pins follow the
+[architecture doc](docs/architecture.md) and [ADRs](docs/decisions/).
 
 [MIT](LICENSE)
