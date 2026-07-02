@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -1282,11 +1281,18 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 		event = "click"
 	}
 
-	before := docFingerprint(cur.Doc)
 	lc, err := b.ensureLive(ctx, sess)
 	if err != nil {
 		return nil, err
 	}
+	// Changed is version-bracketed: the live DOM's mutation counter before vs
+	// after the dispatch+settle window. This replaces hashing two full tree
+	// serializations per interact. Semantic nuance: a handler that rewrites a
+	// value to itself now reports true (the page reacted) where a byte-hash
+	// reported false. Version read errors degrade to Changed=true (never
+	// under-report). A freshly opened runtime replays scripts before v0 is
+	// read, so first-interact bracketing still covers only the dispatch.
+	v0, v0err := lc.DOMVersion(ctx)
 	res, err := lc.Dispatch(ctx, js.Action{Selector: selector, Type: event, Value: value})
 	if err != nil {
 		return nil, err
@@ -1299,13 +1305,14 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 	if err != nil {
 		return nil, err
 	}
+	v1, v1err := lc.DOMVersion(ctx)
 
 	return &InteractResult{
 		Summary:           summarize(np),
 		Selector:          selector,
 		Event:             event,
 		Matched:           res.Matched,
-		Changed:           docFingerprint(np.Doc) != before,
+		Changed:           v0err != nil || v1err != nil || v1 != v0,
 		Controls:          np.Meta.Controls,
 		JSErrors:          capErrors(res.Errors),
 		PendingNavigation: nav,
@@ -1371,9 +1378,20 @@ func (b *Browser) trimLiveContexts(opening *session.Session) {
 // detached tree, extracts its structure, and stores it as the session's current
 // page (so the read pipeline never touches the loop-owned live tree). On snapshot
 // failure it degrades to the last stored page.
+//
+// The serialize -> parse -> extract round trip is skipped entirely when the live
+// DOM hasn't mutated since the stored page was snapshotted: the bridge bumps a
+// version counter on every tree mutation, and the session remembers the version
+// its stored page corresponds to. A freshly opened runtime always takes the
+// full path (SetLive resets the recorded version).
 func (b *Browser) refreshFromLive(ctx context.Context, sess *session.Session, lc js.LiveContext) (*page.Page, error) {
 	cur := sess.Current()
-	snap, err := lc.Snapshot(ctx)
+	if v, err := lc.DOMVersion(ctx); err == nil {
+		if pv, ok := sess.LiveSyncVersion(); ok && pv == v {
+			return cur, nil
+		}
+	}
+	snap, ver, err := lc.Snapshot(ctx)
 	if err != nil {
 		return cur, nil
 	}
@@ -1390,18 +1408,8 @@ func (b *Browser) refreshFromLive(ctx context.Context, sess *session.Session, lc
 		return cur, nil
 	}
 	sess.ReplaceCurrentPage(&np)
+	sess.SetLiveSyncVersion(ver)
 	return &np, nil
-}
-
-// docFingerprint hashes a rendered tree so an interaction can report whether it
-// changed the DOM. nil hashes to 0.
-func docFingerprint(doc *html.Node) uint64 {
-	if doc == nil {
-		return 0
-	}
-	h := fnv.New64a()
-	_ = html.Render(h, doc)
-	return h.Sum64()
 }
 
 func selectForm(forms []page.Form, ref string) (page.Form, bool) {

@@ -56,7 +56,7 @@ BENCH ?= .
 BENCHCOUNT ?= 10
 bench:
 	go test -run '^$$' -bench '$(BENCH)' -benchmem -count $(BENCHCOUNT) \
-		./internal/js ./internal/reduce ./internal/dom ./internal/emit ./internal/browser
+		./internal/js ./internal/reduce ./internal/dom ./internal/emit ./internal/browser ./internal/session
 
 vet:
 	go vet ./...

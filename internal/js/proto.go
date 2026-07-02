@@ -533,7 +533,7 @@ func (b *bridge) installHTMLElementProto() {
 			}
 			return vm.ToValue(getAttr(n, "value"))
 		},
-		func(n *html.Node, v goja.Value) { setControlValue(n, v.String()) })
+		func(n *html.Node, v goja.Value) { b.setControlValue(n, v.String()) })
 	b.protoProp(p, "checked",
 		func(n *html.Node) goja.Value { return vm.ToValue(hasAttr(n, "checked")) },
 		func(n *html.Node, v goja.Value) {

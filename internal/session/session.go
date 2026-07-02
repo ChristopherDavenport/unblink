@@ -47,6 +47,8 @@ type Session struct {
 	pos         int            // index of the current page; -1 when empty
 	live        js.LiveContext // persistent JS runtime for the current page; nil when none
 	livePos     int            // history index live is bound to; -1 when none
+	liveSyncVer uint64         // live-DOM version the stored current page was snapshotted at
+	liveSynced  bool           // liveSyncVer is valid (a snapshot has been stored)
 	storage     *js.MemStorage // persistent window.localStorage backing; lazily created
 	sessStorage *js.MemStorage // persistent window.sessionStorage backing; lazily created
 	lastUsed    time.Time
@@ -108,14 +110,33 @@ func (s *Session) Live() js.LiveContext {
 }
 
 // SetLive attaches a live runtime to the current page, closing any previous one.
+// The stored page has not been snapshotted from the new runtime yet, so the
+// sync version is reset (the next refresh always takes the full path).
 func (s *Session) SetLive(lc js.LiveContext) {
 	s.mu.Lock()
 	old := s.live
 	s.live, s.livePos = lc, s.pos
+	s.liveSyncVer, s.liveSynced = 0, false
 	s.mu.Unlock()
 	if old != nil && old != lc {
 		old.Close()
 	}
+}
+
+// LiveSyncVersion returns the live-DOM version captured when the current page
+// was last refreshed from the live runtime, and whether one was recorded.
+func (s *Session) LiveSyncVersion() (uint64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.liveSyncVer, s.liveSynced
+}
+
+// SetLiveSyncVersion records the live-DOM version the stored current page
+// corresponds to, so an unchanged live DOM can skip the next refresh.
+func (s *Session) SetLiveSyncVersion(v uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.liveSyncVer, s.liveSynced = v, true
 }
 
 // dropLiveLocked clears the live runtime and returns it so the caller can Close it
@@ -124,6 +145,7 @@ func (s *Session) SetLive(lc js.LiveContext) {
 func (s *Session) dropLiveLocked() js.LiveContext {
 	lc := s.live
 	s.live, s.livePos = nil, -1
+	s.liveSyncVer, s.liveSynced = 0, false
 	return lc
 }
 

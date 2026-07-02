@@ -326,10 +326,16 @@ func (b *bridge) templateContent(n *html.Node) *goja.Object {
 		return o
 	}
 	frag := &html.Node{Type: html.DocumentNode}
+	moved := n.FirstChild != nil
 	for n.FirstChild != nil {
 		c := n.FirstChild
 		n.RemoveChild(c)
 		frag.AppendChild(c)
+	}
+	if moved {
+		// The template element in the live tree just lost its children — bump the
+		// mutation signal so settle and live-snapshot staleness checks see it.
+		b.domVersion++
 	}
 	o, _ := b.wrap(frag).(*goja.Object)
 	b.templateContentCache[n] = o

@@ -37,6 +37,7 @@ type Manager struct {
 	tombstones map[string]tombstone
 	ttl        time.Duration
 	cap        int
+	lastGC     time.Time // last full expiry sweep (see gcInterval)
 	newClient  func(Config) (*fetch.Client, error)
 	onEvict    func(*Session) // called (outside the lock) when a session leaves the map
 }
@@ -73,8 +74,12 @@ func (m *Manager) GetOrCreate(id string) (*Session, error) {
 	m.mu.Lock()
 	defer func() { m.mu.Unlock(); m.evictAll(evicted) }()
 
-	evicted = m.gcLocked()
+	evicted = m.gcLocked(false)
 	if ex, ok := m.sessions[id]; ok {
+		if m.expireLocked(id, ex) {
+			evicted = append(evicted, ex)
+			return nil, &ExpiredError{ID: id, Reason: "idle", HadCredentials: ex.Config().HasCredentials()}
+		}
 		ex.touch()
 		return ex, nil
 	}
@@ -109,8 +114,12 @@ func (m *Manager) Get(id string) (*Session, error) {
 	m.mu.Lock()
 	defer func() { m.mu.Unlock(); m.evictAll(evicted) }()
 
-	evicted = m.gcLocked()
+	evicted = m.gcLocked(false)
 	if s, ok := m.sessions[id]; ok {
+		if m.expireLocked(id, s) {
+			evicted = append(evicted, s)
+			return nil, &ExpiredError{ID: id, Reason: "idle", HadCredentials: s.Config().HasCredentials()}
+		}
 		s.touch()
 		return s, nil
 	}
@@ -144,13 +153,17 @@ func (m *Manager) NewWithConfig(id string, cfg Config) (*Session, error) {
 	m.mu.Lock()
 	defer func() { m.mu.Unlock(); m.evictAll(evicted) }()
 
-	evicted = m.gcLocked()
-	if ex, ok := m.sessions[id]; ok {
+	evicted = m.gcLocked(false)
+	if ex, ok := m.sessions[id]; ok && !m.expireLocked(id, ex) {
 		if cfg.HasCredentials() || cfg.Origin != "" {
 			return nil, &ExistsError{ID: id}
 		}
 		ex.touch()
 		return ex, nil
+	} else if ok {
+		// Expired inline: fall through to deliberate re-creation, which clears
+		// the tombstone — exactly what a post-sweep create would have done.
+		evicted = append(evicted, ex)
 	}
 	return m.createLocked(id, cfg, &evicted)
 }
@@ -162,7 +175,7 @@ func (m *Manager) List() []*Session {
 	m.mu.Lock()
 	defer func() { m.mu.Unlock(); m.evictAll(evicted) }()
 
-	evicted = m.gcLocked()
+	evicted = m.gcLocked(true)
 	out := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		out = append(out, s)
@@ -204,11 +217,23 @@ func (m *Manager) Len() int {
 	m.mu.Lock()
 	defer func() { m.mu.Unlock(); m.evictAll(evicted) }()
 
-	evicted = m.gcLocked()
+	evicted = m.gcLocked(true)
 	return len(m.sessions)
 }
 
-func (m *Manager) gcLocked() []*Session {
+// gcInterval amortizes the full-map expiry sweep: every lookup used to pay
+// O(sessions) under the global lock. Between sweeps, the looked-up id's own
+// expiry is still enforced inline (expireLocked), so per-id semantics are
+// unchanged; only unrelated zombies linger up to gcInterval longer (bounded:
+// the TTL default is 30m). List forces a sweep — it's the enumerator callers
+// trust, and it's rare.
+const gcInterval = 30 * time.Second
+
+func (m *Manager) gcLocked(force bool) []*Session {
+	if !force && time.Since(m.lastGC) < gcInterval {
+		return nil
+	}
+	m.lastGC = time.Now()
 	var evicted []*Session
 	for id, s := range m.sessions {
 		if s.idle() > m.ttl {
@@ -219,6 +244,18 @@ func (m *Manager) gcLocked() []*Session {
 	}
 	m.pruneTombstonesLocked()
 	return evicted
+}
+
+// expireLocked evicts s (registered under id) if it has idled past the TTL,
+// reporting whether it did — the O(1) per-lookup complement to the amortized
+// sweep, preserving exact eviction semantics for the id being accessed.
+func (m *Manager) expireLocked(id string, s *Session) bool {
+	if s.idle() <= m.ttl {
+		return false
+	}
+	delete(m.sessions, id)
+	m.tombstoneLocked(id, "idle", s)
+	return true
 }
 
 func (m *Manager) evictOldestLocked() *Session {

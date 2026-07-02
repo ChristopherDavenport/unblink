@@ -38,9 +38,13 @@ type LiveContext interface {
 	// Dispatch fires one synthetic DOM event and settles, honoring any wait
 	// condition carried on the action.
 	Dispatch(ctx context.Context, action Action) (DispatchResult, error)
-	// Snapshot serializes the current live DOM to HTML bytes (taken on the loop
-	// goroutine, atomic with respect to JS/timer mutations).
-	Snapshot(ctx context.Context) ([]byte, error)
+	// Snapshot serializes the current live DOM to HTML bytes plus the DOM
+	// mutation version the bytes correspond to (both captured in one on-loop
+	// job, atomic with respect to JS/timer mutations).
+	Snapshot(ctx context.Context) ([]byte, uint64, error)
+	// DOMVersion returns the live DOM's mutation counter — a cheap staleness
+	// probe: while it is unchanged, a prior Snapshot's bytes are still current.
+	DOMVersion(ctx context.Context) (uint64, error)
 	// PendingNavigation returns (and clears) any cross-document navigation the page's
 	// JS requested via location.href/assign/replace since the last read; "" if none.
 	PendingNavigation(ctx context.Context) (string, error)
@@ -141,13 +145,29 @@ func (c *Context) Dispatch(ctx context.Context, action Action) (DispatchResult, 
 	return res, err
 }
 
-// Snapshot serializes the live document tree to HTML bytes on the loop goroutine.
-func (c *Context) Snapshot(ctx context.Context) ([]byte, error) {
+// Snapshot serializes the live document tree to HTML bytes on the loop
+// goroutine, with the DOM version the bytes correspond to.
+func (c *Context) Snapshot(ctx context.Context) ([]byte, uint64, error) {
 	var out []byte
+	var ver uint64
 	err := c.run(ctx, false, nil, nil, func(*goja.Runtime) {
 		out = []byte(outerHTML(c.doc))
+		if c.bridge != nil {
+			ver = c.bridge.domVersion
+		}
 	})
-	return out, err
+	return out, ver, err
+}
+
+// DOMVersion reads the live DOM's mutation counter on the loop goroutine.
+func (c *Context) DOMVersion(ctx context.Context) (uint64, error) {
+	var ver uint64
+	err := c.run(ctx, false, nil, nil, func(*goja.Runtime) {
+		if c.bridge != nil {
+			ver = c.bridge.domVersion
+		}
+	})
+	return ver, err
 }
 
 // PendingNavigation reads and clears any cross-document navigation the page's JS
