@@ -14,12 +14,15 @@ The single binary is `cmd/unblink`. The authoritative design doc is
 
 ## Commands
 
-The `Makefile` is the canonical task runner (there is no CI and no linter config;
-`gofmt` + `go vet` are the only static tooling).
+The `Makefile` is the canonical task runner. CI (`.github/workflows/ci.yml`)
+runs the gofmt check plus `make vet test eval` on every push/PR; there is no
+separate linter config — `gofmt` + `go vet` are the static tooling.
 
 ```sh
-make build     # go build -o bin/unblink ./cmd/unblink
-make test      # go test ./...
+make build     # go build (version stamped from the nearest v* tag)
+make test      # go test ./... (includes every fuzz target's seed corpus)
+make eval      # offline in-process MCP eval gate (build tag `eval`; scorecard on stderr)
+make fuzz      # coverage-guided fuzzing of the untrusted-input parsers (FUZZTIME=15s each)
 make vet       # go vet ./...
 make fmt       # gofmt -w .
 make tidy      # go mod tidy
@@ -112,12 +115,18 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   in `internal/mcpserver/auth.go` and are never logged or echoed in session state.
 - Tests use external `_test` packages with fixtures in `testdata/`. `internal/js`
   carries the densest suite; `internal/browser/browser_test.go` is the
-  integration-level test of the whole pipeline.
-- `reference/` and `docs/decisions/` are mostly-empty **scaffolding** today:
-  `reference/README.md` describes an intended curated library (every artifact
-  pinned in `PINNED.md`, summaries over vendored source) but the subdirs and
-  most files don't exist yet; `docs/decisions/` has no ADRs. Don't assume they
-  exist.
+  integration-level test of the whole pipeline. Every parser that eats untrusted
+  bytes (dom, reduce, pdf, robots, token cursors) has a fuzz target — `make fuzz`
+  (FUZZTIME per target); seed corpora run in `make test`.
+- `docs/decisions/` holds the ADRs (numbered `NNNN-slug.md`): 0001 keeps
+  `dslipak/pdf` but **vendors it at `third_party/pdf`** (a `replace` directive)
+  with three loop-bounding patches after fuzzing found an infinite-loop DoS
+  that recover+ctx couldn't contain — sync upstream manually, re-fuzz before
+  adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
+  pseudo-version pins are deliberate — bumping goja is its own reviewed
+  change). Add a new ADR when a decision would otherwise live only in a PR
+  description. (`reference/` and `internal/config/` were empty scaffolding,
+  deleted in Phase 20.)
 - **Framework rendering (flat-DOM model)**: under `--js` the engine renders
   mainstream SPA frameworks (React/Vue/Preact/Svelte/Lit) — a real Node/Element
   prototype chain, MutationObserver, custom-element upgrade, and a *flattened*

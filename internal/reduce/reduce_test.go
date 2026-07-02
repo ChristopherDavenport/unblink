@@ -50,3 +50,59 @@ func TestFullStripHidden(t *testing.T) {
 		t.Errorf("stripHidden=false should retain hidden text:\n%s", keep.Article.ContentHTML)
 	}
 }
+
+// Every human-hiding channel the heuristic claims to cover is actually
+// stripped — and near-miss lookalikes are kept (no false positives).
+func TestFullStripHiddenVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     string
+		stripped bool
+	}{
+		{"hidden attribute", `<div hidden>SMUGGLED</div>`, true},
+		{"aria-hidden true", `<span aria-hidden="true">SMUGGLED</span>`, true},
+		{"visibility hidden", `<p style="visibility: hidden">SMUGGLED</p>`, true},
+		{"offscreen left", `<p style="position:absolute; left: -9999px">SMUGGLED</p>`, true},
+		{"offscreen em", `<p style="text-indent:-999em">SMUGGLED</p>`, true},
+		{"clip rect", `<p style="clip: rect(0,0,0,0);position:absolute">SMUGGLED</p>`, true},
+		{"aria-hidden false is visible", `<span aria-hidden="false">SMUGGLED</span>`, false},
+		{"ordinary positioning is visible", `<p style="position:absolute; left: 10px">SMUGGLED</p>`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPage(t, `<p>Visible anchor paragraph.</p>`+tc.body)
+			if err := reduce.Full(p, true); err != nil {
+				t.Fatalf("Full: %v", err)
+			}
+			got := strings.Contains(p.Article.ContentHTML, "SMUGGLED")
+			if got == tc.stripped {
+				t.Errorf("stripped=%v, want %v:\n%s", !got, tc.stripped, p.Article.ContentHTML)
+			}
+		})
+	}
+}
+
+// Article picks the main prose over boilerplate and records Source
+// "readability"; a contentless SPA shell falls back to Full and says so.
+func TestArticleSourceReporting(t *testing.T) {
+	long := strings.Repeat("Substantial article prose that readability should keep, with detail. ", 20)
+	article := newPage(t, `<nav><a href="/">Home</a><a href="/about">About</a></nav>`+
+		`<article><h1>Real Story</h1><p>`+long+`</p><p>`+long+`</p></article>`+
+		`<footer>Copyright boilerplate footer</footer>`)
+	if err := reduce.Article(article, true); err != nil {
+		t.Fatalf("Article: %v", err)
+	}
+	if article.Article.Source != "readability" {
+		t.Errorf("Source = %q, want readability", article.Article.Source)
+	}
+	if !strings.Contains(article.Article.ContentHTML, "Substantial article prose") {
+		t.Errorf("article body lost:\n%.300s", article.Article.ContentHTML)
+	}
+
+	shell := newPage(t, `<div id="app"></div><script src="/bundle.js"></script>`)
+	if err := reduce.Article(shell, true); err != nil {
+		t.Fatalf("Article(shell): %v", err)
+	}
+	if shell.Article.Source != "full" {
+		t.Errorf("SPA shell Source = %q, want full (fallback must be reported)", shell.Article.Source)
+	}
+}

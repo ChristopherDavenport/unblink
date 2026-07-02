@@ -1,7 +1,9 @@
 // Package pdf extracts text from PDF documents and renders it as Markdown. The
-// underlying library (dslipak/pdf) can panic on malformed input and has no OCR,
-// so extraction is wrapped in a recover, bounded by the caller's context, and
-// falls back to a manifest when a PDF yields no extractable text.
+// underlying library (dslipak/pdf, vendored with loop bounds at third_party/pdf
+// — see docs/decisions/0001) can panic on malformed input and has no OCR, so
+// extraction is wrapped in a recover, bounded by the caller's context plus a
+// hard wall-clock, and falls back to a manifest when a PDF yields no
+// extractable text.
 //
 // It does not import the HTML parser — dom keeps that monopoly.
 package pdf
@@ -12,14 +14,24 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	dpdf "github.com/dslipak/pdf"
 )
 
+// maxExtractTime bounds one extraction regardless of the caller's context —
+// an MCP request context may carry no deadline, and a hostile PDF must not
+// hold a request (or a goroutine's CPU) hostage. Any legitimate 10 MiB PDF
+// extracts orders of magnitude faster.
+const maxExtractTime = 20 * time.Second
+
 // Convert extracts text from a PDF and renders it as Markdown, returning the
-// document title when present in the PDF metadata. It honours ctx so a
-// pathological PDF cannot hang past the request deadline, and never panics.
+// document title when present in the PDF metadata. It honours ctx (and its own
+// hard extraction budget) so a pathological PDF cannot hang a request, and
+// never panics.
 func Convert(ctx context.Context, raw []byte) (markdown, title string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, maxExtractTime)
+	defer cancel()
 	type result struct {
 		md, title string
 		err       error
