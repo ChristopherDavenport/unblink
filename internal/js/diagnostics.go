@@ -30,7 +30,7 @@ type RenderResult struct {
 	// budget. NetPending > 0 or (DeadlineHit && DOMBusy) means the snapshot was
 	// taken while the page was still working — content may be incomplete. All are
 	// filled by the engine after the settle, not by collectDiagnostics.
-	NetRequests int  // subrequests attempted (fetch/XHR, scripts, modules, dynamic import)
+	NetRequests int  // subrequests attempted (fetch/XHR, scripts, modules, dynamic import); asset-cache hits bypass the transport and are not counted — this reports real network attempts
 	NetFailed   int  // subrequests that errored (network failures and budget/rate denials)
 	NetPending  int  // subrequests still in flight when the snapshot was taken
 	DeadlineHit bool // settle closed by the JS budget deadline rather than by quiescence

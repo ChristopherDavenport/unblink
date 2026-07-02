@@ -114,11 +114,16 @@ func (b *bridge) loadExternalScript(n *html.Node, src string) {
 		)
 		if abs, err := b.resolveURL(src); err == nil {
 			name = abs
-			ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
-			res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
-			cancel()
-			if ferr == nil && res != nil && res.Status < 400 {
-				body, ok = res.Body, true
+			if cached, hit := b.assets.get(assetKey(abs)); hit {
+				body, ok = cached, true
+			} else {
+				ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
+				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
+				cancel()
+				if ferr == nil && res != nil && res.Status < 400 {
+					body, ok = res.Body, true
+					b.assets.put(assetKey(abs), res.Body)
+				}
 			}
 		}
 		_ = b.loop.RunOnLoop(func(vm *goja.Runtime) {
@@ -174,13 +179,18 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 			if err != nil {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
-			res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
-			cancel()
-			if ferr != nil || res == nil || res.Status >= 400 {
-				continue
+			if body, ok := b.assets.get(assetKey(abs)); ok {
+				src = string(body)
+			} else {
+				ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
+				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
+				cancel()
+				if ferr != nil || res == nil || res.Status >= 400 {
+					continue
+				}
+				src = string(res.Body)
+				b.assets.put(assetKey(abs), res.Body)
 			}
-			src = string(res.Body)
 		} else {
 			src = scriptText(s)
 		}

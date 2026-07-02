@@ -71,7 +71,8 @@ type Client struct {
 	maxBytes    int64
 	dialControl func(network, address string, c syscall.RawConn) error
 	tlsMimic    bool
-	tlsInsecure bool // test-only: skip cert verification on the utls path
+	tlsInsecure bool              // test-only: skip cert verification on the utls path
+	sharedRT    http.RoundTripper // see WithSharedTransport
 
 	// Injected credentials, scoped to a single origin (credOrigin, "scheme://host").
 	// They are added only to requests whose origin matches, and stripped on any
@@ -143,6 +144,24 @@ func WithJar(jar http.CookieJar) Option { return func(c *Client) { c.http.Jar = 
 // guard. Checking the resolved address makes it robust against DNS rebinding.
 func WithDialControl(control func(network, address string, c syscall.RawConn) error) Option {
 	return func(c *Client) { c.dialControl = control }
+}
+
+// WithSharedTransport makes the client use rt (typically from NewSharedTransport)
+// instead of building its own — sharing one connection pool across many
+// short-lived clients (per-render JS subrequest clients) so repeat renders
+// reuse keep-alive connections instead of re-dialing TCP+TLS. Everything
+// per-client (jar, timeout, credentials, redirect policy) lives on http.Client,
+// so only the pool is shared. Ignored under WithTLSMimic (utls owns its pool);
+// any needed SSRF dial guard must be baked into rt.
+func WithSharedTransport(rt http.RoundTripper) Option {
+	return func(c *Client) { c.sharedRT = rt }
+}
+
+// NewSharedTransport builds the same stock transport buildTransport would, for
+// sharing across clients via WithSharedTransport. control may be nil.
+func NewSharedTransport(control func(network, address string, c syscall.RawConn) error) http.RoundTripper {
+	c := &Client{dialControl: control}
+	return c.buildTransport()
 }
 
 // WithTLSMimic enables a browser-like TLS ClientHello (utls) to avoid being
@@ -219,6 +238,9 @@ func (c *Client) buildTransport() http.RoundTripper {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Control: c.dialControl}
 	if c.tlsMimic {
 		return newUTLSRoundTripper(dialer, c.tlsInsecure)
+	}
+	if c.sharedRT != nil {
+		return c.sharedRT
 	}
 	return &http.Transport{
 		DialContext:       dialer.DialContext,

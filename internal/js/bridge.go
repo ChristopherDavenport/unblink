@@ -124,6 +124,11 @@ type bridge struct {
 	// netCount is the countingTransport installed over the caller's Transport (nil
 	// when the render has no network); render diagnostics read its totals.
 	netCount *countingTransport
+
+	// assets is the Engine's shared cross-render script/module/bundle cache (nil
+	// when disabled). Set by the engine right after newBridge. Asset-cache hits
+	// bypass the transport, so they never count toward NetRequests or the budget.
+	assets *assetCache
 }
 
 func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration) *bridge {

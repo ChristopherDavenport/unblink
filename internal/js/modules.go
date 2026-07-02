@@ -67,27 +67,36 @@ func (b *bridge) runModules(modules []*html.Node, importMap map[string]string) {
 			continue
 		}
 
-		res := esbuild.Build(esbuild.BuildOptions{
-			Stdin: &esbuild.StdinOptions{
-				Contents:   entry,
-				Loader:     esbuild.LoaderJS,
-				Sourcefile: "entry.js",
-				ResolveDir: "/",
-			},
-			Bundle:   true,
-			Write:    false,
-			Format:   esbuild.FormatIIFE,
-			Target:   esbuild.ES2017,
-			LogLevel: esbuild.LogLevelSilent,
-			Plugins:  []esbuild.Plugin{plugin},
-		})
-		if len(res.Errors) > 0 || len(res.OutputFiles) == 0 {
-			if len(res.Errors) > 0 {
-				b.recordError(fmt.Errorf("esbuild: %s", res.Errors[0].Text))
+		// The bundle output is a pure function of (base, entry, import map) —
+		// its module fetches are asset requests — so it shares the asset cache's
+		// TTL/flag, skipping the whole esbuild build on repeat renders.
+		bkey := bundleKey(b.docBaseNow(), entry, importMap)
+		bundled, hit := b.assets.get(bkey)
+		if !hit {
+			res := esbuild.Build(esbuild.BuildOptions{
+				Stdin: &esbuild.StdinOptions{
+					Contents:   entry,
+					Loader:     esbuild.LoaderJS,
+					Sourcefile: "entry.js",
+					ResolveDir: "/",
+				},
+				Bundle:   true,
+				Write:    false,
+				Format:   esbuild.FormatIIFE,
+				Target:   esbuild.ES2017,
+				LogLevel: esbuild.LogLevelSilent,
+				Plugins:  []esbuild.Plugin{plugin},
+			})
+			if len(res.Errors) > 0 || len(res.OutputFiles) == 0 {
+				if len(res.Errors) > 0 {
+					b.recordError(fmt.Errorf("esbuild: %s", res.Errors[0].Text))
+				}
+				continue
 			}
-			continue
+			bundled = res.OutputFiles[0].Contents
+			b.assets.put(bkey, bundled)
 		}
-		prog, err := compileCached("module.js", string(res.OutputFiles[0].Contents))
+		prog, err := compileCached("module.js", string(bundled))
 		if err != nil {
 			b.recordError(err)
 			continue
@@ -165,6 +174,14 @@ func (b *bridge) modulePlugin(importMap map[string]string) esbuild.Plugin {
 			pb.OnResolve(esbuild.OnResolveOptions{Filter: ".*", Namespace: moduleNamespace}, resolve)
 
 			pb.OnLoad(esbuild.OnLoadOptions{Filter: ".*", Namespace: moduleNamespace}, func(a esbuild.OnLoadArgs) (esbuild.OnLoadResult, error) {
+				loader := esbuild.LoaderJS
+				if strings.HasSuffix(strings.ToLower(a.Path), ".json") {
+					loader = esbuild.LoaderJSON
+				}
+				if body, ok := b.assets.get(assetKey(a.Path)); ok {
+					contents := string(body)
+					return esbuild.OnLoadResult{Contents: &contents, Loader: loader}, nil
+				}
 				ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
 				defer cancel()
 				res, err := b.transport.Do(ctx, "GET", a.Path, nil, nil)
@@ -175,10 +192,7 @@ func (b *bridge) modulePlugin(importMap map[string]string) esbuild.Plugin {
 					return esbuild.OnLoadResult{}, fmt.Errorf("module %s: status %d", a.Path, res.Status)
 				}
 				contents := string(res.Body)
-				loader := esbuild.LoaderJS
-				if strings.HasSuffix(strings.ToLower(a.Path), ".json") {
-					loader = esbuild.LoaderJSON
-				}
+				b.assets.put(assetKey(a.Path), res.Body)
 				return esbuild.OnLoadResult{Contents: &contents, Loader: loader}, nil
 			})
 		},

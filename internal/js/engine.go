@@ -42,6 +42,7 @@ type Engine struct {
 	pool      chan *eventloop.EventLoop // pre-warmed, fresh, single-use loops; nil when disabled
 	stop      chan struct{}
 	closeOnce sync.Once
+	assets    *assetCache // TTL'd script/module/bundle cache; nil when disabled
 }
 
 // Option configures an Engine.
@@ -51,6 +52,7 @@ type config struct {
 	timeout    time.Duration
 	concurrent int
 	prewarm    int
+	assetTTL   time.Duration
 }
 
 // WithTimeout sets the wall-clock budget for a single render.
@@ -63,6 +65,11 @@ func WithConcurrency(n int) Option { return func(c *config) { c.concurrent = n }
 // creation is off the render critical path. 0 disables the pool (loops are
 // created per render). Loops are always single-use; the pool never reuses one.
 func WithPrewarm(n int) Option { return func(c *config) { c.prewarm = n } }
+
+// WithAssetCache caches page-JS *asset* downloads (external scripts, module
+// sources) and esbuild bundle outputs across renders for ttl. Page data
+// requests (fetch/XHR) are never cached. 0 disables (the default).
+func WithAssetCache(ttl time.Duration) Option { return func(c *config) { c.assetTTL = ttl } }
 
 // New returns an Engine. If a pre-warm pool is configured, call Close to stop its
 // background refiller.
@@ -77,7 +84,7 @@ func New(opts ...Option) *Engine {
 	if c.concurrent <= 0 {
 		c.concurrent = DefaultMaxConcurrent
 	}
-	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent)}
+	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent), assets: newAssetCache(c.assetTTL)}
 	if c.prewarm > 0 {
 		e.pool = make(chan *eventloop.EventLoop, c.prewarm)
 		e.stop = make(chan struct{})
@@ -205,6 +212,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// reqTimeout is the render budget so a wait_timeout override also gives the
 		// page's own fetches longer to complete (else the awaited content never lands).
 		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget)
+		b.assets = e.assets
 		b.install()
 		// Stubs simplest to express in JS (storage, observers, rAF, and the
 		// network-aware fetch/XHR). Failure here is non-fatal.

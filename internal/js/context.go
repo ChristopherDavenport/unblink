@@ -95,6 +95,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 	err := c.run(ctx, true, nil, nil, func(vm *goja.Runtime) {
 		c.vm.Store(vm)
 		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, c.ctx, e.timeout)
+		b.assets = e.assets
 		b.install()
 		_, _ = vm.RunProgram(preludeProgram)
 		b.runScripts(scripts)

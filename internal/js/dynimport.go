@@ -59,28 +59,36 @@ func (b *bridge) loadDynamicChunk(spec string) (goja.Value, error) {
 	// bundle in.
 	entry := "import * as __m from " + strconv.Quote(abs) + ";\n" +
 		"globalThis." + dynImportResultGlobal + " = Object.assign({ __esModule: true }, __m);\n"
-	res := esbuild.Build(esbuild.BuildOptions{
-		Stdin: &esbuild.StdinOptions{
-			Contents:   entry,
-			Loader:     esbuild.LoaderJS,
-			Sourcefile: "dynimport.js",
-			ResolveDir: "/",
-		},
-		Bundle:    true,
-		Write:     false,
-		Format:    esbuild.FormatIIFE,
-		Target:    esbuild.ESNext,
-		Supported: map[string]bool{"dynamic-import": false},
-		LogLevel:  esbuild.LogLevelSilent,
-		Plugins:   []esbuild.Plugin{b.modulePlugin(nil)},
-	})
-	if len(res.Errors) > 0 {
-		return nil, fmt.Errorf("bundle: %s", res.Errors[0].Text)
+	// Same TTL'd bundle cache as runModules: repeat renders of a code-split SPA
+	// skip re-fetching and re-bundling every lazy chunk.
+	bkey := bundleKey(b.docBaseNow(), entry, nil)
+	bundled, hit := b.assets.get(bkey)
+	if !hit {
+		res := esbuild.Build(esbuild.BuildOptions{
+			Stdin: &esbuild.StdinOptions{
+				Contents:   entry,
+				Loader:     esbuild.LoaderJS,
+				Sourcefile: "dynimport.js",
+				ResolveDir: "/",
+			},
+			Bundle:    true,
+			Write:     false,
+			Format:    esbuild.FormatIIFE,
+			Target:    esbuild.ESNext,
+			Supported: map[string]bool{"dynamic-import": false},
+			LogLevel:  esbuild.LogLevelSilent,
+			Plugins:   []esbuild.Plugin{b.modulePlugin(nil)},
+		})
+		if len(res.Errors) > 0 {
+			return nil, fmt.Errorf("bundle: %s", res.Errors[0].Text)
+		}
+		if len(res.OutputFiles) == 0 {
+			return nil, errors.New("bundle produced no output")
+		}
+		bundled = res.OutputFiles[0].Contents
+		b.assets.put(bkey, bundled)
 	}
-	if len(res.OutputFiles) == 0 {
-		return nil, errors.New("bundle produced no output")
-	}
-	prog, err := compileCached("dynimport.js", string(res.OutputFiles[0].Contents))
+	prog, err := compileCached("dynimport.js", string(bundled))
 	if err != nil {
 		return nil, err
 	}

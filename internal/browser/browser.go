@@ -90,7 +90,8 @@ type Browser struct {
 	jsMaxRequests  int          // per-render JS request budget
 	jsAllowPrivate bool         // permit JS requests to private/loopback IPs
 	jsReqTimeout   time.Duration
-	jsMaxLive      int // cap on concurrent live JS runtimes (LRU torn down)
+	jsMaxLive      int               // cap on concurrent live JS runtimes (LRU torn down)
+	jsRT           http.RoundTripper // shared conn pool for all JS subrequest clients (SSRF guard baked in)
 
 	limiter *ratelimit.Limiter // shared per-host rate limiter (nil = disabled)
 	retries int                // fetch retries, threaded into JS subrequest clients
@@ -111,6 +112,7 @@ type options struct {
 	jsTimeout      time.Duration
 	jsPrewarm      int
 	jsMaxLive      int
+	jsAssetCache   bool
 	rateRPS        float64
 	rateBurst      int
 	retries        int
@@ -168,6 +170,12 @@ func WithJSAllowPrivate(allow bool) Option { return func(o *options) { o.jsAllow
 // session and page survive — the next interact reopens it). 0 keeps the default.
 func WithJSMaxLive(n int) Option { return func(o *options) { o.jsMaxLive = n } }
 
+// WithJSAssetCache enables/disables the cross-render cache of page-JS asset
+// downloads (external scripts, module sources) and esbuild bundle outputs,
+// TTL'd to the page cache's 60s (default enabled — the same staleness posture
+// as the whole-page cache). Page data requests (fetch/XHR) are never cached.
+func WithJSAssetCache(enabled bool) Option { return func(o *options) { o.jsAssetCache = enabled } }
+
 // WithAllowPrivate permits page fetches (the default + per-session + one-shot
 // clients) to reach private/loopback/metadata addresses. Off by default: direct
 // fetches to localhost/private IPs are blocked by the SSRF dial guard. Enable for
@@ -208,7 +216,7 @@ func WithSafeOutput(enabled bool) Option { return func(o *options) { o.safeOutpu
 func New(opts ...Option) (*Browser, error) {
 	o := options{
 		jsNetwork: true, jsMaxRequests: DefaultJSMaxRequests, jsTimeout: DefaultJSTimeout,
-		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive,
+		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive, jsAssetCache: true,
 		rateRPS: DefaultRateRPS, rateBurst: DefaultRateBurst, retries: DefaultRetries,
 		siteHints: true, safeOutput: true,
 	}
@@ -216,7 +224,11 @@ func New(opts ...Option) (*Browser, error) {
 		opt(&o)
 	}
 	if o.renderer == nil && o.js {
-		o.renderer = js.New(js.WithTimeout(o.jsTimeout), js.WithPrewarm(o.jsPrewarm))
+		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithPrewarm(o.jsPrewarm)}
+		if o.jsAssetCache {
+			jsOpts = append(jsOpts, js.WithAssetCache(DefaultCacheTTL))
+		}
+		o.renderer = js.New(jsOpts...)
 	}
 
 	var limiter *ratelimit.Limiter
@@ -272,9 +284,13 @@ func New(opts ...Option) (*Browser, error) {
 		jsAllowPrivate: o.jsAllowPrivate,
 		jsReqTimeout:   o.jsTimeout,
 		jsMaxLive:      o.jsMaxLive,
-		limiter:        limiter,
-		retries:        o.retries,
-		search:         o.search,
+		// One pool for every render's and live session's subrequest client:
+		// repeat renders reuse keep-alive connections instead of re-dialing.
+		// The SSRF posture is global config, so a single guarded pool is safe.
+		jsRT:    fetch.NewSharedTransport(ssrfControl(o.jsAllowPrivate)),
+		limiter: limiter,
+		retries: o.retries,
+		search:  o.search,
 	}
 	if lr, ok := o.renderer.(liveRenderer); ok {
 		b.liveEngine = lr
