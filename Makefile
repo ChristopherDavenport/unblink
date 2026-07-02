@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval vet fmt tidy clean
+.PHONY: all build run version test eval fuzz vet fmt tidy clean
 
 all: build
 
@@ -34,6 +34,18 @@ test:
 # stderr and exits nonzero on regression.
 eval:
 	go test -tags eval ./eval -run TestEval -count=1 -v
+
+# Short coverage-guided fuzzing over every parser that consumes untrusted
+# bytes (HTML, reduction, PDF, robots.txt, pagination cursors). The seed
+# corpora already run in `make test`; this explores beyond them. Tune the
+# per-target budget with FUZZTIME.
+FUZZTIME ?= 15s
+fuzz:
+	go test ./internal/dom -run '^$$' -fuzz '^FuzzParseExtract$$' -fuzztime $(FUZZTIME)
+	go test ./internal/reduce -run '^$$' -fuzz '^FuzzReduce$$' -fuzztime $(FUZZTIME)
+	go test ./internal/content/pdf -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
+	go test ./internal/robots -run '^$$' -fuzz '^FuzzParse$$' -fuzztime $(FUZZTIME)
+	go test ./internal/tokens -run '^$$' -fuzz '^FuzzPaginateCursor$$' -fuzztime $(FUZZTIME)
 
 vet:
 	go vet ./...

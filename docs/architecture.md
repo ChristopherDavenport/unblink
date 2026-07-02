@@ -423,6 +423,34 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   - *Deferred*: a streamable-HTTP MCP transport (would force multi-tenant
     session namespacing; stdio remains the deployment model for now).
 
+- **Phase 20 — Quality infrastructure.** ✅ The final evaluation-roadmap tier:
+  test the security-sensitive glue, fuzz every untrusted-input parser, and
+  make the repo's promises match reality.
+  - **Fuzz targets + `make fuzz`** (seed corpora run in `make test`): dom
+    parse/extract/tables/microdata/find, reduce+emit (both modes, hidden-strip
+    on), PDF convert, robots.txt parse+match, pagination cursor round-trip.
+  - **Two real bugs on the first fuzz runs**: (1) `dom.Find` panicked when
+    lowercasing shifted byte offsets (invalid UTF-8 folds to 3-byte U+FFFD) —
+    match offsets are now mapped back through a fold-offset table
+    (`findLower`), with an ASCII fast path; (2) a malformed-xref PDF sent
+    `dslipak/pdf` into an **infinite in-memory loop** that recover+context
+    could not stop (a per-request CPU-burn DoS). Per ADR 0002's
+    vendor-on-failure rule the library is now vendored at `third_party/pdf`
+    (`replace` directive) with three loop bounds (page-tree walk, synthetic
+    newlines, Extends chain), and `pdf.Convert` enforces its own hard
+    wall-clock (`maxExtractTime`) as defense in depth. Both crashers live on
+    as committed fuzz-corpus regressions. See ADR 0001.
+  - **Credential-plumbing unit tests** (`internal/mcpserver/auth_test.go`,
+    `tools_test.go`): env-var secret indirection, credentials-require-origin,
+    one-shot auth, upload caps/decoding, untrusted-content framing
+    (unpredictable per-call fence).
+  - **ADRs in `docs/decisions/`**: 0001 (PDF library: contained + vendored),
+    0002 (dependency pinning policy — goja pseudo-versions are deliberate).
+  - **Scaffolding removed**: empty `internal/config/` and the aspirational
+    `reference/` library; CLAUDE.md updated to match (CI + eval + fuzz are
+    documented commands now). reduce/emit test tables broadened (hidden-strip
+    variant matrix, article-vs-fallback source reporting, outline/markdown).
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. Geometry and CSSOM are **honest constant
 stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle` return zeros/empty so

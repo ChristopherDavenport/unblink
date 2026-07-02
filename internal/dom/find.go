@@ -2,6 +2,8 @@ package dom
 
 import (
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 
@@ -49,10 +51,17 @@ func Find(doc *html.Node, query string, maxHits int) []Hit {
 				stack = append(stack, page.Heading{Level: lvl, Text: collapsedText(n)})
 			}
 		case html.TextNode:
-			lower := strings.ToLower(n.Data)
+			lower, back := findLower(n.Data)
 			if i := strings.Index(lower, q); i >= 0 {
+				start, qlen := i, len(q)
+				if back != nil {
+					// Lowercasing shifted byte offsets (non-ASCII / invalid UTF-8):
+					// map the match back to offsets valid in the original text.
+					start = back[i]
+					qlen = back[i+len(q)] - start
+				}
 				hits = append(hits, Hit{
-					Snippet:     snippet(n.Data, i, len(q)),
+					Snippet:     snippet(n.Data, start, qlen),
 					HeadingPath: headingPath(stack),
 					Index:       len(hits),
 				})
@@ -77,10 +86,51 @@ func headingPath(stack []page.Heading) string {
 	return strings.Join(parts, " > ")
 }
 
+// findLower lowercases s for case-insensitive matching. For pure-ASCII text
+// (the common case) byte offsets are unchanged and the returned map is nil.
+// Otherwise lowering can change byte lengths — invalid bytes fold to the
+// 3-byte U+FFFD, and some case mappings resize — so a byte index found in the
+// lowered string is NOT valid in s; the returned slice maps every lowered
+// byte offset (plus one-past-end) back to its originating offset in s.
+func findLower(s string) (string, []int) {
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return strings.ToLower(s), nil
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	back := make([]int, 0, len(s)+1)
+	for i, r := range s {
+		lr := unicode.ToLower(r)
+		for n := utf8.RuneLen(lr); n > 0; n-- {
+			back = append(back, i)
+		}
+		b.WriteRune(lr)
+	}
+	back = append(back, len(s))
+	return b.String(), back
+}
+
 // snippet returns ~80 runes of context on each side of a match, whitespace
-// collapsed, with ellipses where text was trimmed.
+// collapsed, with ellipses where text was trimmed. Offsets are clamped, never
+// trusted — the text comes from an untrusted page.
 func snippet(text string, byteIdx, qlen int) string {
 	const ctx = 80
+	if byteIdx < 0 {
+		byteIdx = 0
+	}
+	if byteIdx > len(text) {
+		byteIdx = len(text)
+	}
+	if qlen < 0 {
+		qlen = 0
+	}
 	if byteIdx+qlen > len(text) {
 		qlen = len(text) - byteIdx
 	}

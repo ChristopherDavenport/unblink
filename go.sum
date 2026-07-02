@@ -24,8 +24,6 @@ github.com/dop251/goja v0.0.0-20260629171413-2a84ae0cf10d h1:IrTLEhqeFRChlRwzmMv
 github.com/dop251/goja v0.0.0-20260629171413-2a84ae0cf10d/go.mod h1:Sc+QOu1WruvaaeT/cxFez/pXHpI9ZDjg/E8QNfSVveI=
 github.com/dop251/goja_nodejs v0.0.0-20260212111938-1f56ff5bcf14 h1:3U8dTgyNBhEQ/GVw0jZW5q+93Zw2gAZPRWhJ9TwV3rM=
 github.com/dop251/goja_nodejs v0.0.0-20260212111938-1f56ff5bcf14/go.mod h1:Tb7Xxye4LX7cT3i8YLvmPMGCV92IOi4CDZvm/V8ylc0=
-github.com/dslipak/pdf v0.0.2 h1:djAvcM5neg9Ush+zR6QXB+VMJzR6TdnX766HPIg1JmI=
-github.com/dslipak/pdf v0.0.2/go.mod h1:2L3SnkI9cQwnAS9gfPz2iUoLC0rUZwbucpbKi5R1mUo=
 github.com/evanw/esbuild v0.28.1 h1:ds+yuRyUaZGx++GR56CrCeuXh8PVhVM4xq8v7PNELFc=
 github.com/evanw/esbuild v0.28.1/go.mod h1:D2vIQZqV/vIf/VRHtViaUtViZmG7o+kKmlBfVQuRi48=
 github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c h1:wpkoddUomPfHiOziHZixGO5ZBS73cKqVzZipfrLmO1w=

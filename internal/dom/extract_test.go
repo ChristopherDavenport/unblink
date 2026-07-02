@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"golang.org/x/net/html"
@@ -133,6 +134,21 @@ func TestFind(t *testing.T) {
 	}
 	if hits[0].HeadingPath != "Structured Test Page > Installation > Requirements" {
 		t.Errorf("heading path = %q", hits[0].HeadingPath)
+	}
+}
+
+// Lowercasing can change byte length (invalid UTF-8 folds to the 3-byte
+// U+FFFD; some case mappings resize), so match offsets from the lowered text
+// must be mapped back before slicing the original. Fuzz-found regression:
+// searching text containing a bare \x8e byte used to panic.
+func TestFindOffsetShift(t *testing.T) {
+	p := extractInline(t, "<p>0b\x8e0A</p><p>ÉCLAIR pastry</p>")
+	if hits := dom.Find(p.Doc, "A", 5); len(hits) == 0 {
+		t.Error("match after an invalid byte not found")
+	}
+	hits := dom.Find(p.Doc, "éclair", 5)
+	if len(hits) != 1 || !strings.Contains(hits[0].Snippet, "ÉCLAIR pastry") {
+		t.Errorf("non-ASCII match: %+v", hits)
 	}
 }
 
