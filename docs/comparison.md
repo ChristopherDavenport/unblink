@@ -1,9 +1,10 @@
 # unblink vs. other AI web-browsing tools
 
 *Comparison as of July 2026. Every project here moves fast — versions and
-numbers below will drift. Performance figures are each vendor's own published
-claims, linked in [Sources](#sources); unblink publishes no head-to-head
-benchmark against these tools.*
+numbers below will drift. Third-party performance figures are each vendor's own
+published claims, linked in [Sources](#sources). unblink's own numbers vs. a
+headless Chromium baseline are measured and reproducible — see
+[Measured footprint](#measured-footprint).*
 
 Tools that give AI agents access to the web differ along two axes:
 
@@ -33,7 +34,7 @@ explicit about both directions.
 | Agent protocol | MCP (stdio), 14 tools | MCP (Node), 50+ tools | MCP (Node ≥ 20), 43 tools in profiles (7/23/43) | CDP (Puppeteer/Playwright drop-in) + MCP (11 tools) | CDP (WebSocket) + MCP (stdio) + CLI agent mode |
 | Page representation | Reduced Markdown (article or full page) + structured tools (outline, links, forms, JSON-LD/tables) | Accessibility-tree snapshots | Typed page decomposition, 3 detail levels, targeted `find` queries | DOM automation primitives (navigate/click/fill/evaluate) | DOM automation primitives; some semantic extraction |
 | Screenshots / pixels | No — permanent non-goal | Yes, plus video, tracing, PDF export | Yes (real Chromium) | Not a focus | No — no graphical rendering |
-| Install footprint | One static binary (linux/darwin/windows), nothing else | Node + full browser install | Node + Chromium (npm or Docker) | ~70 MB binary; claims 30 MB RAM, <50 ms boot | Single binary; claims ~16× less memory, ~9× faster than headless Chrome; no native Windows, glibc-only Linux |
+| Install footprint | One static binary (linux/darwin/windows), nothing else; ~36 MB, ~25 MB idle RSS ([measured](#measured-footprint)) | Node + full browser install | Node + Chromium (npm or Docker) | ~70 MB binary; claims 30 MB RAM, <50 ms boot | Single binary; claims ~16× less memory, ~9× faster than headless Chrome; no native Windows, glibc-only Linux |
 | Token efficiency | Core design: token-budgeted, cursor-paginated Markdown; cheap `browse`/`find` orientation | Verbose — its own docs note CLI workflows are more token-efficient | Core design: orientation 23–178× smaller than a11y-tree dumps | Not a representation-level concern | Not a representation-level concern |
 | Sessions | Cookies + history + persistent live JS runtime per session | Real browser profile, tabs, storage | Persistent Chromium session, stable hashed element IDs, structural diffs | Fast-boot ephemeral sessions | CDP sessions |
 | Agent-safety defaults | SSRF dial guard + untrusted-content fence + origin-scoped credentials, all on by default | — | Chromium sandbox on by default | Stealth / anti-fingerprinting, tracker blocking (a different goal) | robots.txt respect, proxy support |
@@ -182,6 +183,39 @@ decision drives everything distinctive about it, good and bad.
 
 These compose: an agent can use unblink for the hundred pages it reads and a
 real browser for the one page it must drive or see.
+
+## Measured footprint
+
+Head-to-head against a headless Chromium baseline, on **identical local
+fixtures** (a static article plus real React / Vue / Lit SPAs), driving unblink's
+`read` (with `render:true`) and Chromium via CDP through the same pages. Memory is
+**PSS** (proportional set size — shared pages counted once), so Chromium's
+multi-process tree isn't double-counted. Reproduce with `make membench` (see
+[`scripts/membench`](../scripts/membench), a separate module so its chromedp
+dependency never touches the published binary).
+
+Measured 2026-07-02 · WSL2 (Linux 6.6, 4 vCPU / 5.8 GiB) · unblink v0.17.0 ·
+Chromium 150.0.7871.46 · median of 3 runs:
+
+| Metric | unblink | Chromium (headless) | Ratio |
+|---|---|---|---|
+| Binary on disk | 36 MB | 268 MB | 7.4× smaller |
+| Cold start → ready | 15 ms | 232 ms | 15× faster |
+| Idle RSS (post-init) | 25 MB | 387 MB | 15× less |
+| Peak RSS (4 fixture renders) | 44 MB | 422 MB | 10× less |
+| Peak RSS (8 concurrent) | 44 MB | 512 MB | 12× less |
+
+The gap widens under concurrency: unblink's per-render runtime is bounded and
+short-lived (a goja heap + event loop, torn down after the snapshot), so eight
+simultaneous renders barely move its RSS, while each Chromium tab adds a renderer
+process.
+
+**Honest caveats.** This is not a like-for-like capability comparison — Chromium
+does full layout, paint, and compositing (and can screenshot); unblink does
+semantic reduction and never rasterizes a pixel. The numbers are machine-specific
+and reflect these fixtures, not the whole web. They are the floor of what a real
+browser costs, not a claim that unblink *replaces* one — see
+[Which tool when](#which-tool-when).
 
 ## Sources
 
