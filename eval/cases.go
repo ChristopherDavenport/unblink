@@ -576,6 +576,20 @@ const (
   }
   customElements.define('my-article', MyArticle);
 </script></body></html>`
+
+	// shadowSlotApp is a vanilla web component that renders a shadow scaffold with named +
+	// default <slot>s. The scaffold's own text ("Featured Article") appears only after JS
+	// runs; the slotted light content ("Shadow Post Title" / body) is composed into the slots.
+	shadowSlotApp = `<!doctype html><html><body><x-post><span slot="title">Shadow Post Title</span><p>Shadow post body with enough prose for the reducer to keep it as the page content here today.</p></x-post>
+<script>
+  class XPost extends HTMLElement {
+    connectedCallback() {
+      this.attachShadow({mode:'open'}).innerHTML =
+        '<article><p class="tag">Featured Article</p><h1><slot name="title"></slot></h1><div class="body"><slot></slot></div></article>';
+    }
+  }
+  customElements.define('x-post', XPost);
+</script></body></html>`
 )
 
 // allToolNames is the full set of tools the server must register.
@@ -884,6 +898,21 @@ func cases() []Case {
 			},
 			// The shadow content (flattened) must survive extraction after render.
 			Scorers:  []Scorer{RenderPresence(0, []string{"Lit Rendered Title"}, 1, []string{"Lit Rendered Title"})},
+			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			// Slot composition: without JS the shadow scaffold text is absent (and slotted
+			// light content is plain light DOM); after render the compose pass flattens the
+			// scaffold AND distributes the slotted light content into its <slot> positions.
+			Name:    "shadow-slots-render",
+			Host:    frameworkHost(shadowSlotApp, nil),
+			Browser: []browser.Option{browser.WithJS(5 * time.Second), browser.WithJSAllowPrivate(true)},
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": false}},
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
+			},
+			Scorers:  []Scorer{RenderPresence(0, []string{"Featured Article"}, 1, []string{"Featured Article", "Shadow Post Title", "Shadow post body"})},
 			Floor:    0.9,
 			MustPass: true,
 		},

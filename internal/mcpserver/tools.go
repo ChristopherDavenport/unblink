@@ -23,11 +23,19 @@ type target struct {
 	URL        string `json:"url,omitempty" jsonschema:"absolute http(s) URL of the page (omit to use a session's current page)"`
 	Session    string `json:"session,omitempty" jsonschema:"session id; carries cookies/history across calls and is auto-created if new"`
 	UseCurrent bool   `json:"use_current,omitempty" jsonschema:"operate on the session's current page instead of fetching a url"`
-	Render     bool   `json:"render,omitempty" jsonschema:"run the page's JavaScript before reading (requires the server to be started with --js)"`
+	Render     *bool  `json:"render,omitempty" jsonschema:"run the page's JavaScript before reading — on by default; set false to skip JS and read the raw fetched HTML. Ignored when the server was started with --disable-js"`
 }
 
 func (t target) request() browser.Request {
-	return browser.Request{SessionID: t.Session, URL: t.URL, UseCurrent: t.UseCurrent, Render: t.Render}
+	return browser.Request{SessionID: t.Session, URL: t.URL, UseCurrent: t.UseCurrent, Render: renderDefault(t.Render)}
+}
+
+// renderDefault resolves the tri-state MCP `render` arg: omitted (nil) renders by
+// default (JS is on unless the server was started with --disable-js); an explicit false
+// skips it. Rendering is still gated on the engine being enabled, so defaulting to true
+// is a no-op under --disable-js.
+func renderDefault(r *bool) bool {
+	return r == nil || *r
 }
 
 // --- read ---
@@ -42,8 +50,8 @@ type readArgs struct {
 	IncludeBytes bool   `json:"include_bytes,omitempty" jsonschema:"for an image url, also return the raw image as base64 (default: only a text manifest with type/dimensions/size)"`
 	// wait_for/wait_text let an agent block the JS render until the content it wants
 	// has hydrated (both imply render=true and need the server started with --js).
-	WaitFor     string `json:"wait_for,omitempty" jsonschema:"CSS selector to wait for in the rendered DOM before returning; implies render=true (requires --js). wait_met in the result reports whether it appeared"`
-	WaitText    string `json:"wait_text,omitempty" jsonschema:"visible-text substring to wait for in the rendered DOM before returning; implies render=true (requires --js)"`
+	WaitFor     string `json:"wait_for,omitempty" jsonschema:"CSS selector to wait for in the rendered DOM before returning; forces the JS render even if render=false. wait_met in the result reports whether it appeared"`
+	WaitText    string `json:"wait_text,omitempty" jsonschema:"visible-text substring to wait for in the rendered DOM before returning; forces the JS render even if render=false"`
 	WaitTimeout int    `json:"wait_timeout,omitempty" jsonschema:"seconds to wait for wait_for/wait_text before giving up (default ~5s, capped at 30s)"`
 	// One-shot credentials for a stateless fetch (no session), scoped to url's origin.
 	// For anything sensitive or reused, prefer session(action=new, auth=...).
@@ -256,11 +264,11 @@ type clickArgs struct {
 	Session   string `json:"session" jsonschema:"the session to navigate (required)"`
 	LinkIndex int    `json:"link_index,omitempty" jsonschema:"index of the link to follow, from the links tool (default 0)"`
 	Match     string `json:"match,omitempty" jsonschema:"substring of link text or href to follow instead of an index"`
-	Render    bool   `json:"render,omitempty" jsonschema:"run the destination page's JavaScript before summarizing (requires --js) — parity with read's render"`
+	Render    *bool  `json:"render,omitempty" jsonschema:"run the destination page's JavaScript before summarizing — on by default; set false to skip. Ignored under --disable-js"`
 }
 
 func (s *Server) handleClick(ctx context.Context, _ *mcp.CallToolRequest, args clickArgs) (*mcp.CallToolResult, browser.BrowseResult, error) {
-	r, err := s.browser.Click(ctx, args.Session, args.LinkIndex, args.Match, args.Render)
+	r, err := s.browser.Click(ctx, args.Session, args.LinkIndex, args.Match, renderDefault(args.Render))
 	if err != nil {
 		return errorResult(err), browser.BrowseResult{}, nil
 	}
@@ -274,7 +282,7 @@ type submitArgs struct {
 	Form    string            `json:"form,omitempty" jsonschema:"form id, name, or index; optional when the page has one form"`
 	Values  map[string]string `json:"values,omitempty" jsonschema:"field name -> value, merged over the form's defaults"`
 	Files   []fileArg         `json:"files,omitempty" jsonschema:"files to upload (multipart/form-data); content is supplied inline, never read from disk"`
-	Render  bool              `json:"render,omitempty" jsonschema:"run the result page's JavaScript before summarizing (requires --js) — parity with read's render"`
+	Render  *bool             `json:"render,omitempty" jsonschema:"run the result page's JavaScript before summarizing — on by default; set false to skip. Ignored under --disable-js"`
 }
 
 // fileArg is one inline file for a multipart form submission. Exactly one of
@@ -337,7 +345,7 @@ func (s *Server) handleSubmit(ctx context.Context, _ *mcp.CallToolRequest, args 
 	if err != nil {
 		return errorResult(&browser.Error{Code: browser.ErrBadInput, Message: err.Error()}), browser.BrowseResult{}, nil
 	}
-	r, err := s.browser.Submit(ctx, args.Session, args.Form, args.Values, files, args.Render)
+	r, err := s.browser.Submit(ctx, args.Session, args.Form, args.Values, files, renderDefault(args.Render))
 	if err != nil {
 		return errorResult(err), browser.BrowseResult{}, nil
 	}

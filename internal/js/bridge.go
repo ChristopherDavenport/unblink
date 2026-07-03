@@ -98,16 +98,18 @@ type bridge struct {
 	// only by navigate(), never by SPA pushState/popstate. Loop-goroutine owned.
 	pendingNav *url.URL
 
-	// Custom elements + flat Shadow DOM (Phase C). The registry maps a lowercase
-	// tag to its constructor; upgrades reuse the existing node as `this`. A
-	// ShadowRoot's backing node is its host, so shadow content lands in the light
-	// tree and stays visible to extraction.
+	// Custom elements + encapsulating Shadow DOM (Phase C / Phase 23). The registry
+	// maps a lowercase tag to its constructor; upgrades reuse the existing node as
+	// `this`. A shadow root has its own detached backing node (a DocumentNode), kept
+	// out of the light tree so page-JS queries respect the boundary; the compose pass
+	// (slots.go) flattens shadow content into the light tree for extraction.
 	customElements       map[string]*goja.Object
 	customObserved       map[string]map[string]bool
 	upgraded             map[*html.Node]bool
 	connectedNotified    map[*html.Node]bool
-	loadedScripts        map[*html.Node]bool // <script src> nodes already fetched+run once
-	shadowRoots          map[*html.Node]*goja.Object
+	loadedScripts        map[*html.Node]bool         // <script src> nodes already fetched+run once
+	shadowRoots          map[*html.Node]*goja.Object // host → ShadowRoot object (whose backing node is a detached DocumentNode)
+	shadowHostOf         map[*html.Node]*html.Node   // shadow-root backing node → host (reverse, for connectivity/retargeting)
 	templateContentCache map[*html.Node]*goja.Object
 	upgradingStack       []*html.Node
 	upgradeCount         int // total custom-element upgrades; bounds re-entrant upgrade blowup
@@ -182,6 +184,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		connectedNotified:    make(map[*html.Node]bool),
 		loadedScripts:        make(map[*html.Node]bool),
 		shadowRoots:          make(map[*html.Node]*goja.Object),
+		shadowHostOf:         make(map[*html.Node]*html.Node),
 		templateContentCache: make(map[*html.Node]*goja.Object),
 		whenDefinedResolvers: make(map[string][]func(interface{}) error),
 		winListeners:         make(map[string][]listenerEntry),

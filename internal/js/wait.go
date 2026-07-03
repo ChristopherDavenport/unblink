@@ -36,15 +36,16 @@ type settleStats struct {
 }
 
 // satisfied reports whether the condition holds in the tree rooted at doc. An empty
-// condition is always satisfied.
-func (w *WaitCondition) satisfied(doc *html.Node) bool {
+// condition is always satisfied. Selector and text both pierce shadow subtrees (via the
+// bridge) so a wait can target content a component rendered into its shadow root.
+func (w *WaitCondition) satisfied(b *bridge, doc *html.Node) bool {
 	if w.empty() || doc == nil {
 		return w.empty()
 	}
-	if w.Selector != "" && query(doc, w.Selector) == nil {
+	if w.Selector != "" && b.queryPierce(doc, w.Selector) == nil {
 		return false
 	}
-	if w.Text != "" && !strings.Contains(textContent(doc), w.Text) {
+	if w.Text != "" && !strings.Contains(textContent(doc), w.Text) && !strings.Contains(b.shadowText(doc), w.Text) {
 		return false
 	}
 	return true

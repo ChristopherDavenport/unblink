@@ -167,10 +167,15 @@ func (c *Context) Snapshot(ctx context.Context) ([]byte, uint64, error) {
 	var out []byte
 	var ver uint64
 	err := c.run(ctx, false, nil, nil, func(*goja.Runtime) {
-		out = []byte(outerHTML(c.doc))
+		root := c.doc
 		if c.bridge != nil {
+			// Flatten shadow content (resolving <slot>) into a composed clone so the
+			// snapshot shows what a browser would render. Clone-based: the live tree
+			// keeps its separate shadow subtrees intact for the next Dispatch.
+			root = c.bridge.flattenCloneDoc()
 			ver = c.bridge.domVersion
 		}
+		out = []byte(outerHTML(root))
 	})
 	return out, ver, err
 }
@@ -323,7 +328,7 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 	idleArmed := false          // previous check was provably idle; this one confirms
 	var tick func(*goja.Runtime)
 	tick = func(vm *goja.Runtime) {
-		if !condMet && b != nil && cond.satisfied(b.doc) {
+		if !condMet && b != nil && cond.satisfied(b, b.doc) {
 			condMet = true
 			if stats != nil {
 				stats.met = true

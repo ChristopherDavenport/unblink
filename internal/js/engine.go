@@ -299,6 +299,13 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	if vm := vmRef.Load(); vm != nil {
 		e.memGuard.unregister(vm)
 	}
+	// Flatten shadow content (resolving <slot> distribution) into the light tree so
+	// extraction sees the composed page. Runs after Terminate (no concurrent mutation)
+	// and is a no-op unless the page attached a shadow root. The runtime is discarded, so
+	// this may splice destructively into doc.
+	if b != nil {
+		b.ComposeShadowInto(doc)
+	}
 	if env.Diag != nil {
 		// Timing: a wedged script can leave setupDone/execDone unset; attribute the
 		// whole elapsed time to the last stage that was reached.

@@ -141,3 +141,20 @@ func TestLitRenders(t *testing.T) {
 	// stripped by reduce/emit). Assert the static text and the dynamic value separately.
 	assertContains(t, out, diag, "lit-marker count:", "3</p>")
 }
+
+// A real Lit component with a <slot>: light-DOM children must be projected into the shadow
+// scaffold by the compose pass and survive extraction.
+func TestLitSlotProjectsLightContent(t *testing.T) {
+	bt := "`"
+	page := `<html><body><my-slot-card>Projected Light Text</my-slot-card>
+		<script type="module">
+		  import { LitElement, html } from '/fw/lit-all.min.js';
+		  class MySlotCard extends LitElement {
+		    render() { return html` + bt + `<div class="lit-card"><slot></slot></div>` + bt + `; }
+		  }
+		  customElements.define('my-slot-card', MySlotCard);
+		</script></body></html>`
+	out, diag := renderApp(t, page,
+		map[string]string{"lit-all.min.js": loadBundle(t, "lit-all.min.js")})
+	assertContains(t, out, diag, "Projected Light Text", `class="lit-card"`)
+}

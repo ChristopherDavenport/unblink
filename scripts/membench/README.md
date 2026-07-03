@@ -32,7 +32,7 @@ skipped with a note — never a hard failure.
 
 | Tool | How it's launched | Prerequisites |
 |---|---|---|
-| `unblink` | `bin/unblink --js` (run `make build`) | — |
+| `unblink` | `bin/unblink` (run `make build`; JS is on by default) | — |
 | `chrome` | chromedp, raw headless Chromium baseline (not MCP) | a chrome/chromium binary (auto-detected from PATH, puppeteer, and playwright caches; or `CHROME=/path`) |
 | `playwright` | `npx @playwright/mcp@<pinned> --headless --isolated --output-mode stdout` | Node ≥ 18 (npx fetches the pinned version) |
 | `charlotte` | `npx @ticktockbent/charlotte@<pinned>` | Node ≥ 20 |

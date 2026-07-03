@@ -95,3 +95,53 @@ func TestInteractChangedTracksMutation(t *testing.T) {
 		t.Error("no-op click reported Changed=true")
 	}
 }
+
+// A live web component: the session Snapshot composes shadow content (slot + shadow-
+// internal state) for extraction, and interact reaches a shadow-rendered control via the
+// piercing resolver, mutating shadow state that the next read reflects — all while the
+// live document keeps its separate shadow subtrees intact across reads.
+const liveShadowPage = `<!doctype html><html><body>
+	<article><h1>Panel</h1>
+	<p>Enough surrounding prose that article reduction keeps the body text intact across
+	repeated reads of this live session page hosting the shadow component below it here.</p>
+	<x-panel><span slot="label">Panel Label</span></x-panel></article>
+	<script>
+	  class XPanel extends HTMLElement {
+	    connectedCallback() {
+	      var r = this.attachShadow({mode:'open'});
+	      r.innerHTML = '<section><h2><slot name="label"></slot></h2>' +
+	        '<p id="body">state:closed</p><button id="toggle">toggle</button></section>';
+	      r.querySelector('#toggle').addEventListener('click', function () {
+	        r.querySelector('#body').textContent = 'state:open';
+	      });
+	    }
+	  }
+	  customElements.define('x-panel', XPanel);
+	</script></body></html>`
+
+func TestSessionShadowComposeAndPiercingInteract(t *testing.T) {
+	srv := liveServer(t, liveShadowPage)
+	b := newJSBrowser(t)
+	ctx := context.Background()
+	seedSession(t, b, "s", srv.URL) // static browse: the live JS runtime opens lazily on the first interact
+
+	// #toggle lives inside the shadow tree; the first interact opens the live runtime (running
+	// the component's connectedCallback → attachShadow) and reaches the control via the piercing resolver.
+	r, err := b.Interact(ctx, "s", "#toggle", "click", "", "")
+	if err != nil || !r.Matched {
+		t.Fatalf("interact on shadow control: matched=%v err=%v", r != nil && r.Matched, err)
+	}
+	if !r.Changed {
+		t.Error("shadow click reported Changed=false")
+	}
+
+	// The read refreshes from a live Snapshot, which composes shadow content (slot + mutated
+	// shadow-internal state) while leaving the live shadow subtrees intact.
+	read := readSession(t, b, "s")
+	if !strings.Contains(read, "state:open") {
+		t.Errorf("live snapshot did not compose mutated shadow state:\n%s", read)
+	}
+	if !strings.Contains(read, "Panel Label") {
+		t.Errorf("live snapshot did not compose slotted content:\n%s", read)
+	}
+}

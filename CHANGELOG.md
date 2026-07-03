@@ -3,7 +3,32 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
-## Unreleased
+## v0.18.0 — 2026-07-03
+
+### Changed
+
+- **JavaScript rendering is on by default.** The opt-in `--js` flag is replaced by
+  an opt-out **`--disable-js`**, and the `read`/`click`/`submit_form` `render` arg now
+  **defaults to on** — a read runs the page's JavaScript unless the caller passes
+  `render=false` (or the server was started with `--disable-js`). For a robustness-first
+  tool, seeing SPA content by default beats making every agent opt in per call; renders
+  are ~2–10 ms (ADR 0004) and pages with no scripts still pay ~nothing. The `render`
+  MCP arg became tri-state (omitted = render, explicit `false` = skip). Migration:
+  drop `--js` from your launch args (JS is already on); add `--disable-js` for the
+  static-only path.
+
+### Added
+
+- **Composed, encapsulating Shadow DOM (Phase 23, ADR 0005).** Replaces the flat,
+  non-encapsulating model. Each shadow root is a detached subtree (page-JS
+  `document.querySelector` respects the boundary); a compose pass flattens it —
+  resolving `<slot>` distribution — into the light tree for extraction, fixing content
+  loss where a component's `shadowRoot.innerHTML` used to destroy slotted children.
+  Events cross the boundary correctly (composed path + `target` retargeting +
+  `composedPath()`, `bubbles`/`composed` kept orthogonal); interact and `wait_for`
+  pierce the boundary to reach shadow-rendered controls; declarative Shadow DOM
+  (`<template shadowrootmode>`) renders on the static no-JS path; closed roots are
+  hidden from page JS but still composed into output.
 
 ### Performance
 

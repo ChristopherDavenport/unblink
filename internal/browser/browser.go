@@ -633,6 +633,12 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 			p.RenderDiag.NetDenied = gt.Denied()
 		}
 		renderDur = p.RenderDiag.TotalDur
+	} else {
+		// No JS: flatten declarative Shadow DOM (<template shadowrootmode>) into composed
+		// light content so SSR web components render and their links/forms/headings are
+		// harvested correctly. Under --js the imperative attachShadow path owns shadow
+		// composition, so this runs only here.
+		dom.ComposeDeclarativeShadow(p.Doc)
 	}
 	t1 := time.Now()
 	if err := dom.Extract(p); err != nil {

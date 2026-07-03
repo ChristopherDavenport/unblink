@@ -19,11 +19,12 @@ fetch(url) → parse HTML5 → [optionally execute JS] → semantic reduction �
 
 ## Status
 
-**v0.17.0.** The full pipeline works end to end: 14 MCP tools covering reading,
+**v0.18.0.** The full pipeline works end to end: 14 MCP tools covering reading,
 navigation, sessions, forms, structured data, site discovery, and search. The
 static read path turns most server-rendered pages into clean Markdown with zero
-JavaScript; the opt-in JavaScript engine (`--js`) renders mainstream SPA
-frameworks and powers live interactive sessions (`interact`). It ships as one
+JavaScript; the JavaScript engine — **on by default** (opt out with `--disable-js`)
+— renders mainstream SPA frameworks and powers live interactive sessions
+(`interact`). It ships as one
 static binary (~36 MB) with a ~26 MB idle footprint — measured head-to-head on
 identical pages, roughly **5× lighter idle and 10× faster to start than a
 headless Chromium**, turning SPA fixtures around in **~2–10 ms per render**
@@ -32,7 +33,7 @@ idleness instead of waiting out a quiet window, ADR 0004), and it reads a
 nav-heavy page for **~1% of the tokens** of a browser-tool accessibility
 snapshot ([measured](docs/comparison.md#measured-head-to-head), against all
 four alternatives). See
-[docs/architecture.md](docs/architecture.md) for the full design (phases 0–22)
+[docs/architecture.md](docs/architecture.md) for the full design (phases 0–23)
 and its non-goals, and [docs/comparison.md](docs/comparison.md) for how unblink
 compares to other AI web-browsing tools (Playwright MCP, Charlotte, Obscura,
 Lightpanda).
@@ -66,9 +67,9 @@ unblink speaks MCP over stdio, so any MCP-capable client launches it as a
 subprocess. For **Claude Code**:
 
 ```sh
-claude mcp add unblink -- /path/to/unblink --js
+claude mcp add unblink -- /path/to/unblink
 # or, via Docker (no install):
-claude mcp add unblink -- docker run -i --rm ghcr.io/christopherdavenport/unblink:latest --js
+claude mcp add unblink -- docker run -i --rm ghcr.io/christopherdavenport/unblink:latest
 ```
 
 For **Claude Desktop** (or any client using the `mcpServers` config shape), add
@@ -79,20 +80,21 @@ to `claude_desktop_config.json`:
   "mcpServers": {
     "unblink": {
       "command": "/path/to/unblink",
-      "args": ["--js"]
+      "args": []
     }
     // or, via Docker:
     // "unblink": {
     //   "command": "docker",
-    //   "args": ["run", "-i", "--rm", "ghcr.io/christopherdavenport/unblink:latest", "--js"]
+    //   "args": ["run", "-i", "--rm", "ghcr.io/christopherdavenport/unblink:latest"]
     // }
   }
 }
 ```
 
-Drop `--js` for the zero-JavaScript static read path (lighter, still handles most
-server-rendered pages). Add flags like `--search-provider` or `--tls-mimic` to
-`args` as needed — see [Configuration](#configuration).
+JavaScript rendering is on by default; add `--disable-js` for the zero-JavaScript
+static read path (lighter, still handles most server-rendered pages). Add flags
+like `--search-provider` or `--tls-mimic` to `args` as needed — see
+[Configuration](#configuration).
 
 unblink is also listed in the [MCP registry](https://registry.modelcontextprotocol.io)
 as `io.github.ChristopherDavenport/unblink`, and the repo ships a Claude Code
@@ -104,8 +106,8 @@ pinned to the current release image.
 ```sh
 make build           # -> bin/unblink
 make test            # run the test suite
-./bin/unblink        # serve MCP over stdio (default transport)
-./bin/unblink --js   # also enable opt-in JavaScript rendering (the `render` tool arg)
+./bin/unblink            # serve MCP over stdio (JavaScript rendering on by default)
+./bin/unblink --disable-js  # zero-JavaScript static read path only
 ./bin/unblink --version
 ```
 
@@ -128,13 +130,17 @@ is a tab), so SPA auth/state flows survive across calls. Common globals
 that bundles use without feature-detection are covered: `structuredClone`, a
 connection-less `WebSocket` stub (error→close), inert `Worker`, append-mode
 `document.write`, and `hashchange`.
-Under `--js` the engine renders the **mainstream SPA frameworks** (React, Vue,
+The engine (on by default) renders the **mainstream SPA frameworks** (React, Vue,
 Preact, Svelte, Lit / web components) via a flat-DOM model — a real
 Node/Element/HTMLElement prototype chain, MutationObserver, custom-element upgrade,
-and a flattened (non-encapsulating) Shadow DOM whose content is visible to
-extraction. Layout/geometry is constant-stubbed (no pixel layout engine), and
-canvas/WebGL, Workers/WebSocket/IndexedDB, and true Shadow-DOM encapsulation remain
-out of scope.
+and an **encapsulating, composed Shadow DOM**: each shadow root is a detached subtree
+(so page JS `querySelector` respects the boundary), and a compose pass flattens it —
+resolving `<slot>` distribution — into the light tree for extraction. Events cross the
+boundary correctly (composed path, `target` retargeting, `composedPath()`), and
+declarative Shadow DOM (`<template shadowrootmode>`) renders on the static no-JS path.
+Layout/geometry is constant-stubbed (no pixel layout engine), and canvas/WebGL,
+Workers/WebSocket/IndexedDB, and Shadow-DOM *style scoping*
+(`:host`/`::slotted`/`::part`) remain out of scope.
 
 ## Try it
 
@@ -154,7 +160,8 @@ binary, or drive it by hand:
 Every page tool accepts an optional `session` (any string — cookies and history
 persist across calls; auto-created on first use), `use_current` (act on the
 session's current page instead of fetching a URL), and `render` (run the page's
-JavaScript first — requires starting the server with `--js`).
+JavaScript first — **on by default**; pass `render=false` to skip it, or start the
+server with `--disable-js` to turn JS off entirely).
 
 Idle sessions are evicted (default 30 minutes, tune with `--session-ttl` /
 `--session-cap`); an evicted id then errors with `session_expired` and must be
@@ -169,16 +176,16 @@ results rather than logged away.
 
 | Tool          | Input                                              | Returns                                                                 |
 | ------------- | -------------------------------------------------- | ----------------------------------------------------------------------- |
-| `read`        | `{ url?, session?, use_current?, mode?, format?, selector?, max_tokens?, cursor?, wait_for?, wait_text?, wait_timeout?, headers?, auth? }` | Main content (`mode=article`, default) or whole page (`full`) as Markdown, paginated via cursor. `format=raw_html` returns the unreduced source (optionally scoped by a CSS `selector`) — the escape hatch for scripts/forms/SSR-embedded JSON that reduction strips; `format=text` returns visible plain text. `wait_for` (CSS selector) / `wait_text` hold a JS render open until that content hydrates (implies `render`, needs `--js`); `wait_timeout` (seconds, capped ~30s) extends the wait, and `wait_met` in the result reports whether it appeared. `headers`/`auth` attach one-shot credentials for a stateless gated GET (see [Authentication](#authentication)). |
+| `read`        | `{ url?, session?, use_current?, mode?, format?, selector?, max_tokens?, cursor?, wait_for?, wait_text?, wait_timeout?, headers?, auth? }` | Main content (`mode=article`, default) or whole page (`full`) as Markdown, paginated via cursor. `format=raw_html` returns the unreduced source (optionally scoped by a CSS `selector`) — the escape hatch for scripts/forms/SSR-embedded JSON that reduction strips; `format=text` returns visible plain text. `wait_for` (CSS selector) / `wait_text` hold the JS render open until that content hydrates (forces the render even if `render=false`); `wait_timeout` (seconds, capped ~30s) extends the wait, and `wait_met` in the result reports whether it appeared. `headers`/`auth` attach one-shot credentials for a stateless gated GET (see [Authentication](#authentication)). |
 | `browse`      | `{ url?, session?, use_current?, headers?, auth? }` | Cheap orientation: title, description, lang, heading outline, link/form/image counts, excerpt, plus `llms_txt`/`robots` presence hints. |
 | `links`       | `{ url?, session?, use_current?, filter?, internal_only?, limit? }` | The page's links (text + absolute href), optionally filtered. `limit` defaults to 200 (cap 1000); `total`/`truncated` report the rest. |
 | `forms`       | `{ url?, session?, use_current? }`                 | The page's forms and their fields (name, type, required, options).      |
 | `find`        | `{ url?, session?, use_current?, query, max_hits? }` | Matching text snippets with the heading path locating each.           |
 | `site`        | `{ url?, session?, use_current? }`                 | A host's agent-facing metadata: robots.txt summary (allow/disallow for a browser agent, crawl-delay, sitemaps) + llms.txt content + whether llms-full.txt exists. Context only — never blocks a fetch. |
-| `click`       | `{ session, link_index? \| match?, render? }`      | Follows a link from the session's current page (cookies carried); returns a summary. `render=true` runs the destination's JavaScript first (needs `--js`). |
-| `submit_form` | `{ session, form?, values?, files?, render? }`     | Submits a form from the current page (cookies carried); returns a summary. Forms declaring `enctype=multipart/form-data` are encoded as multipart automatically; `files` attaches uploads (`{field, filename?, mime?, content \| content_base64}`, capped 8 files / 4 MiB — content is supplied inline, never read from disk; needs a POST form). `render=true` runs the result page's JavaScript first (needs `--js`). |
+| `click`       | `{ session, link_index? \| match?, render? }`      | Follows a link from the session's current page (cookies carried); returns a summary. The destination's JavaScript runs by default; pass `render=false` to skip it. |
+| `submit_form` | `{ session, form?, values?, files?, render? }`     | Submits a form from the current page (cookies carried); returns a summary. Forms declaring `enctype=multipart/form-data` are encoded as multipart automatically; `files` attaches uploads (`{field, filename?, mime?, content \| content_base64}`, capped 8 files / 4 MiB — content is supplied inline, never read from disk; needs a POST form). The result page's JavaScript runs by default; pass `render=false` to skip it. |
 | `controls`    | `{ url?, session?, use_current? }`                 | Non-link interactive controls (buttons, `role=button`, `onclick`/`tabindex`, submit/reset inputs, tabs, summaries), each with a stable CSS selector for `interact`. |
-| `interact`    | `{ session, selector, event?, value?, key? }`      | Dispatches an interaction at a selector and runs the page's JS so its handlers fire, then returns the updated page. `event` defaults to `click`, which emulates a **full primary-button press** (`pointerdown`→`mousedown`→focus→`pointerup`→`mouseup`→`click`) so press/pointer-based widgets (react-aria/Radix tabs, toggles, menus) actually activate — not just plain `onclick`; also `hover` (reveal hover menus/tooltips), `focus` (focus-triggered dropdowns), `input`, `change`, `keydown`/`keyup`/`keypress`, `submit`. For key events, `key` names the key (`Enter`, `Escape`, `ArrowDown`, a single character…; defaults to `Enter`) so handlers reading `e.key`/`e.keyCode` fire — and **`Enter` on a control inside a form submits it**; combine with `value` to type-then-press (`{event:"keydown", value:"query", key:"Enter"}` drives a search box). The session keeps a **live JS runtime**, so state (variables, listeners, timers, fetched data) persists across calls. Requires `--js`. Does not navigate — but a handler that requests a cross-document navigation (`location.href`/`assign`/`replace`) surfaces the target as `pending_navigation` so you can follow it with `read`/`click`. |
+| `interact`    | `{ session, selector, event?, value?, key? }`      | Dispatches an interaction at a selector and runs the page's JS so its handlers fire, then returns the updated page. `event` defaults to `click`, which emulates a **full primary-button press** (`pointerdown`→`mousedown`→focus→`pointerup`→`mouseup`→`click`) so press/pointer-based widgets (react-aria/Radix tabs, toggles, menus) actually activate — not just plain `onclick`; also `hover` (reveal hover menus/tooltips), `focus` (focus-triggered dropdowns), `input`, `change`, `keydown`/`keyup`/`keypress`, `submit`. For key events, `key` names the key (`Enter`, `Escape`, `ArrowDown`, a single character…; defaults to `Enter`) so handlers reading `e.key`/`e.keyCode` fire — and **`Enter` on a control inside a form submits it**; combine with `value` to type-then-press (`{event:"keydown", value:"query", key:"Enter"}` drives a search box). The session keeps a **live JS runtime**, so state (variables, listeners, timers, fetched data) persists across calls. Needs JS (on by default; `--disable-js` turns it off). Does not navigate — but a handler that requests a cross-document navigation (`location.href`/`assign`/`replace`) surfaces the target as `pending_navigation` so you can follow it with `read`/`click`. |
 | `data`        | `{ url?, session?, use_current?, kind? }`          | Machine-readable structured data embedded in a page: JSON-LD (schema.org), HTML data tables (caption/headers/rows), and microdata (itemscope/itemprop). `kind` selects `jsonld`, `tables`, `microdata`, or `all` (default). HTML only. *(Tables: colspan and rowspan are expanded onto the real grid; microdata `itemref` unsupported; JSON-LD `@graph` is flattened. `raw_html` returns source with relative URLs left as-is.)* |
 | `session`     | `{ action: new\|list\|state\|history\|back\|forward\|close, session?, url?, headers?, cookies?, auth? }` | Manage a session's lifecycle and navigation. `new` accepts `url` + `headers`/`cookies`/`auth` to attach credentials for that origin (see [Authentication](#authentication)); re-creating a live id with new credentials errors (close it first). `list` returns every live session's state (including `live_js`, whether a persistent runtime is attached). |
 | `map`         | `{ url, max_urls?, max_depth? }`                   | Discover a site's URLs: harvests sitemap.xml (robots.txt + `/sitemap.xml`, following sitemap indexes) and crawls same-origin links breadth-first from the seed. Returns a bounded, de-duplicated list tagged `source=sitemap\|crawl` with depth. Exposure-grade — surfaces robots.txt but never gates on it. Send an MCP progress token (`_meta.progressToken`) to stream progress while the walk (up to 60s) runs. |
@@ -258,7 +265,7 @@ the model treats it as data (not instructions), human-hidden text and comments a
 stripped, and Markdown image beacons (`![](url)` — a zero-click data-exfil channel)
 are defanged to inert text. This is defense-in-depth against indirect prompt
 injection, not a guarantee. Pass `--no-safe-output` to get the raw, unmodified
-reduction instead. Page JavaScript under `--js` cannot read host files (`require`
+reduction instead. Page JavaScript cannot read host files (`require`
 is disabled) or read HttpOnly cookies via `document.cookie`.
 
 robots.txt and llms.txt are **surfaced as context, never enforced** — unblink
@@ -282,7 +289,7 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 | `--allow-private` | off | Permit page fetches to private/loopback/metadata IPs (needed for localhost/internal targets). |
 | `--no-site-hints` | off | Omit robots.txt/llms.txt presence hints from `browse`. |
 | `--no-safe-output` | off | Disable the untrusted-content safety pass (fence, hidden-text strip, image-beacon defang) — return raw reduction. |
-| `--js` | off | Enable opt-in JavaScript rendering (the `render` tool arg + `interact`). |
+| `--disable-js` | off | Disable JavaScript rendering entirely (JS is **on by default**; reads render unless the caller passes `render=false`). |
 | `--js-timeout` | `5s` | Per-render wall-clock budget for JavaScript. |
 | `--js-no-network` | off | Disable page-JS network requests (DOM-only render). |
 | `--js-allow-private` | off | Permit page-JS subrequests to private/loopback IPs. |
@@ -303,8 +310,8 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 
 ## Security
 
-unblink runs untrusted page content (and, under `--js`, untrusted page
-JavaScript) as part of its job. See [SECURITY.md](SECURITY.md) for the threat
+unblink runs untrusted page content (and, with JS enabled — the default — untrusted
+page JavaScript) as part of its job. See [SECURITY.md](SECURITY.md) for the threat
 model and how to report a vulnerability.
 
 ## Contributing

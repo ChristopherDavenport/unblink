@@ -36,17 +36,22 @@ type domEvent struct {
 	typ              string
 	bubbles          bool
 	cancelable       bool
+	composed         bool // crosses shadow boundaries (composed path); orthogonal to bubbles
 	defaultPrevented bool
 	stopped          bool // stopPropagation
 	stopImmediate    bool // stopImmediatePropagation
 	passiveActive    bool // a passive listener is currently running
 	js               *goja.Object
+	path             []goja.Value // composed path (target → outermost), set at dispatch for composedPath()
 }
 
-// pathEntry is one node on the event propagation path.
+// pathEntry is one node on the event propagation path. target is the retargeted
+// event.target a listener at this node must observe (the host, not the shadow-internal
+// node, for listeners outside the shadow tree the event crossed).
 type pathEntry struct {
 	listeners map[string][]listenerEntry
 	jsValue   goja.Value
+	target    goja.Value
 }
 
 type phaseFilter int
@@ -177,9 +182,30 @@ func (b *bridge) newEvent(typ string, bubbles, cancelable bool, target goja.Valu
 	_ = o.Set("type", typ)
 	_ = o.Set("bubbles", bubbles)
 	_ = o.Set("cancelable", cancelable)
-	ev := &domEvent{typ: typ, bubbles: bubbles, cancelable: cancelable, js: o}
+	composed := composedByDefault(typ)
+	_ = o.Set("composed", composed)
+	ev := &domEvent{typ: typ, bubbles: bubbles, cancelable: cancelable, composed: composed, js: o}
 	b.bindEvent(o, ev, target)
 	return ev
+}
+
+// composedByDefault reports whether an event type crosses shadow boundaries by
+// default — the UIEvent families (mouse/pointer/keyboard/input/composition/focus/
+// drag) plus click. Matches the browser default so element.click() and synthesized
+// gestures reach delegated handlers on the host/document across the boundary.
+func composedByDefault(typ string) bool {
+	switch typ {
+	case "click", "dblclick", "auxclick", "contextmenu", "wheel",
+		"mousedown", "mouseup", "mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave",
+		"pointerdown", "pointerup", "pointermove", "pointerover", "pointerout", "pointerenter",
+		"pointerleave", "pointercancel", "gotpointercapture", "lostpointercapture",
+		"keydown", "keyup", "keypress", "input", "beforeinput",
+		"focus", "blur", "focusin", "focusout",
+		"compositionstart", "compositionupdate", "compositionend",
+		"dragstart", "drag", "dragend", "dragenter", "dragover", "dragleave", "drop":
+		return true
+	}
+	return false
 }
 
 // newUIEvent builds a synthetic mouse/pointer event carrying realistic,
@@ -219,7 +245,7 @@ func (b *bridge) newUIEvent(typ string, bubbles, cancelable bool, target goja.Va
 	default: // mouse/click family: a non-zero detail marks a real (non-virtual) click
 		_ = o.Set("detail", 1)
 	}
-	ev := &domEvent{typ: typ, bubbles: bubbles, cancelable: cancelable, js: o}
+	ev := &domEvent{typ: typ, bubbles: bubbles, cancelable: cancelable, composed: true, js: o}
 	b.bindEvent(o, ev, target)
 	return ev
 }
@@ -251,7 +277,7 @@ func (b *bridge) newKeyEvent(typ string, info keyInfo, bubbles, cancelable bool,
 	_ = o.Set("altKey", false)
 	_ = o.Set("metaKey", false)
 	_ = o.Set("getModifierState", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
-	ev := &domEvent{typ: typ, bubbles: bubbles, cancelable: cancelable, js: o}
+	ev := &domEvent{typ: typ, bubbles: bubbles, cancelable: cancelable, composed: true, js: o}
 	b.bindEvent(o, ev, target)
 	return ev
 }
@@ -263,7 +289,7 @@ func (b *bridge) wrapEvent(o *goja.Object, target goja.Value) *domEvent {
 	if t := o.Get("type"); t != nil && !goja.IsUndefined(t) {
 		typ = t.String()
 	}
-	ev := &domEvent{typ: typ, bubbles: boolProp(o, "bubbles"), cancelable: boolProp(o, "cancelable"), js: o}
+	ev := &domEvent{typ: typ, bubbles: boolProp(o, "bubbles"), cancelable: boolProp(o, "cancelable"), composed: boolProp(o, "composed"), js: o}
 	b.bindEvent(o, ev, target)
 	return ev
 }
@@ -287,12 +313,29 @@ func (b *bridge) bindEvent(o *goja.Object, ev *domEvent, target goja.Value) {
 		ev.stopped, ev.stopImmediate = true, true
 		return goja.Undefined()
 	})
+	// composedPath() returns the full propagation path (target → window), including
+	// shadow-internal nodes and the crossed hosts. Empty until the event is dispatched.
+	_ = o.Set("composedPath", func(goja.FunctionCall) goja.Value {
+		arr := make([]interface{}, len(ev.path))
+		for i, v := range ev.path {
+			arr[i] = v
+		}
+		return vm.NewArray(arr...)
+	})
 }
 
 // dispatch runs an event through capture → target → bubble over path (ordered
 // outermost → target). Returns false if the default was prevented.
 func (b *bridge) dispatch(path []pathEntry, ev *domEvent) bool {
 	target := len(path) - 1
+
+	// Record the composed path (target → outermost) for composedPath(). Independent
+	// of bubbles: the full path is exposed even for a non-bubbling event.
+	cp := make([]goja.Value, len(path))
+	for i, e := range path {
+		cp[len(path)-1-i] = e.jsValue
+	}
+	ev.path = cp
 
 	_ = ev.js.Set("eventPhase", phaseCapturing)
 	for i := 0; i < target; i++ {
@@ -326,6 +369,11 @@ func (b *bridge) invokePhase(entry pathEntry, ev *domEvent, filter phaseFilter) 
 	// Snapshot: listeners added during dispatch must not fire (DOM semantics);
 	// once-listeners are removed from the live registry after firing.
 	listeners := append([]listenerEntry(nil), live...)
+	// Retarget event.target for this node's tree (host for out-of-shadow listeners,
+	// the real node inside). Applied in EVERY phase — capture, at-target, bubble.
+	if entry.target != nil {
+		_ = ev.js.Set("target", entry.target)
+	}
 	_ = ev.js.Set("currentTarget", entry.jsValue)
 	ev.stopImmediate = false
 	for _, le := range listeners {
@@ -351,27 +399,70 @@ func (b *bridge) invokePhase(entry pathEntry, ev *domEvent, filter phaseFilter) 
 	}
 }
 
-// elementTargetPath builds [window, document, ...ancestors top-down..., target].
-func (b *bridge) elementTargetPath(target *html.Node) []pathEntry {
-	var chain []*html.Node // target .. root
-	for n := target; n != nil; n = n.Parent {
-		if n.Type == html.ElementNode {
-			chain = append(chain, n)
+// elementTargetPath builds the event propagation path, ordered outermost → target, as
+// the shadow-including composed path: [window, document, ...light ancestors..., host,
+// shadowRoot, ...shadow-internal ancestors..., target]. Each entry carries the
+// retargeted event.target listeners at that node must observe.
+//
+// Crossing a shadow boundary (the detached shadow-root backing node → its host) happens
+// ONLY for composed events; a non-composed event stops at the shadow root containing the
+// target. bubbles plays no part here — it gates only the bubble phase in dispatch(),
+// never path construction or the anchors. For a node in the light DOM this yields exactly
+// the old [window, document, ...ancestors..., target] with target = the dispatched node.
+func (b *bridge) elementTargetPath(target *html.Node, composed bool) []pathEntry {
+	type hop struct {
+		listeners map[string][]listenerEntry
+		jsValue   goja.Value
+		retarget  goja.Value
+	}
+	var hops []hop // target-first
+	curTarget := b.wrap(target)
+	reachedDoc := false // did the path reach the light/document tree?
+	for cur := target; cur != nil; {
+		var next *html.Node
+		for n := cur; n != nil; n = n.Parent {
+			if n.Type == html.ElementNode {
+				hops = append(hops, hop{b.nodeListeners[n], b.wrap(n), curTarget})
+			}
+			if n.Parent != nil {
+				continue
+			}
+			// Top of this tree: a shadow-root backing node crosses to its host (only
+			// when composed); otherwise it's the light tree root and we're done.
+			host, ok := b.shadowHostOf[n]
+			if !ok {
+				reachedDoc = true
+				break
+			}
+			if sr := b.shadowRoots[host]; sr != nil {
+				hops = append(hops, hop{b.nodeListeners[n], sr, curTarget})
+			}
+			if composed {
+				curTarget = b.wrap(host)
+				next = host
+			}
+			break
 		}
+		cur = next
 	}
-	path := []pathEntry{
-		{listeners: b.winListeners, jsValue: b.windowObj},
-		{listeners: b.docListeners, jsValue: b.documentObj},
+	// Assemble outermost → target. window/document belong to the path only when it
+	// reaches the document tree — a non-composed event confined to a shadow tree stops
+	// at the shadow root and never sees document/window. They observe the outermost
+	// retargeted target.
+	var path []pathEntry
+	if reachedDoc {
+		path = append(path,
+			pathEntry{listeners: b.winListeners, jsValue: b.windowObj, target: curTarget},
+			pathEntry{listeners: b.docListeners, jsValue: b.documentObj, target: curTarget})
 	}
-	for i := len(chain) - 1; i >= 0; i-- {
-		n := chain[i]
-		path = append(path, pathEntry{listeners: b.nodeListeners[n], jsValue: b.wrap(n)})
+	for i := len(hops) - 1; i >= 0; i-- {
+		path = append(path, pathEntry{listeners: hops[i].listeners, jsValue: hops[i].jsValue, target: hops[i].retarget})
 	}
 	return path
 }
 
 func (b *bridge) dispatchOnNode(target *html.Node, ev *domEvent) bool {
-	return b.dispatch(b.elementTargetPath(target), ev)
+	return b.dispatch(b.elementTargetPath(target, ev.composed), ev)
 }
 
 func (b *bridge) dispatchOnDocument(ev *domEvent) bool {

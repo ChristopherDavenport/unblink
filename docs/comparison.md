@@ -190,10 +190,11 @@ decision drives everything distinctive about it, good and bad.
 **What it forfeits:**
 
 - **JS compatibility has a ceiling.** goja is not V8. The flat-DOM model
-  renders mainstream React/Vue/Preact/Svelte/Lit apps, but layout/geometry
-  are constant stubs, and canvas/WebGL, Workers, WebSocket, and true
-  Shadow-DOM encapsulation are permanent non-goals. Pages whose content
-  depends on those won't fully materialize.
+  renders mainstream React/Vue/Preact/Svelte/Lit apps — including an
+  encapsulating, composed Shadow DOM (slot distribution + cross-boundary events,
+  Phase 23) — but layout/geometry are constant stubs, and canvas/WebGL, Workers,
+  WebSocket, and Shadow-DOM *style scoping* (`:host`/`::slotted`/`::part`) are
+  permanent non-goals. Pages whose content depends on those won't fully materialize.
 - **No pixels, ever.** No screenshots, no visual verification, no "does this
   look right" — by design.
 - **An anti-bot ceiling.** `--tls-mimic` gets past naive fingerprint checks
