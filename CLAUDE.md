@@ -26,6 +26,8 @@ make test      # go test ./... (includes every fuzz target's seed corpus)
 make eval      # offline in-process MCP eval gate (build tag `eval`; scorecard on stderr)
 make fuzz      # coverage-guided fuzzing of the untrusted-input parsers (FUZZTIME=15s each)
 make bench     # perf benchmarks over the hot-path packages (narrow: BENCH=regexp, repeat: BENCHCOUNT=N)
+make membench  # unblink vs. headless Chromium footprint/latency (scripts/membench, separate module)
+make crossbench # membench across every tool in docs/comparison.md incl. token cost (TOOLS=, ARGS=)
 make vet       # go vet ./...
 make fmt       # gofmt -w .
 make tidy      # go mod tidy
