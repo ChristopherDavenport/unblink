@@ -239,6 +239,7 @@ func (b *bridge) install() {
 	b.installParsers()
 	b.installAsync()
 	b.installDynamicImport()
+	b.installSubtle()
 	b.trackRejections()
 }
 

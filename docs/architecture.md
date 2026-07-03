@@ -610,6 +610,24 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   (each async API's content is written only from its completion, so a broken settle route
   fails the test) and the extended `js-api-smoke` eval case (markers `api-11`…`api-17`).
 
+- **Phase 25 — Web API tier-2 (see `docs/web-api-priorities.md`).** ✅ The situational
+  cluster, once Tier 1 shipped. All in `internal/js/prelude_api.go` except the custom-element
+  lifecycle hook (`mutationobserver.go`/`customelements.go`): **FULL** — `DOMMatrix`/`DOMPoint`/
+  `DOMRect`/`DOMQuad`/`Path2D` (real pure-JS matrix math), `TextEncoderStream`/`TextDecoderStream`
+  (over the Phase-24 Streams), and `disconnectedCallback` (fired from a new `onMutate`→
+  `disconnectTree` removal hook). **STUB** — `document.fonts`/`FontFace` (`ready` resolves),
+  `Element.animate`/`Animation`/`KeyframeEffect` (finished animation, `onfinish` via the wrapped
+  timer), `attachInternals`/`ElementInternals`, the Navigation API (`navigate` fires a `navigate`
+  event whose `intercept({handler})` runs the router's view update; same-document only),
+  `cookieStore` (over `document.cookie`), and `reportError`. Regression nets:
+  `internal/js/webapi_tier2_test.go` + `js-api-smoke` markers `api-18`…`api-25`. Also **broad
+  `crypto.subtle`** (ADR 0006, `internal/js/subtle.go`): Go byte-primitives (`crypto/*` +
+  `crypto/rand`) under a JS WebCrypto model — digest, HMAC, AES-GCM/CBC/CTR, PBKDF2/HKDF, and
+  symmetric key gen/import/export; RSA/ECDSA reject (never a sync throw), and `getRandomValues`
+  is re-pointed at `crypto/rand`. **Held open**: the full-WHATWG `URL` upgrade (only on a
+  demonstrated break). **Deferred**: `adoptedCallback` (cross-document adoption) and
+  `CompressionStream` (needs a Go codec).
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

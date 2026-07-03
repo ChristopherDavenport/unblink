@@ -237,6 +237,15 @@ mark(11, CSS.escape('a b') === 'a\\ b' && CSS.supports('display', 'grid'));
 mark(12, document.createElement('canvas').getContext('2d') !== null && document.createElement('div').getContext('2d') === null);
 mark(13, typeof navigator.serviceWorker.register === 'function' && typeof navigator.clipboard.readText === 'function');
 mark(14, (function(){ var ul = document.createElement('ul'); ul.innerHTML = '<li>a</li><li>b</li>'; return ul.lastElementChild.textContent === 'b'; })());
+// Phase 25 (Tier 2) clusters:
+mark(18, new DOMMatrix().translate(2, 3).transformPoint(new DOMPoint(1, 1)).x === 3 && typeof Path2D === 'function');
+mark(19, document.fonts.check('12px X') === true && typeof FontFace === 'function');
+mark(20, (function(){ var a = document.createElement('div').animate([{ opacity: 0 }], { duration: 10 }); return a.playState === 'finished' && typeof document.body.getAnimations === 'function'; })());
+mark(21, (function(){ var e = document.createElement('x-int'); return typeof e.attachInternals === 'function' && typeof e.attachInternals().setFormValue === 'function'; })());
+mark(22, typeof TextEncoderStream === 'function' && typeof TextDecoderStream === 'function');
+mark(23, (function(){ navigation.navigate('/x2', { state: { n: 2 } }); return navigation.currentEntry.getState().n === 2 && navigation.entries().length >= 2; })());
+mark(24, typeof cookieStore.getAll === 'function' && typeof reportError === 'function');
+mark(25, typeof crypto.subtle.digest === 'function' && typeof crypto.subtle.encrypt === 'function' && (function(){ var a = new Uint8Array(8); crypto.getRandomValues(a); var z = 0; for (var i = 0; i < 8; i++) z |= a[i]; return z !== 0; })());
 // async chain: message -> FileReader -> ReadableStream -> indexedDB -> flush.
 // Each hop is wrapped-timer / microtask async, so #out is written only once the
 // whole chain completes — a full-pipeline settle proof for the Tier 1 async APIs.
@@ -1029,7 +1038,8 @@ func cases() []Case {
 				Recall(0, "api-1-ok", "api-2-ok", "api-3-ok", "api-4-ok", "api-5-ok",
 					"api-6-ok", "api-7-ok", "api-8-ok", "api-9-ok", "api-10-ok",
 					"api-11-ok", "api-12-ok", "api-13-ok", "api-14-ok", "api-15-ok",
-					"api-16-ok", "api-17-ok"),
+					"api-16-ok", "api-17-ok", "api-18-ok", "api-19-ok", "api-20-ok",
+					"api-21-ok", "api-22-ok", "api-23-ok", "api-24-ok", "api-25-ok"),
 			},
 			Floor:    0.9,
 			MustPass: true,

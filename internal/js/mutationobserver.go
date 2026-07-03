@@ -41,6 +41,13 @@ type mutationObserver struct {
 // the record for microtask delivery.
 func (b *bridge) onMutate(rec mutationRecord) {
 	b.domVersion++
+	// Fire disconnectedCallback for upgraded custom elements leaving the tree,
+	// synchronously (browser semantics), before observer delivery.
+	if len(rec.removed) > 0 && len(b.customElements) > 0 {
+		for _, n := range rec.removed {
+			b.disconnectTree(n)
+		}
+	}
 	if len(b.observers) == 0 {
 		return
 	}

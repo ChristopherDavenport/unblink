@@ -1322,6 +1322,464 @@ const preludeAPIJS = `
     }
   })();
 
+  // ---- geometry: DOMRect / DOMPoint / DOMMatrix / DOMQuad / Path2D ----
+  //
+  // Real math (no layout dependency): transform libraries do "new DOMMatrix()"
+  // and compose/transform points during setup. Path2D records its ops and is
+  // consumed as a no-op by the canvas 2D stub above.
+  if (typeof window.DOMRectReadOnly === 'undefined') {
+    var DRRO = function (x, y, w, h) { this.x = +x || 0; this.y = +y || 0; this.width = +w || 0; this.height = +h || 0; };
+    Object.defineProperties(DRRO.prototype, {
+      top: { get: function () { return Math.min(this.y, this.y + this.height); }, configurable: true },
+      bottom: { get: function () { return Math.max(this.y, this.y + this.height); }, configurable: true },
+      left: { get: function () { return Math.min(this.x, this.x + this.width); }, configurable: true },
+      right: { get: function () { return Math.max(this.x, this.x + this.width); }, configurable: true }
+    });
+    DRRO.prototype.toJSON = function () { return { x: this.x, y: this.y, width: this.width, height: this.height, top: this.top, right: this.right, bottom: this.bottom, left: this.left }; };
+    DRRO.fromRect = function (o) { o = o || {}; return new DRRO(o.x, o.y, o.width, o.height); };
+    window.DOMRectReadOnly = DRRO;
+    var DR = function (x, y, w, h) { DRRO.call(this, x, y, w, h); };
+    DR.prototype = Object.create(DRRO.prototype); DR.prototype.constructor = DR;
+    DR.fromRect = function (o) { o = o || {}; return new DR(o.x, o.y, o.width, o.height); };
+    window.DOMRect = DR;
+  }
+  if (typeof window.DOMPointReadOnly === 'undefined') {
+    var DPRO = function (x, y, z, w) { this.x = +x || 0; this.y = +y || 0; this.z = +z || 0; this.w = (w === undefined) ? 1 : (+w || 0); };
+    DPRO.prototype.toJSON = function () { return { x: this.x, y: this.y, z: this.z, w: this.w }; };
+    DPRO.prototype.matrixTransform = function (m) { return (m && m.transformPoint) ? m.transformPoint(this) : new window.DOMPoint(this.x, this.y, this.z, this.w); };
+    DPRO.fromPoint = function (o) { o = o || {}; return new DPRO(o.x, o.y, o.z, o.w); };
+    window.DOMPointReadOnly = DPRO;
+    var DP = function (x, y, z, w) { DPRO.call(this, x, y, z, w); };
+    DP.prototype = Object.create(DPRO.prototype); DP.prototype.constructor = DP;
+    DP.fromPoint = function (o) { o = o || {}; return new DP(o.x, o.y, o.z, o.w); };
+    window.DOMPoint = DP;
+  }
+  if (typeof window.DOMMatrixReadOnly === 'undefined') {
+    // 2D affine matrix [a c e / b d f / 0 0 1]; 3D is reported as 2D identity extras.
+    var matMul = function (m, n) {
+      return [m.a * n.a + m.c * n.b, m.b * n.a + m.d * n.b, m.a * n.c + m.c * n.d,
+              m.b * n.c + m.d * n.d, m.a * n.e + m.c * n.f + m.e, m.b * n.e + m.d * n.f + m.f];
+    };
+    var DMRO = function (init) {
+      this.a = 1; this.b = 0; this.c = 0; this.d = 1; this.e = 0; this.f = 0;
+      if (init && init.length >= 6) { this.a = init[0]; this.b = init[1]; this.c = init[2]; this.d = init[3]; this.e = init[4]; this.f = init[5]; }
+      else if (init && typeof init === 'object' && 'a' in init) { this.a = init.a; this.b = init.b; this.c = init.c; this.d = init.d; this.e = init.e; this.f = init.f; }
+    };
+    Object.defineProperties(DMRO.prototype, {
+      m11: { get: function () { return this.a; }, configurable: true }, m12: { get: function () { return this.b; }, configurable: true },
+      m21: { get: function () { return this.c; }, configurable: true }, m22: { get: function () { return this.d; }, configurable: true },
+      m41: { get: function () { return this.e; }, configurable: true }, m42: { get: function () { return this.f; }, configurable: true },
+      m13: { get: function () { return 0; }, configurable: true }, m14: { get: function () { return 0; }, configurable: true },
+      m23: { get: function () { return 0; }, configurable: true }, m24: { get: function () { return 0; }, configurable: true },
+      m31: { get: function () { return 0; }, configurable: true }, m32: { get: function () { return 0; }, configurable: true },
+      m33: { get: function () { return 1; }, configurable: true }, m34: { get: function () { return 0; }, configurable: true },
+      m43: { get: function () { return 0; }, configurable: true }, m44: { get: function () { return 1; }, configurable: true },
+      is2D: { get: function () { return true; }, configurable: true },
+      isIdentity: { get: function () { return this.a === 1 && this.b === 0 && this.c === 0 && this.d === 1 && this.e === 0 && this.f === 0; }, configurable: true }
+    });
+    var newDM = function (r) { var m = new window.DOMMatrix(); m.a = r[0]; m.b = r[1]; m.c = r[2]; m.d = r[3]; m.e = r[4]; m.f = r[5]; return m; };
+    DMRO.prototype.multiply = function (o) { return newDM(matMul(this, o)); };
+    DMRO.prototype.translate = function (tx, ty) { return newDM(matMul(this, { a: 1, b: 0, c: 0, d: 1, e: +tx || 0, f: +ty || 0 })); };
+    DMRO.prototype.scale = function (sx, sy) { sy = (sy === undefined) ? sx : sy; return newDM(matMul(this, { a: +sx || 0, b: 0, c: 0, d: +sy || 0, e: 0, f: 0 })); };
+    DMRO.prototype.rotate = function (deg) { var r = (+deg || 0) * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r); return newDM(matMul(this, { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 })); };
+    DMRO.prototype.flipX = function () { return newDM(matMul(this, { a: -1, b: 0, c: 0, d: 1, e: 0, f: 0 })); };
+    DMRO.prototype.flipY = function () { return newDM(matMul(this, { a: 1, b: 0, c: 0, d: -1, e: 0, f: 0 })); };
+    DMRO.prototype.inverse = function () {
+      var det = this.a * this.d - this.b * this.c;
+      if (!det) return newDM([1, 0, 0, 1, 0, 0]);
+      var ia = this.d / det, ib = -this.b / det, ic = -this.c / det, id = this.a / det;
+      return newDM([ia, ib, ic, id, -(ia * this.e + ic * this.f), -(ib * this.e + id * this.f)]);
+    };
+    DMRO.prototype.transformPoint = function (p) {
+      p = p || {}; var x = +p.x || 0, y = +p.y || 0;
+      return new window.DOMPoint(this.a * x + this.c * y + this.e, this.b * x + this.d * y + this.f, (p.z !== undefined ? p.z : 0), (p.w !== undefined ? p.w : 1));
+    };
+    DMRO.prototype.toFloat32Array = function () { return new Float32Array([this.a, this.b, 0, 0, this.c, this.d, 0, 0, 0, 0, 1, 0, this.e, this.f, 0, 1]); };
+    DMRO.prototype.toFloat64Array = function () { return new Float64Array([this.a, this.b, 0, 0, this.c, this.d, 0, 0, 0, 0, 1, 0, this.e, this.f, 0, 1]); };
+    DMRO.prototype.toJSON = function () { return { a: this.a, b: this.b, c: this.c, d: this.d, e: this.e, f: this.f, is2D: true, isIdentity: this.isIdentity }; };
+    DMRO.prototype.toString = function () { return 'matrix(' + [this.a, this.b, this.c, this.d, this.e, this.f].join(', ') + ')'; };
+    DMRO.fromMatrix = function (o) { return new DMRO(o); };
+    DMRO.fromFloat32Array = function (a) { return new DMRO(a); };
+    DMRO.fromFloat64Array = function (a) { return new DMRO(a); };
+    window.DOMMatrixReadOnly = DMRO;
+
+    var DM = function (init) { DMRO.call(this, init); };
+    DM.prototype = Object.create(DMRO.prototype); DM.prototype.constructor = DM;
+    var applySelf = function (self, r) { self.a = r[0]; self.b = r[1]; self.c = r[2]; self.d = r[3]; self.e = r[4]; self.f = r[5]; return self; };
+    DM.prototype.multiplySelf = function (o) { return applySelf(this, matMul(this, o)); };
+    DM.prototype.preMultiplySelf = function (o) { return applySelf(this, matMul(o, this)); };
+    DM.prototype.translateSelf = function (tx, ty) { return applySelf(this, matMul(this, { a: 1, b: 0, c: 0, d: 1, e: +tx || 0, f: +ty || 0 })); };
+    DM.prototype.scaleSelf = function (sx, sy) { sy = (sy === undefined) ? sx : sy; return applySelf(this, matMul(this, { a: +sx || 0, b: 0, c: 0, d: +sy || 0, e: 0, f: 0 })); };
+    DM.prototype.rotateSelf = function (deg) { var r = (+deg || 0) * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r); return applySelf(this, matMul(this, { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 })); };
+    DM.prototype.invertSelf = function () { var i = this.inverse(); return applySelf(this, [i.a, i.b, i.c, i.d, i.e, i.f]); };
+    DM.prototype.setMatrixValue = function () { return this; };
+    DM.fromMatrix = function (o) { return new DM(o); };
+    DM.fromFloat32Array = function (a) { return new DM(a); };
+    DM.fromFloat64Array = function (a) { return new DM(a); };
+    window.DOMMatrix = DM;
+    window.WebKitCSSMatrix = DM;
+  }
+  if (typeof window.DOMQuad === 'undefined') {
+    window.DOMQuad = function (p1, p2, p3, p4) {
+      this.p1 = p1 || new window.DOMPoint(); this.p2 = p2 || new window.DOMPoint();
+      this.p3 = p3 || new window.DOMPoint(); this.p4 = p4 || new window.DOMPoint();
+    };
+    window.DOMQuad.prototype.getBounds = function () {
+      var xs = [this.p1.x, this.p2.x, this.p3.x, this.p4.x], ys = [this.p1.y, this.p2.y, this.p3.y, this.p4.y];
+      var minx = Math.min.apply(null, xs), miny = Math.min.apply(null, ys);
+      return new window.DOMRect(minx, miny, Math.max.apply(null, xs) - minx, Math.max.apply(null, ys) - miny);
+    };
+    window.DOMQuad.prototype.toJSON = function () { return { p1: this.p1, p2: this.p2, p3: this.p3, p4: this.p4 }; };
+    window.DOMQuad.fromRect = function (r) { r = r || {}; var x = +r.x || 0, y = +r.y || 0, w = +r.width || 0, h = +r.height || 0; return new window.DOMQuad(new window.DOMPoint(x, y), new window.DOMPoint(x + w, y), new window.DOMPoint(x + w, y + h), new window.DOMPoint(x, y + h)); };
+    window.DOMQuad.fromQuad = function (q) { q = q || {}; return new window.DOMQuad(q.p1, q.p2, q.p3, q.p4); };
+  }
+  if (typeof window.Path2D === 'undefined') {
+    window.Path2D = function (path) { this.__ops = (path && path.__ops) ? path.__ops.slice() : []; };
+    ['moveTo', 'lineTo', 'bezierCurveTo', 'quadraticCurveTo', 'arc', 'arcTo', 'ellipse', 'rect', 'roundRect', 'closePath'].forEach(function (m) {
+      window.Path2D.prototype[m] = function () { this.__ops.push(m); };
+    });
+    window.Path2D.prototype.addPath = function (p) { if (p && p.__ops) this.__ops = this.__ops.concat(p.__ops); };
+  }
+
+  // ---- document.fonts / FontFace (no real font loading) ----
+  //
+  // fonts.ready RESOLVES immediately (apps gate first paint on it) and check()
+  // is optimistic, so no font-loading await can stall the render.
+  if (typeof window.FontFace === 'undefined') {
+    window.FontFace = function (family, source, descriptors) {
+      descriptors = descriptors || {};
+      this.family = String(family || '');
+      this.style = descriptors.style || 'normal'; this.weight = descriptors.weight || 'normal';
+      this.stretch = descriptors.stretch || 'normal'; this.unicodeRange = descriptors.unicodeRange || 'U+0-10FFFF';
+      this.variant = 'normal'; this.featureSettings = 'normal'; this.display = descriptors.display || 'auto';
+      this.status = 'unloaded';
+      var self = this;
+      this.loaded = Promise.resolve(this);
+      this.load = function () { self.status = 'loaded'; return Promise.resolve(self); };
+    };
+  }
+  if (typeof document !== 'undefined' && document.fonts === undefined) {
+    var fontSet = [];
+    document.fonts = {
+      status: 'loaded', size: 0,
+      onloading: null, onloadingdone: null, onloadingerror: null,
+      add: function (f) { fontSet.push(f); this.size = fontSet.length; return this; },
+      'delete': function (f) { var i = fontSet.indexOf(f); if (i >= 0) { fontSet.splice(i, 1); this.size = fontSet.length; } return i >= 0; },
+      clear: function () { fontSet = []; this.size = 0; },
+      has: function (f) { return fontSet.indexOf(f) >= 0; },
+      check: function () { return true; },
+      load: function () { return Promise.resolve([]); },
+      forEach: function (cb, thisArg) { fontSet.forEach(function (f) { cb.call(thisArg, f, f, this); }, this); },
+      values: function () { return fontSet.slice()[Symbol.iterator](); },
+      keys: function () { return fontSet.slice()[Symbol.iterator](); },
+      addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; }
+    };
+    document.fonts.ready = Promise.resolve(document.fonts);
+  }
+
+  // ---- Web Animations: Element.animate / getAnimations (no timeline) ----
+  //
+  // The animation is already finished; finished/ready resolve and onfinish fires
+  // once via the wrapped timer, so code that animates then reads the end state
+  // (or awaits finished) proceeds. No geometry is ever interpolated.
+  if (typeof window.Animation === 'undefined') {
+    window.Animation = function (effect, timeline) {
+      this.effect = effect || null; this.timeline = timeline || null;
+      this.playState = 'finished'; this.playbackRate = 1; this.startTime = 0; this.currentTime = 0;
+      this.id = ''; this.pending = false;
+      this.onfinish = null; this.oncancel = null; this.onremove = null;
+      this.finished = Promise.resolve(this); this.ready = Promise.resolve(this);
+      var self = this;
+      this.play = function () { self.playState = 'finished'; }; this.pause = function () { self.playState = 'paused'; };
+      this.cancel = function () { self.playState = 'idle'; }; this.finish = function () { self.playState = 'finished'; };
+      this.reverse = noop; this.updatePlaybackRate = noop; this.persist = noop; this.commitStyles = noop;
+      this.addEventListener = noop; this.removeEventListener = noop; this.dispatchEvent = function () { return true; };
+    };
+  }
+  if (typeof window.KeyframeEffect === 'undefined') {
+    window.KeyframeEffect = function (target, keyframes, options) {
+      this.target = target || null;
+      var opts = (typeof options === 'object' && options) ? options : { duration: +options || 0 };
+      this.getComputedTiming = function () { return { duration: opts.duration || 0, delay: opts.delay || 0, endTime: 0, activeDuration: 0, progress: 1, currentIteration: 0, iterations: opts.iterations || 1 }; };
+      this.getTiming = function () { return opts; };
+      this.getKeyframes = function () { return (keyframes && keyframes.length) ? keyframes.slice() : []; };
+      this.updateTiming = noop; this.setKeyframes = noop;
+    };
+  }
+  (function () {
+    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    if (ep && typeof ep.animate !== 'function') {
+      ep.animate = function (keyframes, options) {
+        var anim = new window.Animation(new window.KeyframeEffect(this, keyframes, options), null);
+        if (!this.__animations) this.__animations = [];
+        this.__animations.push(anim);
+        // Fire onfinish deferred so a handler assigned right after animate() is seen.
+        setTimeout(function () { if (typeof anim.onfinish === 'function') { try { anim.onfinish({ type: 'finish', target: anim }); } catch (e) {} } }, 0);
+        return anim;
+      };
+      ep.getAnimations = function () { return (this.__animations || []).slice(); };
+    }
+  })();
+
+  // ---- attachInternals / ElementInternals (form-associated custom elements) ----
+  //
+  // A cached inert ElementInternals so form-associated components that call
+  // attachInternals() in their constructor don't throw. No validation or form
+  // participation is modelled; setFormValue/setValidity are accepted-and-ignored.
+  (function () {
+    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    if (ep && typeof ep.attachInternals !== 'function') {
+      ep.attachInternals = function () {
+        if (this.__internals) return this.__internals;
+        var host = this;
+        var states = (typeof Set === 'function') ? new Set() : { add: noop, 'delete': noop, has: function () { return false; }, clear: noop };
+        this.__internals = {
+          form: null, labels: [], willValidate: true,
+          validity: { valid: true, valueMissing: false, typeMismatch: false, patternMismatch: false, tooLong: false, tooShort: false, rangeUnderflow: false, rangeOverflow: false, stepMismatch: false, badInput: false, customError: false },
+          validationMessage: '',
+          get shadowRoot() { return host.shadowRoot || null; },
+          states: states, role: null,
+          setFormValue: noop, setValidity: noop,
+          checkValidity: function () { return true; }, reportValidity: function () { return true; }
+        };
+        return this.__internals;
+      };
+    }
+  })();
+
+  // ---- reportError + cookieStore ----
+  if (typeof window.reportError === 'undefined') {
+    window.reportError = function (err) { try { console.error(err); } catch (e) {} };
+  }
+  if (typeof window.cookieStore === 'undefined') {
+    var parseCookies = function () {
+      var out = [], raw = (typeof document !== 'undefined' && document.cookie) ? document.cookie : '';
+      raw.split(';').forEach(function (pair) {
+        var i = pair.indexOf('=');
+        if (i < 0) return;
+        var name = pair.slice(0, i).trim();
+        if (name) out.push({ name: name, value: decodeURIComponent(pair.slice(i + 1).trim()) });
+      });
+      return out;
+    };
+    window.cookieStore = {
+      get: function (name) {
+        if (name && typeof name === 'object') name = name.name;
+        var all = parseCookies();
+        for (var i = 0; i < all.length; i++) if (all[i].name === name) return Promise.resolve(all[i]);
+        return Promise.resolve(null);
+      },
+      getAll: function () { return Promise.resolve(parseCookies()); },
+      set: function (name, value) {
+        try {
+          if (name && typeof name === 'object') document.cookie = name.name + '=' + encodeURIComponent(name.value) + (name.path ? '; path=' + name.path : '');
+          else document.cookie = name + '=' + encodeURIComponent(value);
+        } catch (e) {}
+        return Promise.resolve();
+      },
+      'delete': function (name) {
+        if (name && typeof name === 'object') name = name.name;
+        try { document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT'; } catch (e) {}
+        return Promise.resolve();
+      },
+      addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; }
+    };
+  }
+
+  // ---- TextEncoderStream / TextDecoderStream (over the Streams + utf8 helpers) ----
+  //
+  // CompressionStream/DecompressionStream are intentionally NOT provided: real
+  // gzip/deflate needs a Go-side codec and rarely gates textual content — add it
+  // only if a target page demonstrably needs it (see docs/web-api-priorities.md).
+  if (typeof window.TextEncoderStream === 'undefined') {
+    window.TextEncoderStream = function () {
+      var ts = new window.TransformStream({ transform: function (chunk, c) { c.enqueue(utf8Encode(String(chunk))); } });
+      this.readable = ts.readable; this.writable = ts.writable; this.encoding = 'utf-8';
+    };
+  }
+  if (typeof window.TextDecoderStream === 'undefined') {
+    window.TextDecoderStream = function (label) {
+      var ts = new window.TransformStream({ transform: function (chunk, c) { c.enqueue(utf8Decode(toU8(chunk))); } });
+      this.readable = ts.readable; this.writable = ts.writable;
+      this.encoding = String(label || 'utf-8').toLowerCase(); this.fatal = false; this.ignoreBOM = false;
+    };
+  }
+
+  // ---- Navigation API (partial; same-document routing) ----
+  //
+  // Newer routers prefer window.navigation over history. navigate() fires a
+  // 'navigate' event whose intercept({handler}) runs the router's view update, so
+  // client-side routing materializes content. Like history.pushState, it never
+  // performs a real cross-document load and does not move window.location.
+  if (typeof window.navigation === 'undefined') {
+    var navListeners = {};
+    var mkEntry = function (url, index) {
+      var state;
+      return { url: url, key: 'k' + index, id: 'e' + index, index: index, sameDocument: true,
+               getState: function () { return state; }, __setState: function (s) { state = s; },
+               addEventListener: noop, removeEventListener: noop };
+    };
+    var navEntries = [mkEntry((typeof location !== 'undefined' ? location.href : ''), 0)];
+    var curIndex = 0;
+    var navResult = function () { return { committed: Promise.resolve(navEntries[curIndex]), finished: Promise.resolve(navEntries[curIndex]) }; };
+    var nav = {
+      get currentEntry() { return navEntries[curIndex]; },
+      get canGoBack() { return curIndex > 0; },
+      get canGoForward() { return curIndex < navEntries.length - 1; },
+      transition: null, activation: null,
+      onnavigate: null, oncurrententrychange: null, onnavigatesuccess: null, onnavigateerror: null,
+      entries: function () { return navEntries.slice(); },
+      updateCurrentEntry: function (opts) { if (opts && 'state' in opts) navEntries[curIndex].__setState(opts.state); },
+      addEventListener: function (t, f) { (navListeners[t] = navListeners[t] || []).push(f); },
+      removeEventListener: function (t, f) { var a = navListeners[t]; if (a) { var i = a.indexOf(f); if (i >= 0) a.splice(i, 1); } },
+      dispatchEvent: function () { return true; },
+      navigate: function (url, options) {
+        options = options || {};
+        var resolved;
+        try { resolved = new window.URL(url, (typeof location !== 'undefined' ? location.href : undefined)).href; } catch (e) { resolved = String(url); }
+        var interceptors = [];
+        var ev = {
+          type: 'navigate', navigationType: options.history === 'replace' ? 'replace' : 'push',
+          canIntercept: true, hashChange: false, userInitiated: false, downloadRequest: null, formData: null, info: options.info,
+          destination: { url: resolved, key: '', id: '', index: -1, sameDocument: true, getState: function () { return options.state; } },
+          signal: (typeof AbortController === 'function' ? new AbortController().signal : null),
+          intercept: function (opts) { if (opts && typeof opts.handler === 'function') interceptors.push(opts.handler); },
+          scroll: noop, preventDefault: noop, stopPropagation: noop, stopImmediatePropagation: noop
+        };
+        if (typeof nav.onnavigate === 'function') { try { nav.onnavigate(ev); } catch (e) {} }
+        (navListeners.navigate || []).slice().forEach(function (f) { try { f.call(nav, ev); } catch (e) {} });
+        if (options.history === 'replace') { navEntries[curIndex] = mkEntry(resolved, curIndex); }
+        else { navEntries = navEntries.slice(0, curIndex + 1); navEntries.push(mkEntry(resolved, navEntries.length)); curIndex = navEntries.length - 1; }
+        if (options.state !== undefined) navEntries[curIndex].__setState(options.state);
+        var finished = Promise.all(interceptors.map(function (h) { try { return Promise.resolve(h()); } catch (e) { return Promise.resolve(); } }));
+        if (typeof nav.onnavigatesuccess === 'function') { try { nav.onnavigatesuccess({ type: 'navigatesuccess' }); } catch (e) {} }
+        return { committed: Promise.resolve(navEntries[curIndex]), finished: finished.then(function () { return navEntries[curIndex]; }) };
+      },
+      reload: navResult,
+      back: function () { if (curIndex > 0) curIndex--; return navResult(); },
+      forward: function () { if (curIndex < navEntries.length - 1) curIndex++; return navResult(); },
+      traverseTo: function () { return navResult(); }
+    };
+    window.navigation = nav;
+  }
+
+  // ---- crypto.subtle (broad, Go-backed; ADR 0006) ----
+  //
+  // The WebCrypto object model (Promises, CryptoKey, formats, algorithm
+  // normalization) lives here; the byte-level primitives are Go natives
+  // (subtle.go). Supported: digest, HMAC sign/verify, AES-GCM/CBC/CTR
+  // encrypt/decrypt, PBKDF2/HKDF derive, and symmetric generate/import/export.
+  // RSA/ECDSA/ECDH and wrap/unwrap reject with NotSupportedError (never a sync
+  // throw) so a feature-detecting app degrades to a catchable rejection.
+  if (window.crypto && typeof __unblinkRandomBytes === 'function') {
+    // Real entropy (crypto/rand), replacing the Math.random getRandomValues.
+    window.crypto.getRandomValues = function (arr) {
+      var bytes = new Uint8Array(__unblinkRandomBytes(arr.byteLength));
+      new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength).set(bytes);
+      return arr;
+    };
+  }
+  if (window.crypto && !window.crypto.subtle && typeof __unblinkDigest === 'function') {
+    var algoName = function (a) { return (typeof a === 'string') ? a.toUpperCase() : (a && a.name ? String(a.name).toUpperCase() : ''); };
+    var normHash = function (a) { var h = (a && typeof a === 'object' && a.hash) ? a.hash : a; return algoName(h); };
+    var ab = function (data) { return bytesToArrayBuffer(toU8(data)); };
+    var mkKey = function (type, raw, algorithm, extractable, usages) { return { type: type, extractable: !!extractable, algorithm: algorithm, usages: usages || [], __raw: raw }; };
+    var notSupported = function (op, name) { return Promise.reject(new Error('NotSupportedError: crypto.subtle.' + op + ' does not support ' + name)); };
+    var u8ToB64url = function (u8) { var s = ''; for (var i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); return window.btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+    var b64urlToU8 = function (str) { str = String(str).replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; var bin = window.atob(str), u8 = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return u8; };
+
+    window.crypto.subtle = {
+      digest: function (algorithm, data) {
+        try { return Promise.resolve(__unblinkDigest(normHash(algorithm), ab(data))); } catch (e) { return Promise.reject(e); }
+      },
+      sign: function (algorithm, key, data) {
+        if (algoName(algorithm) !== 'HMAC') return notSupported('sign', algoName(algorithm));
+        try { return Promise.resolve(__unblinkHmacSign(key.__hash, ab(key.__raw), ab(data))); } catch (e) { return Promise.reject(e); }
+      },
+      verify: function (algorithm, key, signature, data) {
+        if (algoName(algorithm) !== 'HMAC') return notSupported('verify', algoName(algorithm));
+        try {
+          var expected = new Uint8Array(__unblinkHmacSign(key.__hash, ab(key.__raw), ab(data)));
+          var got = toU8(signature);
+          if (expected.length !== got.length) return Promise.resolve(false);
+          var diff = 0; for (var i = 0; i < expected.length; i++) diff |= expected[i] ^ got[i];
+          return Promise.resolve(diff === 0);
+        } catch (e) { return Promise.reject(e); }
+      },
+      encrypt: function (algorithm, key, data) {
+        var name = algoName(algorithm);
+        try {
+          if (name === 'AES-GCM') return Promise.resolve(__unblinkAesEncrypt('GCM', ab(key.__raw), ab(algorithm.iv), ab(data), ab(algorithm.additionalData || new Uint8Array(0))));
+          if (name === 'AES-CBC') return Promise.resolve(__unblinkAesEncrypt('CBC', ab(key.__raw), ab(algorithm.iv), ab(data), ab(new Uint8Array(0))));
+          if (name === 'AES-CTR') return Promise.resolve(__unblinkAesEncrypt('CTR', ab(key.__raw), ab(algorithm.counter), ab(data), ab(new Uint8Array(0))));
+          return notSupported('encrypt', name);
+        } catch (e) { return Promise.reject(e); }
+      },
+      decrypt: function (algorithm, key, data) {
+        var name = algoName(algorithm);
+        try {
+          if (name === 'AES-GCM') return Promise.resolve(__unblinkAesDecrypt('GCM', ab(key.__raw), ab(algorithm.iv), ab(data), ab(algorithm.additionalData || new Uint8Array(0))));
+          if (name === 'AES-CBC') return Promise.resolve(__unblinkAesDecrypt('CBC', ab(key.__raw), ab(algorithm.iv), ab(data), ab(new Uint8Array(0))));
+          if (name === 'AES-CTR') return Promise.resolve(__unblinkAesDecrypt('CTR', ab(key.__raw), ab(algorithm.counter), ab(data), ab(new Uint8Array(0))));
+          return notSupported('decrypt', name);
+        } catch (e) { return Promise.reject(e); }
+      },
+      deriveBits: function (algorithm, baseKey, length) {
+        var name = algoName(algorithm);
+        try {
+          if (name === 'PBKDF2') return Promise.resolve(__unblinkPbkdf2(normHash(algorithm), ab(baseKey.__raw), ab(algorithm.salt), algorithm.iterations || 1, length || 0));
+          if (name === 'HKDF') return Promise.resolve(__unblinkHkdf(normHash(algorithm), ab(baseKey.__raw), ab(algorithm.salt || new Uint8Array(0)), ab(algorithm.info || new Uint8Array(0)), length || 0));
+          return notSupported('deriveBits', name);
+        } catch (e) { return Promise.reject(e); }
+      },
+      deriveKey: function (algorithm, baseKey, derivedKeyType, extractable, usages) {
+        var self = this;
+        var bits = derivedKeyType.length || 256;
+        return this.deriveBits(algorithm, baseKey, bits).then(function (raw) { return self.importKey('raw', raw, derivedKeyType, extractable, usages); });
+      },
+      generateKey: function (algorithm, extractable, usages) {
+        var name = algoName(algorithm);
+        try {
+          if (name === 'AES-GCM' || name === 'AES-CBC' || name === 'AES-CTR') {
+            var raw = new Uint8Array(__unblinkRandomBytes((algorithm.length || 256) / 8));
+            return Promise.resolve(mkKey('secret', raw, { name: name, length: algorithm.length || 256 }, extractable, usages));
+          }
+          if (name === 'HMAC') {
+            var h = normHash(algorithm);
+            var n = algorithm.length ? algorithm.length / 8 : ((h === 'SHA-512' || h === 'SHA-384') ? 128 : 64);
+            var k = mkKey('secret', new Uint8Array(__unblinkRandomBytes(n)), { name: 'HMAC', hash: { name: h }, length: n * 8 }, extractable, usages);
+            k.__hash = h;
+            return Promise.resolve(k);
+          }
+          return notSupported('generateKey', name);
+        } catch (e) { return Promise.reject(e); }
+      },
+      importKey: function (format, keyData, algorithm, extractable, usages) {
+        var name = algoName(algorithm);
+        try {
+          var raw;
+          if (format === 'raw') raw = toU8(keyData);
+          else if (format === 'jwk' && keyData && keyData.k) raw = b64urlToU8(keyData.k);
+          else return notSupported('importKey format', String(format));
+          var alg = { name: name, length: raw.length * 8 };
+          var k = mkKey('secret', raw, alg, extractable, usages);
+          if (name === 'HMAC') { alg.hash = { name: normHash(algorithm) }; k.__hash = normHash(algorithm); }
+          return Promise.resolve(k);
+        } catch (e) { return Promise.reject(e); }
+      },
+      exportKey: function (format, key) {
+        try {
+          if (!key.extractable) return Promise.reject(new Error('InvalidAccessError: key is not extractable'));
+          if (format === 'raw') return Promise.resolve(bytesToArrayBuffer(toU8(key.__raw)));
+          if (format === 'jwk') return Promise.resolve({ kty: 'oct', k: u8ToB64url(toU8(key.__raw)), ext: true, key_ops: key.usages || [] });
+          return notSupported('exportKey format', String(format));
+        } catch (e) { return Promise.reject(e); }
+      },
+      wrapKey: function () { return Promise.reject(new Error('NotSupportedError: crypto.subtle.wrapKey')); },
+      unwrapKey: function () { return Promise.reject(new Error('NotSupportedError: crypto.subtle.unwrapKey')); }
+    };
+  }
+
   // ---- indexedDB: in-memory, non-persistent stub ----
   //
   // THE STUB of the IndexedDB non-goal, not persistent IndexedDB: object stores
