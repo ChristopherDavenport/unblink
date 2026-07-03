@@ -14,7 +14,7 @@ import (
 // version is the advertised server version. It is a var so release builds can
 // override it with -ldflags "-X .../internal/mcpserver.version=…"; the default
 // is the dev fallback.
-var version = "0.17.0"
+var version = "0.17.1"
 
 // Version returns the unblink server version.
 func Version() string { return version }

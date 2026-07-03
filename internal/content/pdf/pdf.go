@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	dpdf "github.com/dslipak/pdf"
+	dpdf "github.com/christopherdavenport/unblink/third_party/pdf"
 )
 
 // maxExtractTime bounds one extraction regardless of the caller's context —

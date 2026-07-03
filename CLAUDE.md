@@ -126,10 +126,11 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   bytes (dom, reduce, pdf, robots, token cursors) has a fuzz target — `make fuzz`
   (FUZZTIME per target); seed corpora run in `make test`.
 - `docs/decisions/` holds the ADRs (numbered `NNNN-slug.md`): 0001 keeps
-  `dslipak/pdf` but **vendors it at `third_party/pdf`** (a `replace` directive)
-  with three loop-bounding patches after fuzzing found an infinite-loop DoS
-  that recover+ctx couldn't contain — sync upstream manually, re-fuzz before
-  adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
+  `dslipak/pdf` but **vendors it at `third_party/pdf`** (imported by its
+  in-repo path `…/unblink/third_party/pdf` — never via a `replace` directive,
+  which would break `go install <module>@version`) with three loop-bounding
+  patches after fuzzing found an infinite-loop DoS that recover+ctx couldn't
+  contain — sync upstream manually, re-fuzz before adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
   pseudo-version pins are deliberate — bumping goja is its own reviewed
   change); 0003 is the JS memory guard (process-level heap watchdog +
   `debug.SetMemoryLimit`, because goja has no per-runtime accounting). Add a new
