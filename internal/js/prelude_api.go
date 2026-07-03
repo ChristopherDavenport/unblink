@@ -436,6 +436,192 @@ const preludeAPIJS = `
   FD.values = function () { return this.__e.map(function (p) { return p[1]; })[Symbol.iterator](); };
   if (typeof Symbol === 'function' && Symbol.iterator) FD[Symbol.iterator] = FD.entries;
 
+  // ---- FileReader (reads the Blob/File __bytes plumbing above) ----
+  //
+  // Async completions fire through the WRAPPED setTimeout so the settle audit
+  // sees the pending work — a native timer would let the render close early.
+  if (typeof window.FileReader === 'undefined') {
+    var FR = function () {
+      this.readyState = 0; this.result = null; this.error = null;
+      this.onload = null; this.onloadend = null; this.onloadstart = null;
+      this.onprogress = null; this.onerror = null; this.onabort = null;
+      this.__l = {}; this.__gen = 0;
+    };
+    FR.EMPTY = 0; FR.LOADING = 1; FR.DONE = 2;
+    FR.prototype.EMPTY = 0; FR.prototype.LOADING = 1; FR.prototype.DONE = 2;
+    FR.prototype.addEventListener = function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); };
+    FR.prototype.removeEventListener = function (t, f) { var a = this.__l[t]; if (a) { var i = a.indexOf(f); if (i >= 0) a.splice(i, 1); } };
+    FR.prototype.dispatchEvent = function () { return true; };
+    FR.prototype.__fire = function (type) {
+      var ev = { type: type, target: this, currentTarget: this };
+      var h = this['on' + type];
+      if (typeof h === 'function') { try { h.call(this, ev); } catch (e) {} }
+      (this.__l[type] || []).slice().forEach(function (f) { try { f.call(this, ev); } catch (e) {} }, this);
+    };
+    FR.prototype.__read = function (blob, produce) {
+      var self = this;
+      self.readyState = 1;
+      self.__gen++;
+      var gen = self.__gen;
+      setTimeout(function () {
+        if (self.__gen !== gen) return; // aborted or superseded
+        self.__fire('loadstart');
+        try {
+          var bytes = (blob && blob.__bytes) ? blob.__bytes : new Uint8Array(0);
+          self.result = produce(bytes, blob);
+          self.readyState = 2;
+          self.__fire('progress');
+          self.__fire('load');
+        } catch (e) {
+          self.error = e; self.result = null; self.readyState = 2; self.__fire('error');
+        }
+        self.__fire('loadend');
+      }, 0);
+    };
+    FR.prototype.readAsText = function (blob) { this.__read(blob, function (b) { return utf8Decode(b); }); };
+    FR.prototype.readAsArrayBuffer = function (blob) { this.__read(blob, function (b) { return bytesToArrayBuffer(b); }); };
+    FR.prototype.readAsBinaryString = function (blob) { this.__read(blob, function (b) { var s = ''; for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return s; }); };
+    FR.prototype.readAsDataURL = function (blob) {
+      this.__read(blob, function (b, bl) {
+        var s = ''; for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+        return 'data:' + ((bl && bl.type) || 'application/octet-stream') + ';base64,' + window.btoa(s);
+      });
+    };
+    FR.prototype.abort = function () {
+      this.__gen++;
+      if (this.readyState === 1) { this.readyState = 2; this.__fire('abort'); this.__fire('loadend'); }
+    };
+    window.FileReader = FR;
+  }
+
+  // ---- Streams (buffer-backed, eager; no lazy backpressure) ----
+  //
+  // read() resolves from an in-memory queue via a microtask (Promise), which the
+  // settle poll drains before it can observe idle — no timer/keepalive needed.
+  // A future *lazy* (network-backed) pull would have to route through the wrapped
+  // timer instead, or it would break settle correctness.
+  if (typeof window.ReadableStream === 'undefined') {
+    var RS = function (source) {
+      var self = this;
+      this.locked = false;
+      this.__q = [];
+      this.__closed = false;
+      this.__err = null;
+      var controller = {
+        enqueue: function (chunk) { if (!self.__closed) self.__q.push(chunk); },
+        close: function () { self.__closed = true; },
+        error: function (e) { self.__err = e; self.__closed = true; },
+        get desiredSize() { return 1; }
+      };
+      source = source || {};
+      this.__source = source;
+      this.__controller = controller;
+      try { if (typeof source.start === 'function') source.start(controller); } catch (e) { this.__err = e; this.__closed = true; }
+    };
+    RS.prototype.getReader = function () {
+      var self = this;
+      if (self.locked) throw new TypeError('ReadableStream is locked');
+      self.locked = true;
+      var pulled = false;
+      function maybePull() {
+        if (!pulled && self.__q.length === 0 && !self.__closed && typeof self.__source.pull === 'function') {
+          pulled = true;
+          try { self.__source.pull(self.__controller); } catch (e) { self.__err = e; self.__closed = true; }
+        }
+      }
+      return {
+        read: function () {
+          maybePull();
+          if (self.__err) return Promise.reject(self.__err);
+          if (self.__q.length > 0) return Promise.resolve({ value: self.__q.shift(), done: false });
+          return Promise.resolve({ value: undefined, done: true });
+        },
+        cancel: function () { self.__closed = true; self.__q = []; return Promise.resolve(); },
+        releaseLock: function () { self.locked = false; },
+        closed: Promise.resolve()
+      };
+    };
+    RS.prototype.cancel = function () { this.__closed = true; this.__q = []; return Promise.resolve(); };
+    RS.prototype.tee = function () {
+      var mk = function (arr) { return new window.ReadableStream({ start: function (c) { for (var i = 0; i < arr.length; i++) c.enqueue(arr[i]); c.close(); } }); };
+      return [mk(this.__q.slice()), mk(this.__q.slice())];
+    };
+    RS.prototype.pipeTo = function (dest) {
+      var reader = this.getReader();
+      var writer = dest && dest.getWriter ? dest.getWriter() : null;
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) { if (writer) writer.close(); return; }
+          if (writer) writer.write(r.value);
+          return pump();
+        });
+      }
+      return pump();
+    };
+    RS.prototype.pipeThrough = function (pair) { this.pipeTo(pair.writable); return pair.readable; };
+    if (typeof Symbol === 'function' && Symbol.asyncIterator) {
+      RS.prototype[Symbol.asyncIterator] = function () { var reader = this.getReader(); return { next: function () { return reader.read(); }, 'return': function () { reader.releaseLock(); return Promise.resolve({ done: true }); } }; };
+    }
+    window.ReadableStream = RS;
+  }
+  if (typeof window.WritableStream === 'undefined') {
+    var WSt = function (sink) {
+      this.locked = false;
+      sink = sink || {};
+      var controller = { error: noop };
+      try { if (typeof sink.start === 'function') sink.start(controller); } catch (e) {}
+      this.__sink = sink; this.__controller = controller;
+    };
+    WSt.prototype.getWriter = function () {
+      var self = this;
+      if (self.locked) throw new TypeError('WritableStream is locked');
+      self.locked = true;
+      return {
+        write: function (chunk) { try { if (typeof self.__sink.write === 'function') return Promise.resolve(self.__sink.write(chunk, self.__controller)); } catch (e) { return Promise.reject(e); } return Promise.resolve(); },
+        close: function () { try { if (typeof self.__sink.close === 'function') self.__sink.close(); } catch (e) {} return Promise.resolve(); },
+        abort: function () { try { if (typeof self.__sink.abort === 'function') self.__sink.abort(); } catch (e) {} return Promise.resolve(); },
+        releaseLock: function () { self.locked = false; },
+        closed: Promise.resolve(), ready: Promise.resolve(), desiredSize: 1
+      };
+    };
+    WSt.prototype.abort = function () { return Promise.resolve(); };
+    WSt.prototype.close = function () { return Promise.resolve(); };
+    window.WritableStream = WSt;
+  }
+  if (typeof window.TransformStream === 'undefined') {
+    var TS = function (transformer) {
+      transformer = transformer || {};
+      var readable = new window.ReadableStream({ start: noop });
+      var controller = {
+        enqueue: function (c) { readable.__q.push(c); },
+        terminate: function () { readable.__closed = true; },
+        error: function (e) { readable.__err = e; readable.__closed = true; }
+      };
+      var writable = new window.WritableStream({
+        write: function (chunk) {
+          if (typeof transformer.transform === 'function') { try { transformer.transform(chunk, controller); } catch (e) { controller.error(e); } }
+          else readable.__q.push(chunk);
+        },
+        close: function () {
+          if (typeof transformer.flush === 'function') { try { transformer.flush(controller); } catch (e) {} }
+          readable.__closed = true;
+        }
+      });
+      try { if (typeof transformer.start === 'function') transformer.start(controller); } catch (e) {}
+      this.readable = readable;
+      this.writable = writable;
+    };
+    window.TransformStream = TS;
+  }
+  if (typeof window.CountQueuingStrategy === 'undefined') {
+    window.CountQueuingStrategy = function (opts) { this.highWaterMark = opts ? opts.highWaterMark : 1; };
+    window.CountQueuingStrategy.prototype.size = function () { return 1; };
+  }
+  if (typeof window.ByteLengthQueuingStrategy === 'undefined') {
+    window.ByteLengthQueuingStrategy = function (opts) { this.highWaterMark = opts ? opts.highWaterMark : 1; };
+    window.ByteLengthQueuingStrategy.prototype.size = function (chunk) { return chunk && chunk.byteLength ? chunk.byteLength : 0; };
+  }
+
   // ---- Headers / Request / Response ----
 
   window.Headers = function (init) {
@@ -752,6 +938,105 @@ const preludeAPIJS = `
   if (window.name === undefined) window.name = '';
   window.status = '';
 
+  // ---- navigator device / permission stubs ----
+  //
+  // Feature-detected surfaces whose ABSENCE throws when an app reads them at
+  // boot; the content never depends on them working. Promises reject/deny (or
+  // resolve empty) so hydration proceeds. serviceWorker.ready RESOLVES and is
+  // never left pending -- "await navigator.serviceWorker.ready" would otherwise
+  // hang the render until the settle timeout.
+
+  if (typeof navigator !== 'undefined') {
+    var swOrigin = (typeof location !== 'undefined' && location.origin) ? location.origin : '';
+    if (!navigator.clipboard) {
+      navigator.clipboard = {
+        readText: function () { return Promise.resolve(''); },
+        read: function () { return Promise.resolve([]); },
+        writeText: function () { return Promise.resolve(); },
+        write: function () { return Promise.resolve(); },
+        addEventListener: noop, removeEventListener: noop
+      };
+    }
+    if (!navigator.permissions) {
+      navigator.permissions = {
+        query: function () {
+          return Promise.resolve({ state: 'denied', name: '', onchange: null, addEventListener: noop, removeEventListener: noop });
+        }
+      };
+    }
+    if (!navigator.geolocation) {
+      navigator.geolocation = {
+        getCurrentPosition: function (ok, err) {
+          // POSITION_UNAVAILABLE, delivered async through the wrapped setTimeout.
+          if (typeof err === 'function') setTimeout(function () {
+            err({ code: 2, message: 'position unavailable', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 });
+          }, 0);
+        },
+        watchPosition: function () { return 0; },
+        clearWatch: noop
+      };
+    }
+    if (!navigator.mediaDevices) {
+      var notAllowed = function () { var e = new Error('Permission denied'); e.name = 'NotAllowedError'; return Promise.reject(e); };
+      navigator.mediaDevices = {
+        getUserMedia: notAllowed,
+        getDisplayMedia: notAllowed,
+        enumerateDevices: function () { return Promise.resolve([]); },
+        getSupportedConstraints: function () { return {}; },
+        addEventListener: noop, removeEventListener: noop
+      };
+    }
+    if (!navigator.serviceWorker) {
+      var swReg = {
+        scope: swOrigin + '/', active: null, installing: null, waiting: null,
+        update: function () { return Promise.resolve(); },
+        unregister: function () { return Promise.resolve(true); },
+        addEventListener: noop, removeEventListener: noop
+      };
+      navigator.serviceWorker = {
+        controller: null,
+        ready: Promise.resolve(swReg),
+        register: function () { return Promise.resolve(swReg); },
+        getRegistration: function () { return Promise.resolve(swReg); },
+        getRegistrations: function () { return Promise.resolve([swReg]); },
+        startMessages: noop,
+        addEventListener: noop, removeEventListener: noop
+      };
+    }
+  }
+
+  // ---- EventSource (SSE): connection-less stub ----
+  //
+  // The transport is request/response, not streaming, so a live event stream is
+  // out of scope here. Constructing one must not throw — SSR-first pages that
+  // layer live updates on top keep rendering. It reports a single error -> CLOSED
+  // (via the wrapped setTimeout, so the settle audit still sees the work) and
+  // does not auto-reconnect, mirroring the WebSocket stub in globals.go.
+
+  if (typeof window.EventSource === 'undefined') {
+    var ES = function (url, opts) {
+      var self = this;
+      this.url = String(url || '');
+      this.withCredentials = !!(opts && opts.withCredentials);
+      this.readyState = ES.CONNECTING;
+      this.onopen = null; this.onmessage = null; this.onerror = null;
+      this.__l = {};
+      setTimeout(function () {
+        self.readyState = ES.CLOSED;
+        var err = { type: 'error', target: self };
+        if (typeof self.onerror === 'function') { try { self.onerror(err); } catch (e) {} }
+        (self.__l.error || []).slice().forEach(function (f) { try { f.call(self, err); } catch (e) {} });
+      }, 0);
+    };
+    ES.CONNECTING = 0; ES.OPEN = 1; ES.CLOSED = 2;
+    ES.prototype.CONNECTING = 0; ES.prototype.OPEN = 1; ES.prototype.CLOSED = 2;
+    ES.prototype.close = function () { this.readyState = ES.CLOSED; };
+    ES.prototype.addEventListener = function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); };
+    ES.prototype.removeEventListener = function (t, f) { var a = this.__l[t]; if (a) { var i = a.indexOf(f); if (i >= 0) a.splice(i, 1); } };
+    ES.prototype.dispatchEvent = function () { return true; };
+    window.EventSource = ES;
+  }
+
   // ---- messaging: postMessage / MessageChannel / BroadcastChannel ----
 
   if (typeof window.MessageEvent === 'undefined') {
@@ -948,6 +1233,254 @@ const preludeAPIJS = `
   }
   if (typeof document !== 'undefined' && document.styleSheets === undefined) {
     document.styleSheets = { length: 0, item: function () { return null; } };
+  }
+
+  // ---- CSS namespace ----
+  //
+  // CSS.escape is a pure function (the WHATWG serialize-an-identifier algorithm),
+  // so it is implemented for real — selector and CSS-in-JS libraries call it at
+  // import time and would ReferenceError without it. CSS.supports is optimistic
+  // (true for well-formed input): there is no CSSOM to consult, and returning true
+  // keeps feature-gated code on its main path instead of loading a visual polyfill.
+  if (typeof window.CSS === 'undefined') {
+    window.CSS = {
+      escape: function (value) {
+        var str = String(value);
+        var out = '';
+        var len = str.length;
+        var first = str.charCodeAt(0);
+        for (var i = 0; i < len; i++) {
+          var c = str.charCodeAt(i);
+          if (c === 0) { out += '�'; continue; }
+          if ((c >= 0x1 && c <= 0x1f) || c === 0x7f ||
+              (i === 0 && c >= 0x30 && c <= 0x39) ||
+              (i === 1 && c >= 0x30 && c <= 0x39 && first === 0x2d)) {
+            out += '\\' + c.toString(16) + ' ';
+            continue;
+          }
+          if (i === 0 && c === 0x2d && len === 1) { out += '\\' + str.charAt(i); continue; }
+          if (c >= 0x80 || c === 0x2d || c === 0x5f ||
+              (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a)) {
+            out += str.charAt(i);
+            continue;
+          }
+          out += '\\' + str.charAt(i);
+        }
+        return out;
+      },
+      supports: function (prop, value) {
+        // supports(property, value) or supports(conditionText); optimistic.
+        return arguments.length >= 1 && String(prop).length > 0;
+      }
+    };
+  }
+
+  // ---- canvas getContext stub (no pixels; keeps canvas libs from throwing) ----
+  //
+  // Wrapped elements share one HTMLElement prototype (per protoFor), so the
+  // per-interface HTMLCanvasElement.prototype is NOT in an instance's chain --
+  // getContext must land on the shared prototype (reached via getPrototypeOf of
+  // a throwaway element), guarded by tagName. There is no rasterizer: the 2D
+  // context accepts every call and draws nothing, so a canvas charting or
+  // fingerprinting library runs to completion and the surrounding DOM content
+  // still renders. A truthy getContext also satisfies the common
+  // !!canvas.getContext feature test. webgl/webgpu stay null (permanent non-goal).
+  (function () {
+    var htmlProto = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    if (htmlProto && !('getContext' in htmlProto)) {
+      var inert2d = function (canvas) {
+        return {
+          canvas: canvas,
+          save: noop, restore: noop, scale: noop, rotate: noop, translate: noop, transform: noop, setTransform: noop, resetTransform: noop,
+          getTransform: function () { return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }; },
+          beginPath: noop, closePath: noop, moveTo: noop, lineTo: noop, bezierCurveTo: noop, quadraticCurveTo: noop, arc: noop, arcTo: noop, ellipse: noop, rect: noop, roundRect: noop,
+          fill: noop, stroke: noop, clip: noop, isPointInPath: function () { return false; }, isPointInStroke: function () { return false; },
+          fillRect: noop, strokeRect: noop, clearRect: noop, fillText: noop, strokeText: noop,
+          measureText: function () { return { width: 0, actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 0, fontBoundingBoxAscent: 0, fontBoundingBoxDescent: 0 }; },
+          drawImage: noop, putImageData: noop,
+          createImageData: function () { return { data: new Uint8ClampedArray(0), width: 0, height: 0 }; },
+          getImageData: function () { return { data: new Uint8ClampedArray(0), width: 0, height: 0 }; },
+          createLinearGradient: function () { return { addColorStop: noop }; },
+          createRadialGradient: function () { return { addColorStop: noop }; },
+          createConicGradient: function () { return { addColorStop: noop }; },
+          createPattern: function () { return null; },
+          setLineDash: noop, getLineDash: function () { return []; }, drawFocusIfNeeded: noop, scrollPathIntoView: noop,
+          fillStyle: '#000000', strokeStyle: '#000000', lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10, lineDashOffset: 0,
+          font: '10px sans-serif', textAlign: 'start', textBaseline: 'alphabetic', direction: 'ltr',
+          globalAlpha: 1, globalCompositeOperation: 'source-over', imageSmoothingEnabled: true,
+          shadowBlur: 0, shadowColor: 'rgba(0, 0, 0, 0)', shadowOffsetX: 0, shadowOffsetY: 0
+        };
+      };
+      htmlProto.getContext = function (kind) {
+        if (String(this.tagName).toUpperCase() !== 'CANVAS') return null;
+        kind = String(kind || '2d').toLowerCase();
+        return (kind === '2d' || kind === 'bitmaprenderer') ? inert2d(this) : null;
+      };
+      htmlProto.toDataURL = function () { return 'data:,'; };
+      htmlProto.toBlob = function (cb) { if (typeof cb === 'function') setTimeout(function () { cb(new window.Blob([])); }, 0); };
+      htmlProto.transferControlToOffscreen = function () { return null; };
+    }
+  })();
+
+  // ---- indexedDB: in-memory, non-persistent stub ----
+  //
+  // THE STUB of the IndexedDB non-goal, not persistent IndexedDB: object stores
+  // are plain Maps discarded when the runtime ends. Its whole job is to let
+  // offline-first PWAs that open a DB at boot proceed to render instead of
+  // ReferenceError-ing. SETTLE-CRITICAL: every request/transaction callback fires
+  // through the WRAPPED setTimeout so it registers in the live-timer audit; a
+  // native timer would let the render close early and truncate content.
+  if (typeof window.indexedDB === 'undefined') {
+    var idbDBs = {}; // name -> { version, stores: { storeName -> rec } }
+
+    var idbKey = function (k) {
+      if (k && typeof k === 'object') { try { return 'j:' + JSON.stringify(k); } catch (e) { return 'o:' + String(k); } }
+      return typeof k + ':' + String(k);
+    };
+    var idbExtractKey = function (rec, value, explicitKey) {
+      if (explicitKey !== undefined) return explicitKey;
+      if (typeof rec.keyPath === 'string' && value) return value[rec.keyPath];
+      if (rec.autoIncrement) return ++rec.autoInc;
+      return undefined;
+    };
+    var idbStringList = function (names) {
+      var arr = names.slice();
+      var list = { length: arr.length, item: function (i) { return (i >= 0 && i < arr.length) ? arr[i] : null; }, contains: function (n) { return arr.indexOf(String(n)) >= 0; } };
+      for (var i = 0; i < arr.length; i++) list[i] = arr[i];
+      return list;
+    };
+    var idbMakeReq = function (source) {
+      return { result: undefined, error: null, readyState: 'pending', source: source || null, transaction: null,
+               onsuccess: null, onerror: null, __l: {},
+               addEventListener: function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); },
+               removeEventListener: function (t, f) { var a = this.__l[t]; if (a) { var i = a.indexOf(f); if (i >= 0) a.splice(i, 1); } },
+               dispatchEvent: function () { return true; } };
+    };
+    var idbFire = function (obj, type, extra) {
+      var ev = { type: type, target: obj, currentTarget: obj };
+      if (extra) for (var k in extra) ev[k] = extra[k];
+      var h = obj['on' + type];
+      if (typeof h === 'function') { try { h.call(obj, ev); } catch (e) {} }
+      (obj.__l[type] || []).slice().forEach(function (f) { try { f.call(obj, ev); } catch (e) {} });
+    };
+    var idbSettle = function (req, compute) {
+      // Run the data op SYNCHRONOUSLY (in program order, like a real
+      // transaction), capturing the result; defer only the success/error event
+      // through the wrapped setTimeout. This makes a get() after a put() in the
+      // same handler observe the put regardless of timer ordering.
+      var result, err = null, ok = true;
+      try { result = compute(); } catch (e) { ok = false; err = e; }
+      setTimeout(function () {
+        if (ok) { req.result = result; req.readyState = 'done'; idbFire(req, 'success'); }
+        else { req.error = err; req.readyState = 'done'; idbFire(req, 'error'); }
+      }, 0);
+      return req;
+    };
+
+    var idbMakeStore = function (rec) {
+      var store = {
+        name: rec.name, keyPath: rec.keyPath, autoIncrement: rec.autoIncrement, indexNames: idbStringList([]),
+        put: function (value, key) { return idbSettle(idbMakeReq(this), function () { var k = idbExtractKey(rec, value, key); rec.map.set(idbKey(k), { key: k, value: value }); return k; }); },
+        add: function (value, key) { return idbSettle(idbMakeReq(this), function () { var k = idbExtractKey(rec, value, key); rec.map.set(idbKey(k), { key: k, value: value }); return k; }); },
+        get: function (key) { return idbSettle(idbMakeReq(this), function () { var e = rec.map.get(idbKey(key)); return e ? e.value : undefined; }); },
+        getAll: function () { return idbSettle(idbMakeReq(this), function () { var out = []; rec.map.forEach(function (e) { out.push(e.value); }); return out; }); },
+        getAllKeys: function () { return idbSettle(idbMakeReq(this), function () { var out = []; rec.map.forEach(function (e) { out.push(e.key); }); return out; }); },
+        getKey: function (key) { return idbSettle(idbMakeReq(this), function () { var e = rec.map.get(idbKey(key)); return e ? e.key : undefined; }); },
+        'delete': function (key) { return idbSettle(idbMakeReq(this), function () { rec.map['delete'](idbKey(key)); return undefined; }); },
+        clear: function () { return idbSettle(idbMakeReq(this), function () { rec.map.clear(); return undefined; }); },
+        count: function () { return idbSettle(idbMakeReq(this), function () { return rec.map.size; }); },
+        // Cursor iteration is not modelled (returns end-of-cursor); getAll covers reads.
+        openCursor: function () { return idbSettle(idbMakeReq(this), function () { return null; }); },
+        openKeyCursor: function () { return idbSettle(idbMakeReq(this), function () { return null; }); },
+        createIndex: function (name) { rec.indexes[name] = true; store.indexNames = idbStringList(Object.keys(rec.indexes)); return idbMakeIndex(rec, name, store); },
+        deleteIndex: function (name) { delete rec.indexes[name]; store.indexNames = idbStringList(Object.keys(rec.indexes)); },
+        index: function (name) { return idbMakeIndex(rec, name, store); }
+      };
+      return store;
+    };
+    var idbMakeIndex = function (rec, name, store) {
+      return { name: name, objectStore: store, keyPath: null, multiEntry: false, unique: false,
+        get: function (key) { return idbSettle(idbMakeReq(store), function () { var e = rec.map.get(idbKey(key)); return e ? e.value : undefined; }); },
+        getAll: function () { return idbSettle(idbMakeReq(store), function () { var out = []; rec.map.forEach(function (e) { out.push(e.value); }); return out; }); },
+        getAllKeys: function () { return idbSettle(idbMakeReq(store), function () { var out = []; rec.map.forEach(function (e) { out.push(e.key); }); return out; }); },
+        count: function () { return idbSettle(idbMakeReq(store), function () { return rec.map.size; }); },
+        openCursor: function () { return idbSettle(idbMakeReq(store), function () { return null; }); } };
+    };
+
+    var idbMakeDB = function (name, entry) {
+      var db = {
+        name: name, version: entry.version, objectStoreNames: idbStringList(Object.keys(entry.stores)),
+        onversionchange: null, onclose: null, onabort: null, onerror: null, __l: {},
+        addEventListener: function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); }, removeEventListener: noop, dispatchEvent: function () { return true; },
+        createObjectStore: function (storeName, opts) {
+          opts = opts || {};
+          var rec = { name: storeName, map: new Map(), keyPath: opts.keyPath !== undefined ? opts.keyPath : null, autoIncrement: !!opts.autoIncrement, autoInc: 0, indexes: {} };
+          entry.stores[storeName] = rec;
+          db.objectStoreNames = idbStringList(Object.keys(entry.stores));
+          return idbMakeStore(rec);
+        },
+        deleteObjectStore: function (storeName) { delete entry.stores[storeName]; db.objectStoreNames = idbStringList(Object.keys(entry.stores)); },
+        transaction: function (names, mode) {
+          var tx = {
+            db: db, mode: mode || 'readonly', error: null, oncomplete: null, onerror: null, onabort: null, __l: {},
+            addEventListener: function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); }, removeEventListener: noop, dispatchEvent: function () { return true; },
+            objectStore: function (storeName) { var rec = entry.stores[storeName]; if (!rec) throw new Error('NotFoundError: object store ' + storeName + ' not found'); return idbMakeStore(rec); },
+            abort: noop, commit: noop
+          };
+          setTimeout(function () { idbFire(tx, 'complete'); }, 0);
+          return tx;
+        },
+        close: noop
+      };
+      return db;
+    };
+
+    window.indexedDB = {
+      open: function (name, version) {
+        name = String(name);
+        var req = idbMakeReq(null);
+        req.onupgradeneeded = null; req.onblocked = null;
+        var isNew = !idbDBs[name];
+        var oldVersion = isNew ? 0 : idbDBs[name].version;
+        var newVersion = version || (isNew ? 1 : idbDBs[name].version);
+        var upgrade = isNew || newVersion > oldVersion;
+        if (isNew) idbDBs[name] = { version: newVersion, stores: {} };
+        var entry = idbDBs[name];
+        entry.version = newVersion;
+        var db = idbMakeDB(name, entry);
+        req.result = db;
+        setTimeout(function () {
+          if (upgrade && (typeof req.onupgradeneeded === 'function' || (req.__l.upgradeneeded && req.__l.upgradeneeded.length))) {
+            var vtx = {
+              db: db, mode: 'versionchange', error: null, oncomplete: null, onerror: null, onabort: null, __l: {},
+              addEventListener: function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); }, removeEventListener: noop, dispatchEvent: function () { return true; },
+              objectStore: function (sn) { var rec = entry.stores[sn]; if (!rec) throw new Error('NotFoundError: ' + sn); return idbMakeStore(rec); },
+              abort: noop
+            };
+            req.transaction = vtx;
+            idbFire(req, 'upgradeneeded', { oldVersion: oldVersion, newVersion: newVersion });
+            req.transaction = null;
+          }
+          db.objectStoreNames = idbStringList(Object.keys(entry.stores));
+          req.readyState = 'done';
+          req.result = db;
+          idbFire(req, 'success');
+        }, 0);
+        return req;
+      },
+      deleteDatabase: function (name) {
+        var req = idbMakeReq(null);
+        return idbSettle(req, function () { delete idbDBs[String(name)]; return undefined; });
+      },
+      databases: function () { return Promise.resolve(Object.keys(idbDBs).map(function (n) { return { name: n, version: idbDBs[n].version }; })); },
+      cmp: function (a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
+    };
+    window.IDBKeyRange = {
+      bound: function (l, u, lo, uo) { return { lower: l, upper: u, lowerOpen: !!lo, upperOpen: !!uo }; },
+      only: function (v) { return { lower: v, upper: v, only: true }; },
+      lowerBound: function (l, o) { return { lower: l, lowerOpen: !!o }; },
+      upperBound: function (u, o) { return { upper: u, upperOpen: !!o }; }
+    };
   }
 
   // ---- Intl (crash-avoidance shim; goja has no native Intl) ----

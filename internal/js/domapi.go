@@ -123,6 +123,18 @@ func namespaceFor(ns string) string {
 	return ""
 }
 
+// namespaceURIFor maps an x/net/html namespace label ("svg"/"math"/"") back to
+// the namespace URI for Element.namespaceURI; the empty label is plain HTML.
+func namespaceURIFor(label string) string {
+	switch label {
+	case "svg":
+		return "http://www.w3.org/2000/svg"
+	case "math":
+		return "http://www.w3.org/1998/Math/MathML"
+	}
+	return "http://www.w3.org/1999/xhtml"
+}
+
 func matchesSelector(n *html.Node, selector string) bool {
 	if n.Type != html.ElementNode {
 		return false

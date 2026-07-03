@@ -223,6 +223,7 @@ func apiSmokeHost() Host {
 <script>
 var ok = [];
 function mark(n, cond) { if (cond) ok.push('api-' + n + '-ok'); }
+function flush() { document.getElementById('out').textContent = ok.join(' '); }
 mark(1, atob(btoa('x')) === 'x');
 mark(2, new TextDecoder().decode(new TextEncoder().encode('café €')) === 'café €');
 mark(3, typeof performance.now() === 'number');
@@ -231,13 +232,45 @@ mark(5, new Intl.NumberFormat('en-US').format(1234567) === '1,234,567');
 mark(6, new WeakRef({v:1}).deref().v === 1);
 mark(7, new DOMParser().parseFromString('<p>hi</p>', 'text/html').querySelector('p').textContent === 'hi');
 mark(8, (function(){ var fd = new FormData(); fd.append('a','b'); return fd.get('a') === 'b'; })());
+// Tier 1 additions (sync clusters):
+mark(11, CSS.escape('a b') === 'a\\ b' && CSS.supports('display', 'grid'));
+mark(12, document.createElement('canvas').getContext('2d') !== null && document.createElement('div').getContext('2d') === null);
+mark(13, typeof navigator.serviceWorker.register === 'function' && typeof navigator.clipboard.readText === 'function');
+mark(14, (function(){ var ul = document.createElement('ul'); ul.innerHTML = '<li>a</li><li>b</li>'; return ul.lastElementChild.textContent === 'b'; })());
+// async chain: message -> FileReader -> ReadableStream -> indexedDB -> flush.
+// Each hop is wrapped-timer / microtask async, so #out is written only once the
+// whole chain completes — a full-pipeline settle proof for the Tier 1 async APIs.
+window.addEventListener('message', function (e) {
+  mark(10, e.data.ping === 1);
+  var fr = new FileReader();
+  fr.onload = function () {
+    mark(15, fr.result === 'file-bytes');
+    var reader = new ReadableStream({ start: function (c) { c.enqueue('a'); c.enqueue('b'); c.close(); } }).getReader();
+    var chunks = [];
+    (function pump() {
+      return reader.read().then(function (r) {
+        if (r.done) {
+          mark(16, chunks.join('') === 'ab');
+          var open = indexedDB.open('smoke', 1);
+          open.onupgradeneeded = function (ev) { ev.target.result.createObjectStore('s', { keyPath: 'id' }); };
+          open.onsuccess = function (ev) {
+            var st = ev.target.result.transaction('s', 'readwrite').objectStore('s');
+            st.put({ id: 1, v: 'stored' });
+            var g = st.get(1);
+            g.onsuccess = function () { mark(17, g.result && g.result.v === 'stored'); flush(); };
+          };
+          return;
+        }
+        chunks.push(r.value);
+        return pump();
+      });
+    })();
+  };
+  fr.readAsText(new Blob(['file-bytes']));
+});
 new Response('resp-body').text().then(function (t) {
   mark(9, t === 'resp-body');
   window.postMessage({ ping: 1 }, '*');
-});
-window.addEventListener('message', function (e) {
-  mark(10, e.data.ping === 1);
-  document.getElementById('out').textContent = ok.join(' ');
 });
 </script></body></html>`)
 		}), nil
@@ -994,7 +1027,9 @@ func cases() []Case {
 			},
 			Scorers: []Scorer{
 				Recall(0, "api-1-ok", "api-2-ok", "api-3-ok", "api-4-ok", "api-5-ok",
-					"api-6-ok", "api-7-ok", "api-8-ok", "api-9-ok", "api-10-ok"),
+					"api-6-ok", "api-7-ok", "api-8-ok", "api-9-ok", "api-10-ok",
+					"api-11-ok", "api-12-ok", "api-13-ok", "api-14-ok", "api-15-ok",
+					"api-16-ok", "api-17-ok"),
 			},
 			Floor:    0.9,
 			MustPass: true,

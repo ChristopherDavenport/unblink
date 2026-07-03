@@ -592,6 +592,24 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   - **Closed mode**: `.shadowRoot` is `null` for a closed root, but its content is
     still composed into extraction output (mission: see everything).
 
+- **Phase 24 — Web API tier-1 misses (see `docs/web-api-priorities.md`).** ✅ Closes the
+  eight highest-frequency browser-API gaps that crash hydration on real/common sites, each
+  by the cheapest treatment that lets content materialize (the FULL / STUB / leave-undefined
+  rubric in the priorities doc). All in `internal/js/prelude_api.go` except the element gaps
+  (`proto.go`/`domapi.go`): **FULL** — `CSS.escape`/`supports` (WHATWG identifier escape),
+  `FileReader` and `ReadableStream`/`WritableStream`/`TransformStream` over the existing
+  `Blob.__bytes` plumbing, and `Element` `lastElementChild`/`getAttributeNode`/`namespaceURI`.
+  **STUB** (boot-survival, not the feature) — an inert `canvas.getContext('2d')` on the shared
+  `HTMLElement.prototype` (instances don't carry `HTMLCanvasElement.prototype`), an in-memory
+  non-persistent `indexedDB`, `EventSource` (error→closed, like `WebSocket`), and the
+  `navigator` `serviceWorker`/`clipboard`/`permissions`/`geolocation`/`mediaDevices` surfaces
+  (`serviceWorker.ready` resolves so `await` never hangs). The async ones honor the ADR 0004
+  settle audit by routing completions through the **wrapped** `window.setTimeout` (indexedDB
+  runs its data op synchronously and defers only the success event, so operation order is
+  race-free) or a microtask (Streams). Regression nets: `internal/js/webapi_tier1_test.go`
+  (each async API's content is written only from its completion, so a broken settle route
+  fails the test) and the extended `js-api-smoke` eval case (markers `api-11`…`api-17`).
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`
