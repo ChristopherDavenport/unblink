@@ -3,6 +3,46 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## v0.19.0 — 2026-07-03
+
+### Added
+
+- **A broad Web API surface so JS pages render instead of crashing at boot
+  (Phases 24–26, [docs/web-api-priorities.md](docs/web-api-priorities.md)).** The
+  flat-DOM engine now provides the browser APIs mainstream apps touch during
+  hydration, each by the cheapest treatment that lets content materialize — a real
+  implementation, an inert crash-avoidance stub, or a deliberate leave-undefined:
+  - **Tier 1** — `CSS.escape`/`CSS.supports`, `FileReader`, `ReadableStream`/
+    `WritableStream`/`TransformStream`, `EventSource`, an in-memory `indexedDB`, an
+    inert canvas-2D context, the `navigator` serviceWorker/clipboard/permissions/
+    geolocation/mediaDevices surfaces, and `Element` `lastElementChild`/
+    `getAttributeNode`/`namespaceURI`.
+  - **Tier 2** — `DOMMatrix`/`DOMPoint`/`DOMRect`/`DOMQuad`/`Path2D`, `document.fonts`/
+    `FontFace`, `Element.animate` (Web Animations), custom-element `disconnectedCallback`
+    + `attachInternals`/`ElementInternals`, the Navigation API, `TextEncoderStream`/
+    `TextDecoderStream`, `cookieStore`, `reportError`.
+  - **`crypto.subtle`** ([ADR 0006](docs/decisions/0006-crypto-subtle.md)) — a real,
+    Go-backed WebCrypto: `digest` (SHA-1/256/384/512), HMAC sign/verify, AES-GCM/CBC/CTR
+    encrypt/decrypt, PBKDF2/HKDF derive, and symmetric key generate/import/export, with
+    `getRandomValues` re-pointed at `crypto/rand`. RSA/ECDSA and wrap/unwrap reject
+    catchably rather than throwing. Reverses the earlier "leave `crypto.subtle`
+    undefined" decision.
+  - **Tier 3** — inert crash-avoidance stubs for media playback + the full Web Audio
+    node graph, WebRTC, Payment Request, Web Speech, the sensor family, `Notification`
+    (`permission:'denied'`), Popover, Fullscreen, Picture-in-Picture, View Transitions,
+    and the WebHID/USB/Serial/MIDI/Bluetooth/WebXR/WebGPU device family.
+
+  Async completions route through the provable-idle settle audit (ADR 0004). Still
+  permanent non-goals: pixels/layout/geometry, real media/GPU rendering, real Workers/
+  WebSocket/persistent storage, and Shadow-DOM style scoping.
+
+### Changed
+
+- **[docs/comparison.md](docs/comparison.md)** reframes the JavaScript "what it
+  forfeits" ceiling: with the broad Web API surface, pages rarely crash at boot, so
+  the forfeit is now specifically pixels/layout and second-thread features — not the
+  API surface itself.
+
 ## v0.18.0 — 2026-07-03
 
 ### Changed
