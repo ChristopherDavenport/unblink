@@ -1,5 +1,11 @@
 # unblink
 
+[![CI](https://github.com/ChristopherDavenport/unblink/actions/workflows/ci.yml/badge.svg)](https://github.com/ChristopherDavenport/unblink/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ChristopherDavenport/unblink)](https://github.com/ChristopherDavenport/unblink/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/christopherdavenport/unblink.svg)](https://pkg.go.dev/github.com/christopherdavenport/unblink)
+[![Go Report Card](https://goreportcard.com/badge/github.com/christopherdavenport/unblink)](https://goreportcard.com/report/github.com/christopherdavenport/unblink)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A pure-Go (no cgo, no Chromium) "web browser" whose purpose is **not** visual
 rendering but **exposing web information to an AI model**. unblink fetches a
 page, parses it, strips visual-only junk (scripts, styles, navigation, ads),
@@ -41,6 +47,12 @@ global `go env` is left untouched. (If you run `go` directly rather than via
 GOTOOLCHAIN=auto go install github.com/christopherdavenport/unblink/cmd/unblink@latest
 ```
 
+Or run the multi-arch (amd64/arm64) Docker image — no Go toolchain needed:
+
+```sh
+docker run -i --rm ghcr.io/christopherdavenport/unblink:latest --version
+```
+
 Or download a prebuilt binary from the GitHub releases page, or build from
 source (see [Build & run](#build--run)).
 
@@ -51,6 +63,8 @@ subprocess. For **Claude Code**:
 
 ```sh
 claude mcp add unblink -- /path/to/unblink --js
+# or, via Docker (no install):
+claude mcp add unblink -- docker run -i --rm ghcr.io/christopherdavenport/unblink:latest --js
 ```
 
 For **Claude Desktop** (or any client using the `mcpServers` config shape), add
@@ -63,6 +77,11 @@ to `claude_desktop_config.json`:
       "command": "/path/to/unblink",
       "args": ["--js"]
     }
+    // or, via Docker:
+    // "unblink": {
+    //   "command": "docker",
+    //   "args": ["run", "-i", "--rm", "ghcr.io/christopherdavenport/unblink:latest", "--js"]
+    // }
   }
 }
 ```
@@ -70,6 +89,11 @@ to `claude_desktop_config.json`:
 Drop `--js` for the zero-JavaScript static read path (lighter, still handles most
 server-rendered pages). Add flags like `--search-provider` or `--tls-mimic` to
 `args` as needed — see [Configuration](#configuration).
+
+unblink is also listed in the [MCP registry](https://registry.modelcontextprotocol.io)
+as `io.github.ChristopherDavenport/unblink`, and the repo ships a Claude Code
+plugin manifest ([`.claude-plugin/plugin.json`](.claude-plugin/plugin.json))
+pinned to the current release image.
 
 ## Build & run
 
@@ -281,5 +305,3 @@ model and how to report a vulnerability.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the build/test workflow, the eval
 gate, and the ADR process. Changes to the JS engine or dependency pins follow the
 [architecture doc](docs/architecture.md) and [ADRs](docs/decisions/).
-
-[MIT](LICENSE)

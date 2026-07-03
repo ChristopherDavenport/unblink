@@ -39,6 +39,20 @@ back the footprint pitch with measured numbers.
   faster to start on identical pages).
 - `SECURITY.md`, `CONTRIBUTING.md`, this changelog, a README MCP-client-config
   section, and a consolidated flags table.
+- **Docker images**: multi-arch (`linux/amd64` + `linux/arm64`, distroless
+  static, nonroot) images published to `ghcr.io/christopherdavenport/unblink`
+  (`:X.Y.Z` and `:latest`) by goreleaser on every tag.
+- **MCP registry listing**: `io.github.ChristopherDavenport/unblink` —
+  `server.json` plus a publish workflow that stamps the version from the tag,
+  waits for the ghcr image to be pullable, and publishes via `mcp-publisher`
+  with GitHub OIDC.
+- **Claude Code plugin manifest** (`.claude-plugin/plugin.json`): a docker-run
+  MCP server entry whose image tag is auto-synced to each release by a bot
+  commit on `main`.
+- **Release pipeline hardening**: the test suite + eval gate now block
+  goreleaser on tag pushes; GitHub Releases get auto-generated notes; README
+  badges; issue/PR templates; Dependabot for Go modules and Actions (goja pins
+  excluded per [ADR-0002](docs/decisions/0002-dependency-pinning-policy.md)).
 
 ### Changed
 

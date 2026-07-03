@@ -1,0 +1,59 @@
+name: Publish to MCP Registry
+
+# Fires on the same v* tags as release.yml and runs in parallel with it: the
+# poll below waits until goreleaser has pushed the ghcr image (and, on the
+# very first release, until the ghcr package has been flipped public) so the
+# registry never accepts an oci reference that isn't anonymously pullable.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC login to registry.modelcontextprotocol.io
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stamp server.json from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$VERSION" \
+            '.version = $v
+             | .packages[0].identifier = "ghcr.io/christopherdavenport/unblink:" + $v' \
+            server.json > server.json.tmp
+          mv server.json.tmp server.json
+          cat server.json
+
+      - name: Wait for image on GHCR
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          IMAGE="ghcr.io/christopherdavenport/unblink:${VERSION}"
+          for i in $(seq 1 60); do
+            if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+              echo "$IMAGE is live"
+              exit 0
+            fi
+            echo "waiting for $IMAGE ($i/60)..."
+            sleep 30
+          done
+          echo "::error::$IMAGE never became anonymously pullable (release failed, or the ghcr package is still private)"
+          exit 1
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz \
+            | tar xz mcp-publisher
+          ./mcp-publisher --version
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate server.json
+
+      - name: Login (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish

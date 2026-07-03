@@ -53,12 +53,27 @@ never folded into an unrelated PR.
 
 ## Releasing
 
-Tagging `v*` triggers goreleaser (`.github/workflows/release.yml`) to build the
-cross-platform binaries. Before announcing a release:
+Pushing a `v*` tag fires two workflows:
+
+- **`release.yml`** — the test/eval gate, then goreleaser: cross-platform
+  archives + checksums, multi-arch Docker images and manifests on
+  `ghcr.io/christopherdavenport/unblink`, a GitHub Release with auto-generated
+  notes, and finally a bot commit on `main` syncing
+  `.claude-plugin/plugin.json` to the new tag.
+- **`publish-mcp-registry.yml`** — stamps `server.json` from the tag, waits
+  until `ghcr.io/christopherdavenport/unblink:X.Y.Z` is anonymously pullable,
+  then publishes to the [MCP registry](https://registry.modelcontextprotocol.io)
+  via GitHub OIDC.
+
+Before tagging:
 
 1. Bump `version` in `internal/mcpserver/server.go` and add a `CHANGELOG.md`
    entry; `make fmt vet test eval` must be clean.
-2. Tag and push (`git tag vX.Y.Z && git push --tags`).
+2. Do **not** hand-edit the versions in `server.json` or
+   `.claude-plugin/plugin.json` — both are machine-stamped from the tag.
+
+Tag and push (`git tag vX.Y.Z && git push origin vX.Y.Z`), then verify:
+
 3. **Smoke-test `go install`** from a clean module cache — the module path is
    lowercase (`github.com/christopherdavenport/unblink`) even though the GitHub
    repo is mixed-case, so confirm the canonical command resolves and that the
@@ -68,6 +83,18 @@ cross-platform binaries. Before announcing a release:
      go install github.com/christopherdavenport/unblink/cmd/unblink@latest
    ```
    Keep every install snippet in the README lowercase-only.
+4. **Smoke-test the image**:
+   `docker run -i --rm ghcr.io/christopherdavenport/unblink:X.Y.Z --version`.
+5. **Check the registry**:
+   `curl "https://registry.modelcontextprotocol.io/v0/servers?search=unblink"`
+   should show the new version.
+6. `git pull` — the plugin-sync bot commit lands on `main` after goreleaser.
+
+One-time gotcha: the first-ever push to a new ghcr package creates it
+**private**, and the MCP registry validates images anonymously. Flip the
+package public at
+<https://github.com/users/ChristopherDavenport/packages/container/unblink/settings>
+(web UI only) and re-run the registry workflow if it timed out.
 
 ## Reporting security issues
 
