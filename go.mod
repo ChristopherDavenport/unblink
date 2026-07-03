@@ -11,7 +11,6 @@ require (
 	github.com/andybalholm/cascadia v1.3.4
 	github.com/dop251/goja v0.0.0-20260629171413-2a84ae0cf10d
 	github.com/dop251/goja_nodejs v0.0.0-20260212111938-1f56ff5bcf14
-	github.com/dslipak/pdf v0.0.2
 	github.com/evanw/esbuild v0.28.1
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/mmcdole/gofeed v1.3.0
@@ -47,5 +46,3 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )
-
-replace github.com/dslipak/pdf => ./third_party/pdf

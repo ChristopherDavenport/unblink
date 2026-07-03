@@ -3,6 +3,16 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## v0.17.1 — go install fix
+
+### Fixed
+
+- `go install github.com/christopherdavenport/unblink/cmd/unblink@latest`
+  works: the vendored PDF fork is now imported by its in-repo path
+  (`…/unblink/third_party/pdf`) instead of a `replace` directive, which
+  `go install <module>@version` refuses
+  ([ADR-0001](docs/decisions/0001-pdf-extraction-library.md), Amendment 2).
+
 ## v0.17.0 — Publication readiness (Phase 21)
 
 The pre-first-public-release pass: close the highest-frequency browser-API gaps,

@@ -47,8 +47,8 @@ doesn't stop the goroutine (the loop does no I/O and checks nothing) — a
 hostile PDF was a per-request CPU-burn DoS.
 
 Per ADR 0002 ("vendor only on failure"), the module is now vendored at
-`third_party/pdf` (wired by a `replace` directive; BSD-3 LICENSE retained)
-with three minimal patches, each marked "unblink patch":
+`third_party/pdf` (BSD-3 LICENSE retained) with three minimal patches, each
+marked "unblink patch":
 
 1. `page.go Page()` — a kids scan that neither descends nor returns ends the
    search, and descents are depth-bounded (cyclic page trees terminate).
@@ -61,12 +61,23 @@ with three minimal patches, each marked "unblink patch":
 independent of the caller's context, so any *future* unbounded loop caps a
 request's exposure even before the fuzzer finds it.
 
+## Amendment 2 (v0.17.1): in-repo import path, not a `replace` directive
+
+The vendoring was originally wired as `require github.com/dslipak/pdf` plus a
+`replace` directive pointing at `third_party/pdf`. That broke the front-door
+install path: `go install <module>@version` refuses any module whose `go.mod`
+contains `replace` directives (surfaced by the first public-release smoke
+test). The vendored copy is now a plain package of the unblink module —
+imported as `github.com/christopherdavenport/unblink/third_party/pdf`, no
+nested `go.mod`, no `require`/`replace` — which `go install` accepts.
+
 ## Consequences
 
 - Extraction quality stays at `rsc.io/pdf` level (no OCR, struggles with some
   encodings); acceptable for the manifest-fallback contract.
-- The vendored copy at `third_party/pdf` is the source of truth; the `go.mod`
-  `require` of `v0.0.2` remains for provenance but is overridden by `replace`.
-  Sync upstream changes manually and re-run `make fuzz` before adopting them.
+- The vendored copy at `third_party/pdf` is the source of truth, imported by
+  its in-repo path. To sync upstream: copy the upstream files over
+  `third_party/pdf`, re-apply the three "unblink patch" hunks, and re-run
+  `make fuzz` before adopting.
 - Revisit trigger: pdfcpu (or another maintained pure-Go library) shipping
   first-class text extraction.

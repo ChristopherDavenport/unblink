@@ -67,8 +67,10 @@ bench:
 membench: build
 	cd scripts/membench && go run . -root ../.. $(if $(CHROME),-chrome $(CHROME))
 
+# third_party/ carries vendored upstream code (ADR-0001) that is kept
+# byte-close to upstream for easy syncing — it is exempt from vet, not fixed.
 vet:
-	go vet ./...
+	go vet $$(go list ./... | grep -v /third_party/)
 
 fmt:
 	gofmt -w .
