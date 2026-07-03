@@ -23,8 +23,7 @@
         "run",
         "-i",
         "--rm",
-        "ghcr.io/christopherdavenport/unblink:0.18.0",
-        "--js"
+        "ghcr.io/christopherdavenport/unblink:0.18.0"
       ]
     }
   }
