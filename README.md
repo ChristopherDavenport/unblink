@@ -24,9 +24,12 @@ navigation, sessions, forms, structured data, site discovery, and search. The
 static read path turns most server-rendered pages into clean Markdown with zero
 JavaScript; the opt-in JavaScript engine (`--js`) renders mainstream SPA
 frameworks and powers live interactive sessions (`interact`). It ships as one
-static binary (~36 MB) with a ~25 MB idle footprint — roughly **15× lighter and
-15× faster to start than a headless Chromium** on identical pages
-([measured](docs/comparison.md#measured-footprint)). See
+static binary (~36 MB) with a ~26 MB idle footprint — measured head-to-head on
+identical pages, roughly **5× lighter idle and 10× faster to start than a
+headless Chromium**, and it reads a nav-heavy page for **~1% of the tokens** of
+a browser-tool accessibility snapshot
+([measured](docs/comparison.md#measured-head-to-head), against all four
+alternatives). See
 [docs/architecture.md](docs/architecture.md) for the full design (phases 0–21)
 and its non-goals, and [docs/comparison.md](docs/comparison.md) for how unblink
 compares to other AI web-browsing tools (Playwright MCP, Charlotte, Obscura,

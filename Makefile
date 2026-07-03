@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval fuzz bench membench vet lint fmt tidy clean
+.PHONY: all build run version test eval fuzz bench membench crossbench vet lint fmt tidy clean
 
 all: build
 
@@ -66,6 +66,14 @@ bench:
 # root ./... targets above.
 membench: build
 	cd scripts/membench && go run . -root ../.. $(if $(CHROME),-chrome $(CHROME))
+
+# crossbench is membench across every AI web-tool in docs/comparison.md:
+# unblink, the raw-Chromium baseline, Playwright MCP + Charlotte (fetched via
+# npx at pinned versions — needs Node >= 20), and Obscura + Lightpanda (external
+# binaries; see scripts/membench/README.md for install + env vars). Tools that
+# aren't installed are skipped with a note. Narrow with TOOLS=name,name.
+crossbench: build
+	cd scripts/membench && go run . -root ../.. -tools $(or $(TOOLS),all) $(if $(CHROME),-chrome $(CHROME)) $(ARGS)
 
 # third_party/ carries vendored upstream code (ADR-0001) that is kept
 # byte-close to upstream for easy syncing — it is exempt from vet, not fixed.

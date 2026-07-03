@@ -8,31 +8,55 @@ import (
 	"path/filepath"
 )
 
-// fixture is one page both engines render, for an apples-to-apples footprint.
+// fixture is one page every engine processes, for an apples-to-apples corpus.
 type fixture struct {
-	name string
-	path string // URL path
-	html string
+	name     string
+	path     string // URL path
+	html     string
+	sentinel string // body-content substring every counted read output must contain
+	title    string // page title, the bar an orientation output must clear
+	// endSentinel is document-tail content a counted read-full output must
+	// also contain — read-full promises the whole document, and a tool that
+	// hard-truncates would otherwise score its cap as token efficiency
+	// (Obscura's browser_snapshot cuts at ~4 KB with the top-of-page sentinel
+	// intact). Empty = no tail check.
+	endSentinel string
+	// tokenOnly fixtures feed only the token pass — the footprint/latency
+	// passes keep the original 4-fixture corpus so published numbers stay
+	// comparable across runs.
+	tokenOnly bool
 }
 
-// fixtures builds the corpus: real framework SPAs (bundles from
-// testdata/frameworks, served locally) plus a static article. root is the repo
-// root so the vendored bundles resolve.
-func fixtures() []fixture {
+// renderFixtures is the original 4-fixture corpus for the footprint and
+// latency passes: real framework SPAs (bundles from testdata/frameworks,
+// served locally) plus a static article.
+func renderFixtures() []fixture {
 	return []fixture{
-		{"static-article", "/static", staticArticle},
-		{"react", "/react", reactApp},
-		{"vue", "/vue", vueApp},
-		{"lit", "/lit", litApp},
+		{name: "static-article", path: "/static", html: staticArticle, sentinel: "spins up a rendering pipeline", title: "Static Article"},
+		{name: "react", path: "/react", html: reactApp, sentinel: "React Rendered", title: "React"},
+		{name: "vue", path: "/vue", html: vueApp, sentinel: "Vue Rendered", title: "Vue"},
+		{name: "lit", path: "/lit", html: litApp, sentinel: "Lit Rendered", title: "Lit"},
 	}
+}
+
+// allFixtures is the full corpus: the render fixtures plus the token-pass
+// pages (nav-heavy portals and a long article, loaded from eval/corpus or
+// generated). root is the repo root.
+func allFixtures(root string) ([]fixture, error) {
+	fx := renderFixtures()
+	tok, err := tokenFixtures(root)
+	if err != nil {
+		return nil, err
+	}
+	return append(fx, tok...), nil
 }
 
 // serveFixtures starts an httptest server that serves each fixture page and the
 // vendored framework bundles from testdata/frameworks. Returns the base URL.
-func serveFixtures(root string) (*httptest.Server, error) {
+func serveFixtures(root string, fx []fixture) (*httptest.Server, error) {
 	fxDir := filepath.Join(root, "testdata", "frameworks")
 	mux := http.NewServeMux()
-	for _, f := range fixtures() {
+	for _, f := range fx {
 		html := f.html
 		mux.HandleFunc(f.path, func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")

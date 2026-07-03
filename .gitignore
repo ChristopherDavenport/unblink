@@ -11,3 +11,8 @@
 # Go test artifacts
 *.out
 *.test
+
+# membench run artifacts (Playwright MCP writes snapshot files beside its cwd;
+# `go build` in the nested module drops a binary)
+/scripts/membench/.playwright-mcp/
+/scripts/membench/membench

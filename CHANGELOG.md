@@ -7,6 +7,20 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Added
 
+- **Cross-tool benchmark harness** (`make crossbench`): `scripts/membench`
+  generalized from a chromedp-only baseline into a generic stdio MCP client +
+  per-tool adapters that measure every tool in `docs/comparison.md` — unblink,
+  raw headless Chromium, Playwright MCP, Charlotte (npx, pinned versions), and
+  Obscura/Lightpanda (external binaries, skipped with a note when absent) — on
+  identical local fixtures. New metric family: **token cost per task**
+  (`read-article` / `read-full` / `orient`), counted with an offline
+  o200k_base BPE tokenizer, bytes alongside, every output sentinel-validated
+  so an error can never score as token efficiency — and whole-document reads
+  tail-verified, so a silent truncation can't either (this caught Obscura's
+  ~4 KB snapshot cap). Plus `-probe` (dump a
+  server's tool list), `-selfcheck` (directional sanity assertions),
+  `-dump-dir`, `-debug-mem`, and a generated provenance header.
+  `docs/comparison.md`'s measured sections are now produced by this harness.
 - **golangci-lint** as the linter (`.golangci.yml`, `make lint`, CI step):
   default linter set, errcheck relaxed for idiomatic `Close` and test HTTP
   handlers, `third_party/` exempt. Its first run removed one piece of dead

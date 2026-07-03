@@ -30,6 +30,7 @@ type perfResult struct {
 	seqPPS   float64            // sequential throughput, pages/sec
 	concPPS  float64            // throughput at N-concurrency, pages/sec
 	concN    int
+	concNA   bool // concurrency not meaningful for this tool (single browsing context)
 	note     string
 }
 
@@ -47,31 +48,37 @@ func median(ds []time.Duration) time.Duration {
 	return s[len(s)/2]
 }
 
-// measurePerfUnblink times per-fixture renders (median of iters) and sequential
-// + concurrent throughput, against an already-started process.
-func measurePerfUnblink(u *unblinkProc, fx []fixture, urls []string, iters, concurrency int) perfResult {
-	p := perfResult{engine: "unblink", medianMS: map[string]float64{}, concN: concurrency}
+// measurePerfMCP times per-fixture renders (median of iters) and sequential +
+// concurrent throughput, against an already-started MCP tool.
+func measurePerfMCP(a adapter, mp *mcpProc, fx []fixture, urls []string, iters, concurrency int) perfResult {
+	p := perfResult{engine: a.name(), medianMS: map[string]float64{}, concN: concurrency}
 	for i, f := range fx {
 		p.fixtures = append(p.fixtures, f.name)
 		var ds []time.Duration
 		for k := 0; k < iters; k++ {
-			d, err := u.readTimed(bust(urls[i], "mb", k))
-			if err != nil {
+			t0 := time.Now()
+			if _, err := a.render(mp, bust(urls[i], "mb", k)); err != nil {
 				continue
 			}
-			ds = append(ds, d)
+			ds = append(ds, time.Since(t0))
 		}
 		p.medianMS[f.name] = float64(median(ds).Microseconds()) / 1000
 	}
-	p.seqPPS = seqThroughput(func(url string) { _ = u.read(url) }, urls, iters)
-	// Concurrent: pipeline concurrency*iters cache-missing reads, divide by wall time.
+	p.seqPPS = seqThroughput(func(url string) { _, _ = a.render(mp, url) }, urls, iters)
+	// Concurrent: pipeline concurrency*iters cache-missing reads, divide by wall
+	// time — only where the server actually dispatches requests concurrently.
+	pl, ok := a.(pipeliner)
+	if !ok || !a.concurrentOK() {
+		p.concNA = true
+		return p
+	}
 	total := concurrency * iters
 	big := make([]string, total)
 	for i := range big {
 		big[i] = bust(urls[i%len(urls)], "cc", i)
 	}
 	t0 := time.Now()
-	if err := u.readConcurrent(big, total); err == nil {
+	if err := pl.pipelineRender(mp, big); err == nil {
 		p.concPPS = float64(total) / time.Since(t0).Seconds()
 	}
 	return p
@@ -132,17 +139,53 @@ func printPerfTable(rs []perfResult) {
 	fmt.Println()
 	fmt.Println("| Metric | " + perfHeaders(rs) + " |")
 	fmt.Println("|---|" + perfSep(rs))
-	for _, name := range rs[0].fixtures {
+	for _, name := range fixtureNames(rs) {
 		fmt.Printf("| %s (median render) | %s |\n", name, perfRow(rs, func(p perfResult) string {
-			return fmt.Sprintf("%.0f ms", p.medianMS[name])
+			ms, ok := p.medianMS[name]
+			if !ok || ms == 0 {
+				return "fail"
+			}
+			return fmt.Sprintf("%.0f ms", ms)
 		}))
 	}
 	fmt.Printf("| Throughput, sequential | %s |\n", perfRow(rs, func(p perfResult) string {
+		if p.seqPPS == 0 {
+			return "fail"
+		}
 		return fmt.Sprintf("%.0f pages/s", p.seqPPS)
 	}))
 	fmt.Printf("| Throughput, %d concurrent | %s |\n", rs[0].concN, perfRow(rs, func(p perfResult) string {
+		if p.concNA {
+			return "n/a¹"
+		}
+		if p.concPPS == 0 {
+			return "fail"
+		}
 		return fmt.Sprintf("%.0f pages/s", p.concPPS)
 	}))
+	for _, r := range rs {
+		if r.concNA {
+			fmt.Println("\n¹ single browsing context — pipelined navigations would corrupt each other, so concurrency is not meaningful.")
+			break
+		}
+	}
+	for _, r := range rs {
+		if r.note != "" {
+			fmt.Printf("_%s: %s_\n", r.engine, r.note)
+		}
+	}
+}
+
+// fixtureNames returns the longest fixture list among the results (a tool that
+// failed at launch has none).
+func fixtureNames(rs []perfResult) []string {
+	var out []string
+	for _, r := range rs {
+		if len(r.fixtures) > len(out) {
+			out = r.fixtures
+		}
+	}
+	return out
 }
 
 func perfHeaders(rs []perfResult) string {
