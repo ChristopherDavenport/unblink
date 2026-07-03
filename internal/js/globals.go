@@ -591,11 +591,11 @@ const preludeJS = `
 
   // Minimal crypto: getRandomValues + randomUUID, which uuid/nanoid/react-aria's
   // useId need at import/registration time (their absence throws and breaks
-  // hydration). Backed by Math.random — NOT cryptographic, but these consumers only
-  // need collision-resistant ids and unblink is a read-only content extractor, not a
-  // security context. Assigning to a typed-array element auto-masks to its byte
-  // width, so one loop covers Uint8/16/32. crypto.subtle is left undefined so
-  // libraries feature-detect and fall back rather than hit a half-working stub.
+  // hydration). This Math.random baseline is REPLACED at prelude_api time by a
+  // crypto/rand-backed getRandomValues (and crypto.subtle is installed there,
+  // Go-backed — ADR 0006) whenever the __unblinkRandomBytes native is present; it
+  // stays as the fallback for the rare no-native path. Assigning to a typed-array
+  // element auto-masks to its byte width, so one loop covers Uint8/16/32.
   if (!window.crypto) window.crypto = {};
   if (!window.crypto.getRandomValues) {
     window.crypto.getRandomValues = function (arr) {

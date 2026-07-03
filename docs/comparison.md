@@ -32,7 +32,7 @@ explicit about both directions.
 | | **unblink** | **Playwright MCP** | **Charlotte** | **Obscura** | **Lightpanda** |
 |---|---|---|---|---|---|
 | Engine | Pure Go, hand-rolled DOM (no browser engine) | Real Chrome / Firefox / WebKit / Edge | Real headless Chromium (Puppeteer/CDP) | From-scratch engine in Rust | From-scratch engine in Zig |
-| JavaScript | goja (Go interpreter), opt-in `--js`; renders React/Vue/Preact/Svelte/Lit via a flat-DOM model | Full (real browser) | Full (real Chromium) | Embedded V8 (our React/Vue fixtures render; the Lit one came back empty) | Embedded V8; beta — "hundreds of Web APIs" unimplemented (though it rendered all four of our fixtures) |
+| JavaScript | goja (Go interpreter), on by default (`--disable-js` opts out); renders React/Vue/Preact/Svelte/Lit via a flat-DOM model + a broad Web API surface (real `fetch`/Streams/`FileReader`/`crypto.subtle`; inert-but-non-throwing canvas-2D/Web Audio/WebRTC/`indexedDB`/media stubs) so pages rarely crash at boot | Full (real browser) | Full (real Chromium) | Embedded V8 (our React/Vue fixtures render; the Lit one came back empty) | Embedded V8; beta — "hundreds of Web APIs" unimplemented (though it rendered all four of our fixtures) |
 | Agent protocol | MCP (stdio), 14 tools | MCP (Node), 50+ tools | MCP (Node ≥ 20), 43 tools in profiles (7/23/43) | CDP (Puppeteer/Playwright drop-in) + MCP (11 tools) | CDP (WebSocket) + MCP (stdio) + CLI agent mode |
 | Page representation | Reduced Markdown (article or full page) + structured tools (outline, links, forms, JSON-LD/tables) | Accessibility-tree snapshots | Typed page decomposition, 3 detail levels, targeted `find` queries | DOM automation primitives (navigate/click/fill/evaluate) | DOM automation primitives; some semantic extraction |
 | Screenshots / pixels | No — permanent non-goal | Yes, plus video, tracing, PDF export | Yes (real Chromium) | Not a focus | No — no graphical rendering |
@@ -189,12 +189,20 @@ decision drives everything distinctive about it, good and bad.
 
 **What it forfeits:**
 
-- **JS compatibility has a ceiling.** goja is not V8. The flat-DOM model
-  renders mainstream React/Vue/Preact/Svelte/Lit apps — including an
-  encapsulating, composed Shadow DOM (slot distribution + cross-boundary events,
-  Phase 23) — but layout/geometry are constant stubs, and canvas/WebGL, Workers,
-  WebSocket, and Shadow-DOM *style scoping* (`:host`/`::slotted`/`::part`) are
-  permanent non-goals. Pages whose content depends on those won't fully materialize.
+- **JS compatibility has a ceiling — but a higher one than you'd expect.** goja
+  is not V8, yet the flat-DOM model renders mainstream React/Vue/Preact/Svelte/Lit
+  apps — including an encapsulating, composed Shadow DOM (slot distribution +
+  cross-boundary events, Phase 23) — and the broad Web API surface (Phases 24–26)
+  is present, so pages rarely crash at boot: `fetch`/Streams/`FileReader`, a real
+  `crypto.subtle` (digest/HMAC/AES/PBKDF2, backed by Go's `crypto`), an in-memory
+  `indexedDB`, and inert-but-non-throwing stubs for canvas-2D, Web Audio, WebRTC,
+  media playback, and the device APIs. What stays forfeit is anything that needs
+  **pixels or a second thread**: real layout/geometry (`getBoundingClientRect` and
+  friends are zeros), canvas/WebGL/WebGPU *rendering* (the 2D context accepts every
+  call and draws nothing), real Workers / WebSocket / persistent storage, and
+  Shadow-DOM *style scoping* (`:host`/`::slotted`/`::part`). A page whose *content*
+  lives in those — a WebGL globe, a canvas-only chart — still won't materialize; a
+  page that merely *touches* them during boot now renders fine.
 - **No pixels, ever.** No screenshots, no visual verification, no "does this
   look right" — by design.
 - **An anti-bot ceiling.** `--tls-mimic` gets past naive fingerprint checks

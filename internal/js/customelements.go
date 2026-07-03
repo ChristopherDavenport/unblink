@@ -255,6 +255,27 @@ func (b *bridge) invokeAttrChanged(o *goja.Object, name string, oldVal, newVal g
 	}
 }
 
+// disconnectTree fires disconnectedCallback for every upgraded custom element in
+// a removed subtree that had connectedCallback delivered, and clears its connected
+// flag so a later re-insertion (scan) fires connectedCallback again. Called from
+// onMutate on every childList removal.
+func (b *bridge) disconnectTree(root *html.Node) {
+	if root == nil {
+		return
+	}
+	var walk func(*html.Node)
+	walk = func(nd *html.Node) {
+		if nd.Type == html.ElementNode && b.upgraded[nd] && b.connectedNotified[nd] {
+			b.connectedNotified[nd] = false
+			b.invokeLifecycle(nd, "disconnectedCallback")
+		}
+		for c := nd.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(root)
+}
+
 func (b *bridge) invokeLifecycle(n *html.Node, name string) {
 	o, ok := b.wrap(n).(*goja.Object)
 	if !ok {

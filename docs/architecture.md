@@ -592,6 +592,59 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   - **Closed mode**: `.shadowRoot` is `null` for a closed root, but its content is
     still composed into extraction output (mission: see everything).
 
+- **Phase 24 — Web API tier-1 misses (see `docs/web-api-priorities.md`).** ✅ Closes the
+  eight highest-frequency browser-API gaps that crash hydration on real/common sites, each
+  by the cheapest treatment that lets content materialize (the FULL / STUB / leave-undefined
+  rubric in the priorities doc). All in `internal/js/prelude_api.go` except the element gaps
+  (`proto.go`/`domapi.go`): **FULL** — `CSS.escape`/`supports` (WHATWG identifier escape),
+  `FileReader` and `ReadableStream`/`WritableStream`/`TransformStream` over the existing
+  `Blob.__bytes` plumbing, and `Element` `lastElementChild`/`getAttributeNode`/`namespaceURI`.
+  **STUB** (boot-survival, not the feature) — an inert `canvas.getContext('2d')` on the shared
+  `HTMLElement.prototype` (instances don't carry `HTMLCanvasElement.prototype`), an in-memory
+  non-persistent `indexedDB`, `EventSource` (error→closed, like `WebSocket`), and the
+  `navigator` `serviceWorker`/`clipboard`/`permissions`/`geolocation`/`mediaDevices` surfaces
+  (`serviceWorker.ready` resolves so `await` never hangs). The async ones honor the ADR 0004
+  settle audit by routing completions through the **wrapped** `window.setTimeout` (indexedDB
+  runs its data op synchronously and defers only the success event, so operation order is
+  race-free) or a microtask (Streams). Regression nets: `internal/js/webapi_tier1_test.go`
+  (each async API's content is written only from its completion, so a broken settle route
+  fails the test) and the extended `js-api-smoke` eval case (markers `api-11`…`api-17`).
+
+- **Phase 25 — Web API tier-2 (see `docs/web-api-priorities.md`).** ✅ The situational
+  cluster, once Tier 1 shipped. All in `internal/js/prelude_api.go` except the custom-element
+  lifecycle hook (`mutationobserver.go`/`customelements.go`): **FULL** — `DOMMatrix`/`DOMPoint`/
+  `DOMRect`/`DOMQuad`/`Path2D` (real pure-JS matrix math), `TextEncoderStream`/`TextDecoderStream`
+  (over the Phase-24 Streams), and `disconnectedCallback` (fired from a new `onMutate`→
+  `disconnectTree` removal hook). **STUB** — `document.fonts`/`FontFace` (`ready` resolves),
+  `Element.animate`/`Animation`/`KeyframeEffect` (finished animation, `onfinish` via the wrapped
+  timer), `attachInternals`/`ElementInternals`, the Navigation API (`navigate` fires a `navigate`
+  event whose `intercept({handler})` runs the router's view update; same-document only),
+  `cookieStore` (over `document.cookie`), and `reportError`. Regression nets:
+  `internal/js/webapi_tier2_test.go` + `js-api-smoke` markers `api-18`…`api-25`. Also **broad
+  `crypto.subtle`** (ADR 0006, `internal/js/subtle.go`): Go byte-primitives (`crypto/*` +
+  `crypto/rand`) under a JS WebCrypto model — digest, HMAC, AES-GCM/CBC/CTR, PBKDF2/HKDF, and
+  symmetric key gen/import/export; RSA/ECDSA reject (never a sync throw), and `getRandomValues`
+  is re-pointed at `crypto/rand`. **Held open**: the full-WHATWG `URL` upgrade (only on a
+  demonstrated break). **Deferred**: `adoptedCallback` (cross-document adoption) and
+  `CompressionStream` (needs a Go codec).
+
+- **Phase 26 — Tier 3 crash-avoidance stubs (see `docs/web-api-priorities.md`).** ✅ Flips the
+  niche surface from "leave undefined until a page crashes" to **proactive inert stubs**, all in
+  `preludeAPIJS`. None of these gate textual content, but a page touching one unconditionally at
+  boot (`video.play()`, `new AudioContext()`, `new Notification()`, a WebGPU/WebRTC probe) would
+  abort hydration without them. Every stub is inert — construction/access never throws, promises
+  resolve empty or reject *catchably*, no device/media work happens: media playback + the full
+  Web Audio node graph + `MediaSource`; the `navigator` device family (`bluetooth`/`usb`/`serial`/
+  `hid`/`xr`/`gpu`/`getGamepads`/`getBattery`/`requestMIDIAccess`/`wakeLock`/`locks`/`credentials`/
+  `share`/…); niche constructors (`RTCPeerConnection`, `PaymentRequest`, Web Speech, the sensor
+  family, `Notification` at `permission:'denied'`, `WebTransport`, `BarcodeDetector`, `EyeDropper`,
+  `IdleDetector`, `CloseWatcher`, `ToggleEvent`); and element/document interaction (Popover,
+  Fullscreen, Picture-in-Picture, Pointer Lock, background sync/push on the serviceWorker
+  registration, and **View Transitions** — `document.startViewTransition` runs the update callback
+  synchronously so a router's new view materializes). Regression nets:
+  `internal/js/webapi_tier3_test.go` + `js-api-smoke` markers `api-26`/`api-27`. **Still not
+  stubbed** (reactive): EME, Web NFC, File System Access, and the Privacy Sandbox proposals.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

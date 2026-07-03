@@ -366,6 +366,10 @@ func (b *bridge) installElementProto() {
 
 	b.protoGetter(p, "tagName", func(n *html.Node) goja.Value { return vm.ToValue(strings.ToUpper(n.Data)) })
 	b.protoGetter(p, "localName", func(n *html.Node) goja.Value { return vm.ToValue(n.Data) })
+	// namespaceURI is the reverse of namespaceFor (label -> URI); default HTML.
+	// prefix is always null — unblink parses no namespace-prefixed foreign markup.
+	b.protoGetter(p, "namespaceURI", func(n *html.Node) goja.Value { return vm.ToValue(namespaceURIFor(n.Namespace)) })
+	b.protoGetter(p, "prefix", func(n *html.Node) goja.Value { return goja.Null() })
 
 	b.protoProp(p, "id",
 		func(n *html.Node) goja.Value { return vm.ToValue(getAttr(n, "id")) },
@@ -385,6 +389,14 @@ func (b *bridge) installElementProto() {
 	b.protoGetter(p, "children", func(n *html.Node) goja.Value { return b.nodeList(childElements(n)) })
 	b.protoGetter(p, "firstElementChild", func(n *html.Node) goja.Value {
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if c.Type == html.ElementNode {
+				return b.wrap(c)
+			}
+		}
+		return goja.Null()
+	})
+	b.protoGetter(p, "lastElementChild", func(n *html.Node) goja.Value {
+		for c := n.LastChild; c != nil; c = c.PrevSibling {
 			if c.Type == html.ElementNode {
 				return b.wrap(c)
 			}
@@ -442,6 +454,16 @@ func (b *bridge) installElementProto() {
 		return vm.ToValue(on)
 	})
 	b.protoGetter(p, "attributes", func(n *html.Node) goja.Value { return b.namedNodeMap(n) })
+	b.protoMethod(p, "getAttributeNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		name := call.Argument(0).String()
+		if !hasAttr(n, name) {
+			return goja.Null()
+		}
+		it := vm.NewObject()
+		_ = it.Set("name", name)
+		_ = it.Set("value", getAttr(n, name))
+		return it
+	})
 
 	b.protoMethod(p, "querySelector", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		return b.wrap(query(n, call.Argument(0).String()))
