@@ -51,10 +51,15 @@ const (
 	// 256-session cap — far too much memory. LRU runtimes are torn down (the session
 	// keeps its page; a later interact reopens).
 	DefaultJSMaxLive = 16
-	DefaultJSPrewarm = js.DefaultMaxConcurrent
-	DefaultRateRPS   = 5.0 // per-host requests/sec (0 disables)
-	DefaultRateBurst = 10
-	DefaultRetries   = fetch.DefaultRetries
+	// DefaultJSMemLimit caps the Go heap running page JS may grow before every
+	// live runtime is interrupted (ADR-0003). 1 GiB is generous for legitimate
+	// SPA hydration while containing an allocation-bomb page; --js-memory-limit
+	// tunes it, 0 disables.
+	DefaultJSMemLimit = 1024 * 1024 * 1024
+	DefaultJSPrewarm  = js.DefaultMaxConcurrent
+	DefaultRateRPS    = 5.0 // per-host requests/sec (0 disables)
+	DefaultRateBurst  = 10
+	DefaultRetries    = fetch.DefaultRetries
 )
 
 // Renderer executes a page's scripts against its DOM, mutating doc in place. env
@@ -111,6 +116,7 @@ type options struct {
 	jsTimeout      time.Duration
 	jsPrewarm      int
 	jsMaxLive      int
+	jsMemLimit     uint64
 	jsAssetCache   bool
 	rateRPS        float64
 	rateBurst      int
@@ -169,6 +175,11 @@ func WithJSAllowPrivate(allow bool) Option { return func(o *options) { o.jsAllow
 // session and page survive — the next interact reopens it). 0 keeps the default.
 func WithJSMaxLive(n int) Option { return func(o *options) { o.jsMaxLive = n } }
 
+// WithJSMemoryLimit caps the Go heap running page JS may grow before every live
+// runtime is interrupted (ADR-0003). 0 disables the guard. Negative is treated
+// as 0 by the flag layer.
+func WithJSMemoryLimit(bytes uint64) Option { return func(o *options) { o.jsMemLimit = bytes } }
+
 // WithJSAssetCache enables/disables the cross-render cache of page-JS asset
 // downloads (external scripts, module sources) and esbuild bundle outputs,
 // TTL'd to the page cache's 60s (default enabled — the same staleness posture
@@ -215,7 +226,7 @@ func WithSafeOutput(enabled bool) Option { return func(o *options) { o.safeOutpu
 func New(opts ...Option) (*Browser, error) {
 	o := options{
 		jsNetwork: true, jsMaxRequests: DefaultJSMaxRequests, jsTimeout: DefaultJSTimeout,
-		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive, jsAssetCache: true,
+		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive, jsMemLimit: DefaultJSMemLimit, jsAssetCache: true,
 		rateRPS: DefaultRateRPS, rateBurst: DefaultRateBurst, retries: DefaultRetries,
 		siteHints: true, safeOutput: true,
 	}
@@ -225,7 +236,7 @@ func New(opts ...Option) (*Browser, error) {
 	if o.renderer == nil && o.js {
 		// navigator.webdriver is true (honest) by default; --tls-mimic is the
 		// operator's opt-in to fingerprint parity, so it extends to the JS env.
-		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic)}
+		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic), js.WithMemoryLimit(o.jsMemLimit)}
 		if o.jsAssetCache {
 			jsOpts = append(jsOpts, js.WithAssetCache(DefaultCacheTTL))
 		}
@@ -634,6 +645,7 @@ func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 		NetPending:        diag.NetPending,
 		DeadlineHit:       diag.DeadlineHit,
 		DOMBusy:           diag.DOMBusy,
+		TimersPending:     diag.TimersPending,
 		SetupDur:          diag.SetupDur,
 		ExecDur:           diag.ExecDur,
 		SettleDur:         diag.SettleDur,
@@ -713,6 +725,7 @@ type ReadResult struct {
 	NetDenied       int  `json:"net_denied,omitempty"`
 	RenderBudgetHit bool `json:"render_budget_hit,omitempty"`
 	DOMBusy         bool `json:"dom_busy,omitempty"`
+	TimersPending   int  `json:"timers_pending,omitempty"`
 
 	// ImageBytes/ImageMIME carry the raw image for the MCP layer to base64-encode,
 	// set only when the page is an image and the request asked for include_bytes.
@@ -862,6 +875,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		res.NetDenied = d.NetDenied
 		res.RenderBudgetHit = d.DeadlineHit
 		res.DOMBusy = d.DOMBusy
+		res.TimersPending = d.TimersPending
 	}
 	if req.IncludeBytes && pc.Kind == page.KindImage {
 		res.ImageBytes = pc.Raw
@@ -1262,7 +1276,7 @@ type InteractResult struct {
 // state — listeners, timers, variables, fetched data — survives across calls; there
 // is no replay. Requires WithJS; the flat-DOM model lets frameworks hydrate, so the
 // handlers they attach fire on dispatch. Never navigates.
-func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, value string) (*InteractResult, error) {
+func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, value, key string) (*InteractResult, error) {
 	if b.liveEngine == nil {
 		return nil, errf(ErrJSRequired, "interact requires JavaScript; start the server with --js")
 	}
@@ -1295,7 +1309,7 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 	// under-report). A freshly opened runtime replays scripts before v0 is
 	// read, so first-interact bracketing still covers only the dispatch.
 	v0, v0err := lc.DOMVersion(ctx)
-	res, err := lc.Dispatch(ctx, js.Action{Selector: selector, Type: event, Value: value})
+	res, err := lc.Dispatch(ctx, js.Action{Selector: selector, Type: event, Value: value, Key: key})
 	if err != nil {
 		return nil, err
 	}

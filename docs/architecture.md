@@ -462,13 +462,61 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     documented commands now). reduce/emit test tables broadened (hidden-strip
     variant matrix, article-vs-fallback source reporting, outline/markdown).
 
+- **Phase 21 — Publication readiness.** ✅ The pre-first-public-release pass:
+  close the highest-frequency browser-API gaps, bound the last unbounded
+  resource, gate the failure modes, and back the footprint pitch with numbers.
+  - **Browser API tier-1** (`internal/js/prelude_api.go`, a second compiled
+    prelude run after `preludeJS` in both the one-shot and live paths):
+    `TextEncoder`/`TextDecoder` (pure-JS UTF-8), `atob`/`btoa`, `performance`;
+    a truthful **constant viewport** (1280×720@1x — `innerWidth`/`screen`/
+    `devicePixelRatio`/`visualViewport`) and a real `matchMedia` evaluator;
+    the fetch-ecosystem classes (`Headers`/`Request`/`Response`/`Blob`/`File`/
+    `FormData`) with a real `Response` and FormData→multipart bodies (serialized
+    in JS, ArrayBuffer transport — `__unblinkFetch`'s signature is untouched);
+    `postMessage` + functional `MessageChannel`; `DOMParser` (Go-side, sharing
+    the refactored `documentFacade` with `createHTMLDocument`)/`XMLSerializer`/
+    `Range`; constructable `CSSStyleSheet` + `Document.prototype.adoptedStyleSheets`
+    (Lit's feature-detect); `WeakRef`/`FinalizationRegistry` strong-ref shims and
+    an `Intl` crash-avoidance shim; `document.title` setter + `URL`/`referrer`/
+    `currentScript`/`getElementsByName`; a fuller `navigator`.
+  - **`navigator.webdriver` is `true` by default** — unblink *is* automation and
+    the UA string already carries "unblink", so honesty is the default; the
+    operator's `--tls-mimic` opt-in (fingerprint parity) flips it to `false` via
+    `js.WithWebdriver`. Recording the decision here so it isn't relitigated: the
+    one dishonest field belongs behind the same opt-in as the rest of the
+    anti-bot persona, not in the default posture.
+  - **`interact` keyboard support**: `keydown`/`keyup`/`keypress` dispatch a real
+    `KeyboardEvent` (`internal/js/keys.go` + `events.go newKeyEvent`) via a new
+    optional `key` param; `keydown` fires the full keydown→input→keypress→keyup
+    sequence and submits an enclosing form on `Enter` (unless canceled).
+  - **JS memory guard** (`internal/js/memguard.go`, `--js-memory-limit`): a
+    process-heap watchdog interrupts every live runtime over the limit — the last
+    unbounded resource under the untrusted-JS threat model. Process-level, not
+    per-runtime, because goja has no heap accounting; see ADR 0003.
+  - **Timer clamp + `timers_pending`**: a one-shot `setTimeout` past the render
+    budget is clamped to fire in-budget (intervals never clamped) and the settle
+    poll holds open until it does, so deferred content lands instead of silently
+    vanishing; timers still pending at snapshot surface as `timers_pending`.
+  - **Eval grew 40 → 47 must-pass cases**: starved-render diagnostics,
+    `net_denied`, keydown search, Svelte + Lit render, a tier-1 API smoke page.
+  - **Measured footprint**: `scripts/membench` (a separate module with chromedp,
+    invisible to the root `./...`) benchmarks unblink vs. headless Chromium on
+    identical fixtures; `docs/comparison.md` carries the numbers (≈15× lighter and
+    faster to start). ADR 0003 added; README gains an MCP-client-config section, a
+    flags table, `SECURITY.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
-canvas/WebGL, Workers/WebSocket/IndexedDB. Geometry and CSSOM are **honest constant
-stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle` return zeros/empty so
-framework probes don't crash; no pixels are ever computed. Shadow DOM is **flattened,
-not encapsulated**: shadow content renders into the light tree (visible to extraction)
-and `:host`/`<slot>`/style scoping are ignored. `IntersectionObserver`/`ResizeObserver`
-report one synthetic "visible / zero-size" entry so lazy content renders.
+canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
+**honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`
+return zeros/empty so framework probes don't crash; no pixels are ever computed.
+The **viewport environment**, by contrast, is now a truthful constant (Phase 21):
+`window.innerWidth`/`screen`/`devicePixelRatio` report a fixed 1280×720@1x desktop
+and `matchMedia` genuinely evaluates queries against it, so responsive code takes
+its real branch instead of the always-false fallback. Shadow DOM is **flattened,
+not encapsulated**: shadow content renders into the light tree (visible to
+extraction) and `:host`/`<slot>`/style scoping are ignored.
+`IntersectionObserver`/`ResizeObserver` report one synthetic "visible / zero-size"
+entry so lazy content renders.
 
 **Programmatic form submission** (`internal/js/forms.go`): `document.forms`,
 `form.elements`, `.namedItem`, and `form.submit()`/`requestSubmit()` are modelled.

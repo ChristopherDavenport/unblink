@@ -1,6 +1,10 @@
 package js
 
-import "golang.org/x/net/html"
+import (
+	"strings"
+
+	"golang.org/x/net/html"
+)
 
 // Action is one synthetic DOM interaction the engine replays after the page's own
 // scripts and lifecycle events have run, so delegated or just-attached listeners
@@ -10,8 +14,9 @@ import "golang.org/x/net/html"
 // resolved to a node during replay.
 type Action struct {
 	Selector string // CSS selector (cascadia)
-	Type     string // "click" (default), "input", "change", "keydown", "submit"
+	Type     string // "click" (default), "input", "change", "keydown", "keyup", "keypress", "submit"
 	Value    string // optional; written to an input/textarea before dispatch
+	Key      string // optional key for keydown/keyup/keypress (e.g. "Enter", "ArrowDown", "a"); defaults to Enter
 	Matched  bool   // engine-filled output: did Selector resolve during replay?
 
 	// WaitFor/WaitText, when set, hold the post-dispatch settle open until the
@@ -69,11 +74,85 @@ func (b *bridge) runActions(actions []Action) {
 			b.dispatchHover(n)
 		case "focus":
 			b.focusNode(n)
+		case "keydown", "keyup", "keypress":
+			b.dispatchKey(n, typ, a.Key)
 		default:
 			bubbles, cancelable := eventShape(typ)
 			b.dispatchOnNode(n, b.newEvent(typ, bubbles, cancelable, b.wrap(n)))
 		}
 	}
+}
+
+// dispatchKey replays a keyboard interaction on n. For event=keydown it fires the
+// full browser sequence — keydown → (for a printable key: append the character to
+// the control's value and fire input) → keypress → keyup — so search-as-you-type,
+// arrow-key menus, and Escape-to-close widgets activate. Enter on a control inside
+// a <form> triggers implicit form submission (unless a handler preventDefault'd the
+// keydown/keypress), matching a real browser. keyup/keypress requested explicitly
+// dispatch just that one event.
+func (b *bridge) dispatchKey(n *html.Node, typ, key string) {
+	info := resolveKey(key)
+	if typ != "keydown" {
+		b.dispatchOnNode(n, b.newKeyEvent(typ, info, true, true, b.wrap(n)))
+		return
+	}
+
+	downOK := b.dispatchOnNode(n, b.newKeyEvent("keydown", info, true, true, b.wrap(n)))
+	pressOK := true
+	if info.printable && downOK {
+		// A printable keydown that wasn't canceled types the character: append to
+		// the control value and fire a real input event before keypress/keyup.
+		if isTextEntry(n) {
+			b.setControlValue(n, controlText(n)+info.char)
+			b.dispatchOnNode(n, b.newEvent("input", true, false, b.wrap(n)))
+		}
+	}
+	if info.printable || info.key == "Enter" {
+		pressOK = b.dispatchOnNode(n, b.newKeyEvent("keypress", info, true, true, b.wrap(n)))
+	}
+	b.dispatchOnNode(n, b.newKeyEvent("keyup", info, true, true, b.wrap(n)))
+
+	// Implicit form submission: Enter on a control in a form submits it unless a
+	// handler canceled the keydown or keypress.
+	if info.key == "Enter" && downOK && pressOK {
+		if form := ancestorForm(n); form != nil {
+			b.submitForm(form, true)
+		}
+	}
+}
+
+// isTextEntry reports whether n is a control that accepts typed character input
+// (so a printable keydown appends to its value).
+func isTextEntry(n *html.Node) bool {
+	switch n.Data {
+	case "textarea":
+		return true
+	case "input":
+		switch strings.ToLower(getAttr(n, "type")) {
+		case "", "text", "search", "email", "url", "tel", "password", "number":
+			return true
+		}
+	}
+	return false
+}
+
+// controlText reads a control's current value the way setControlValue writes it.
+func controlText(n *html.Node) string {
+	if n.Data == "textarea" {
+		return textContent(n)
+	}
+	return getAttr(n, "value")
+}
+
+// ancestorForm returns the nearest <form> ancestor of n (the form a control's
+// implicit-submission Enter targets), or nil.
+func ancestorForm(n *html.Node) *html.Node {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && p.Data == "form" {
+			return p
+		}
+	}
+	return nil
 }
 
 // dispatchPress replays a realistic primary-button press at n: pointerdown →

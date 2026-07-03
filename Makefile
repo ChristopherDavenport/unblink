@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval fuzz bench vet fmt tidy clean
+.PHONY: all build run version test eval fuzz bench membench vet fmt tidy clean
 
 all: build
 
@@ -57,6 +57,15 @@ BENCHCOUNT ?= 10
 bench:
 	go test -run '^$$' -bench '$(BENCH)' -benchmem -count $(BENCHCOUNT) \
 		./internal/js ./internal/reduce ./internal/dom ./internal/emit ./internal/browser ./internal/session
+
+# membench measures unblink's footprint against a headless Chromium baseline on
+# identical local fixtures (docs/comparison.md). It lives in a SEPARATE module
+# (scripts/membench, its own go.mod with chromedp) so the published binary stays
+# dependency-clean. Requires `make build` first and a system chrome/chromium
+# (auto-detected, or pass CHROME=/path). Nested module is invisible to the
+# root ./... targets above.
+membench: build
+	cd scripts/membench && go run . -root ../.. $(if $(CHROME),-chrome $(CHROME))
 
 vet:
 	go vet ./...

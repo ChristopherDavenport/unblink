@@ -687,7 +687,7 @@ func TestInteractSurfacesPendingNavigation(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	r, err := b.Interact(ctx, "s", "#go", "click", "")
+	r, err := b.Interact(ctx, "s", "#go", "click", "", "")
 	if err != nil {
 		t.Fatalf("interact: %v", err)
 	}
@@ -816,7 +816,7 @@ func TestInteractClickRevealsContent(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	r, err := b.Interact(ctx, "s", "#reveal", "click", "")
+	r, err := b.Interact(ctx, "s", "#reveal", "click", "", "")
 	if err != nil {
 		t.Fatalf("interact: %v", err)
 	}
@@ -853,7 +853,7 @@ func TestInteractPressGestureRevealsContent(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	r, err := b.Interact(ctx, "s", "#tab", "click", "")
+	r, err := b.Interact(ctx, "s", "#tab", "click", "", "")
 	if err != nil {
 		t.Fatalf("interact: %v", err)
 	}
@@ -883,7 +883,7 @@ func TestInteractHoverGestureRevealsSubmenu(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	if _, err := b.Interact(ctx, "s", "#menu", "hover", ""); err != nil {
+	if _, err := b.Interact(ctx, "s", "#menu", "hover", "", ""); err != nil {
 		t.Fatalf("interact hover: %v", err)
 	}
 	read, err := b.Read(ctx, browser.Request{SessionID: "s", UseCurrent: true}, "full", 6000, "")
@@ -901,12 +901,12 @@ func TestInteractMultiStepReplay(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	if _, err := b.Interact(ctx, "s", "#open-menu", "click", ""); err != nil {
+	if _, err := b.Interact(ctx, "s", "#open-menu", "click", "", ""); err != nil {
 		t.Fatalf("interact open-menu: %v", err)
 	}
 	// #menu-item-1 only exists after the first action revealed the menu; reaching
 	// it proves the prior action was replayed.
-	r, err := b.Interact(ctx, "s", "#menu-item-1", "click", "")
+	r, err := b.Interact(ctx, "s", "#menu-item-1", "click", "", "")
 	if err != nil {
 		t.Fatalf("interact menu-item: %v", err)
 	}
@@ -929,7 +929,7 @@ func TestInteractInputValue(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	if _, err := b.Interact(ctx, "s", "#field", "input", "hello"); err != nil {
+	if _, err := b.Interact(ctx, "s", "#field", "input", "hello", ""); err != nil {
 		t.Fatalf("interact input: %v", err)
 	}
 	read, err := b.Read(ctx, browser.Request{SessionID: "s", UseCurrent: true}, "full", 6000, "")
@@ -941,9 +941,35 @@ func TestInteractInputValue(t *testing.T) {
 	}
 }
 
+func TestInteractKeydownEnterSearch(t *testing.T) {
+	srv, _ := serveFixture(t, "interact.keydown.html")
+	b := newJSBrowser(t)
+	ctx := context.Background()
+	seedSession(t, b, "s", srv.URL)
+
+	// The whole search gesture in one interact: type the query, then press Enter.
+	r, err := b.Interact(ctx, "s", "#search", "keydown", "pomegranate", "Enter")
+	if err != nil {
+		t.Fatalf("interact keydown: %v", err)
+	}
+	if !r.Matched {
+		t.Fatalf("selector did not match")
+	}
+	read, err := b.Read(ctx, browser.Request{SessionID: "s", UseCurrent: true}, "full", 6000, "")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(read.Markdown, "pomegranate-results") {
+		t.Errorf("Enter keydown did not render the search results:\n%s", read.Markdown)
+	}
+	if !strings.Contains(read.Markdown, `query was "pomegranate"`) {
+		t.Errorf("typed value did not reach the handler:\n%s", read.Markdown)
+	}
+}
+
 func TestInteractRequiresJS(t *testing.T) {
 	b := newBrowser(t) // JS not enabled
-	_, err := b.Interact(context.Background(), "s", "#reveal", "click", "")
+	_, err := b.Interact(context.Background(), "s", "#reveal", "click", "", "")
 	if err == nil || !strings.Contains(err.Error(), "--js") {
 		t.Errorf("expected a requires-JS error, got %v", err)
 	}
@@ -951,7 +977,7 @@ func TestInteractRequiresJS(t *testing.T) {
 
 func TestInteractNoCurrentPage(t *testing.T) {
 	b := newJSBrowser(t)
-	_, err := b.Interact(context.Background(), "fresh", "#reveal", "click", "")
+	_, err := b.Interact(context.Background(), "fresh", "#reveal", "click", "", "")
 	if err == nil || !strings.Contains(err.Error(), "no current page") {
 		t.Errorf("expected a no-current-page error, got %v", err)
 	}
@@ -1000,10 +1026,10 @@ func TestInteractDoesNotPushHistory(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	if _, err := b.Interact(ctx, "s", "#reveal", "click", ""); err != nil {
+	if _, err := b.Interact(ctx, "s", "#reveal", "click", "", ""); err != nil {
 		t.Fatalf("interact 1: %v", err)
 	}
-	if _, err := b.Interact(ctx, "s", "#open-menu", "click", ""); err != nil {
+	if _, err := b.Interact(ctx, "s", "#open-menu", "click", "", ""); err != nil {
 		t.Fatalf("interact 2: %v", err)
 	}
 
@@ -1051,10 +1077,10 @@ func TestInteractTrueSession(t *testing.T) {
 	ctx := context.Background()
 	seedSession(t, b, "s", srv.URL)
 
-	if _, err := b.Interact(ctx, "s", "#b", "click", ""); err != nil {
+	if _, err := b.Interact(ctx, "s", "#b", "click", "", ""); err != nil {
 		t.Fatalf("interact 1: %v", err)
 	}
-	if _, err := b.Interact(ctx, "s", "#b", "click", ""); err != nil {
+	if _, err := b.Interact(ctx, "s", "#b", "click", "", ""); err != nil {
 		t.Fatalf("interact 2: %v", err)
 	}
 	read, err := b.Read(ctx, browser.Request{SessionID: "s", UseCurrent: true}, "full", 6000, "")
@@ -1084,7 +1110,7 @@ func TestLiveReflectsBackgroundTimer(t *testing.T) {
 	seedSession(t, b, "s", srv.URL)
 
 	// Open the live runtime; its 60ms timer is still pending after this settles.
-	if _, err := b.Interact(ctx, "s", "#go", "click", ""); err != nil {
+	if _, err := b.Interact(ctx, "s", "#go", "click", "", ""); err != nil {
 		t.Fatalf("interact: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond) // background timer fires while the runtime is alive

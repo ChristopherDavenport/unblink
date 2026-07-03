@@ -112,6 +112,16 @@ func TestVueRenders(t *testing.T) {
 	assertContains(t, out, diag, "vue-marker", "v-1", "v-2", "v-3")
 }
 
+func TestSvelteRenders(t *testing.T) {
+	// A real (precompiled) Svelte bundle mounting an <article> into #app. The
+	// compiled runtime uses conventional createElement/appendChild/setData DOM
+	// manipulation, exercising the classic-script path end to end.
+	out, diag := renderApp(t, `<!doctype html><html><body><div id="app">loading</div>
+		<script src="/fw/svelte-app.iife.js"></script></body></html>`,
+		map[string]string{"svelte-app.iife.js": loadBundle(t, "svelte-app.iife.js")})
+	assertContains(t, out, diag, "Svelte Rendered Title")
+}
+
 func TestLitRenders(t *testing.T) {
 	bt := "`" // JS template-literal backtick, kept out of the Go raw strings below
 	page := `<html><body><my-counter></my-counter>

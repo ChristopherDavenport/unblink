@@ -67,8 +67,9 @@ type DispatchResult struct {
 // guarded by a wall-clock watchdog that uses vm.Interrupt (never loop.Terminate,
 // which would kill the persistent loop).
 type Context struct {
-	loop    *eventloop.EventLoop
-	timeout time.Duration
+	loop     *eventloop.EventLoop
+	timeout  time.Duration
+	memGuard *memGuard
 
 	ctx    context.Context // session-lived; backs page-JS network (not per-op)
 	cancel context.CancelFunc
@@ -91,13 +92,14 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 	}
 	loop := e.takeLoop()
 	loop.Start()
-	c := &Context{loop: loop, timeout: e.timeout, doc: doc}
+	c := &Context{loop: loop, timeout: e.timeout, memGuard: e.memGuard, doc: doc}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
 	scripts := collectScripts(doc)
 	modules := collectModuleScripts(doc)
 	err := c.run(ctx, true, nil, nil, func(vm *goja.Runtime) {
 		c.vm.Store(vm)
+		c.memGuard.register(vm)
 		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, c.ctx, e.timeout)
 		b.assets = e.assets
 		b.webdriver = e.webdriver
@@ -194,6 +196,7 @@ func (c *Context) Close() {
 			c.cancel()
 		}
 		c.loop.Terminate()
+		c.memGuard.unregister(c.vm.Load())
 	})
 }
 
@@ -297,7 +300,15 @@ func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond
 			domQuiet = v == lastVersion
 			lastVersion = v
 		}
-		if condMet && netIdle && domQuiet {
+		// A clamped one-shot timer that hasn't fired is pending deferred content;
+		// hold the poll open (within the budget) so it lands before the snapshot.
+		timersPending := 0
+		if b != nil && b.timerAudit != nil {
+			if v, err := b.timerAudit(goja.Undefined()); err == nil && v != nil {
+				timersPending = int(v.ToInteger())
+			}
+		}
+		if condMet && netIdle && domQuiet && timersPending == 0 {
 			quiet++
 		} else {
 			quiet = 0
@@ -307,6 +318,7 @@ func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond
 			if stats != nil {
 				stats.deadline = !settled
 				stats.domBusy = !domQuiet
+				stats.timersPending = timersPending
 				if b != nil {
 					stats.pending = b.pending.Load()
 				}

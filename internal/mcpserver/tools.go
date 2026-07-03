@@ -95,6 +95,11 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 	if r.NetDenied > 0 {
 		text += fmt.Sprintf("\n\n---\n_%d page request(s) were blocked by the per-render request budget, so JS-loaded data may be missing (server flag --js-max-requests)._\n", r.NetDenied)
 	}
+	// A timer still pending at snapshot only warrants a hint when the render was
+	// otherwise quiet (an active render already carries the saturation notice above).
+	if r.TimersPending > 0 && !r.RenderBudgetHit && r.NetPending == 0 {
+		text += fmt.Sprintf("\n\n---\n_%d deferred timer(s) had not fired when this snapshot was taken; content behind a long setTimeout may be missing. Retry with a larger wait_timeout (and a wait_for gate)._\n", r.TimersPending)
+	}
 	if r.ArticleFallback {
 		text += "\n\n---\n_mode=article was requested but no distinct article body was found; this is the full reduced page._\n"
 	}
@@ -371,12 +376,13 @@ func (s *Server) handleControls(ctx context.Context, _ *mcp.CallToolRequest, arg
 type interactArgs struct {
 	Session  string `json:"session" jsonschema:"the session whose current page to act on (required)"`
 	Selector string `json:"selector" jsonschema:"CSS selector for the target element (use the controls tool to discover selectors)"`
-	Event    string `json:"event,omitempty" jsonschema:"interaction to dispatch: click (default; a full press gesture that activates press/pointer-based widgets), hover, focus, input, change, keydown, or submit"`
-	Value    string `json:"value,omitempty" jsonschema:"value to set on a form control before dispatching (for input/change)"`
+	Event    string `json:"event,omitempty" jsonschema:"interaction to dispatch: click (default; a full press gesture that activates press/pointer-based widgets), hover, focus, input, change, keydown, keyup, keypress, or submit"`
+	Value    string `json:"value,omitempty" jsonschema:"value to set on a form control before dispatching (for input/change, or to type text before a keydown)"`
+	Key      string `json:"key,omitempty" jsonschema:"key to press for event=keydown/keyup/keypress, e.g. Enter, Escape, Tab, ArrowDown, or a single character (defaults to Enter); Enter on a control inside a form submits it"`
 }
 
 func (s *Server) handleInteract(ctx context.Context, _ *mcp.CallToolRequest, args interactArgs) (*mcp.CallToolResult, browser.InteractResult, error) {
-	r, err := s.browser.Interact(ctx, args.Session, args.Selector, args.Event, args.Value)
+	r, err := s.browser.Interact(ctx, args.Session, args.Selector, args.Event, args.Value, args.Key)
 	if err != nil {
 		return errorResult(err), browser.InteractResult{}, nil
 	}

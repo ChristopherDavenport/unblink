@@ -36,6 +36,7 @@ func main() {
 	jsMaxRequests := flag.Int("js-max-requests", browser.DefaultJSMaxRequests, "max page-JS network requests per render")
 	jsPrewarm := flag.Int("js-prewarm", browser.DefaultJSPrewarm, "number of pre-warmed JS runtimes kept ready (0 disables)")
 	jsMaxLive := flag.Int("js-max-live", browser.DefaultJSMaxLive, "max concurrent live per-session JS runtimes (LRU torn down over the cap)")
+	jsMemLimit := flag.Int64("js-memory-limit", browser.DefaultJSMemLimit/(1024*1024), "MiB of Go heap page JS may grow before every render is interrupted (0 disables the guard)")
 	jsAssetCache := flag.Bool("js-asset-cache", true, "cache page-JS script/module downloads and bundle outputs across renders for 60s (page fetch/XHR data requests are never cached)")
 	sessionTTL := flag.Duration("session-ttl", 0, "idle time before a session is evicted (default 30m)")
 	sessionCap := flag.Int("session-cap", 0, "maximum concurrent sessions, oldest evicted on overflow (default 256)")
@@ -64,6 +65,14 @@ func main() {
 		browser.WithSessionLimits(*sessionTTL, *sessionCap),
 	}
 	if *enableJS {
+		var memLimit uint64
+		if *jsMemLimit > 0 {
+			memLimit = uint64(*jsMemLimit) * 1024 * 1024
+			// A process-level GC soft limit is the passive backstop: it makes the
+			// collector fight allocation before the kernel OOM-kills the MCP server.
+			// Headroom (2×) above the interrupt limit lets the guard fire first.
+			debug.SetMemoryLimit(int64(memLimit) * 2)
+		}
 		opts = append(opts,
 			browser.WithJS(*jsTimeout),
 			browser.WithJSNetwork(!*jsNoNetwork),
@@ -71,6 +80,7 @@ func main() {
 			browser.WithJSMaxRequests(*jsMaxRequests),
 			browser.WithJSPrewarm(*jsPrewarm),
 			browser.WithJSMaxLive(*jsMaxLive),
+			browser.WithJSMemoryLimit(memLimit),
 			browser.WithJSAssetCache(*jsAssetCache),
 		)
 	}

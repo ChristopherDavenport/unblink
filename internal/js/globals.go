@@ -24,6 +24,15 @@ func (b *bridge) installGlobals(win *goja.Object) {
 		b.recordError(fmt.Errorf("console.error: %s", msg))
 	})
 
+	// The prelude's timer wrapper registers its live-timer audit here (consumed
+	// and deleted like __unblinkConsoleError); settlePoll reads it on close.
+	_ = vm.Set("__unblinkRegisterTimerAudit", func(call goja.FunctionCall) goja.Value {
+		if fn, ok := goja.AssertFunction(call.Argument(0)); ok {
+			b.timerAudit = fn
+		}
+		return goja.Undefined()
+	})
+
 	nav := vm.NewObject()
 	_ = nav.Set("userAgent", userAgent)
 	_ = nav.Set("language", "en-US")
@@ -289,14 +298,35 @@ const preludeJS = `
     var nativeSet = window.setTimeout, nativeClear = window.clearTimeout;
     var nativeSetI = window.setInterval, nativeClearI = window.clearInterval;
     var seq = 1, live = {};
+    // A one-shot timer whose delay would fire it after the render budget never
+    // runs before the snapshot, so content behind it (deferred hydration, splash
+    // timeouts, polling first ticks) silently vanishes. __unblinkTimerDeadlineMs
+    // (set by the one-shot engine, absent for live sessions) is the wall-clock
+    // instant timers must fire by; a delay past it is pulled in to just inside
+    // the budget. Only timers that otherwise never fire change behavior. Intervals
+    // are never clamped (they'd busy-loop against the deadline).
+    var deadline = (typeof window.__unblinkTimerDeadlineMs === 'number') ? window.__unblinkTimerDeadlineMs : 0;
+    // clamped tracks one-shot timers whose delay was pulled in because it
+    // exceeded the budget. The settle poll holds open while any remain unfired,
+    // so a clamped timer's deferred content lands before the snapshot (without
+    // it the poll would declare the page settled ~60ms in, long before the timer
+    // fires). Cleared when the timer runs or is cleared.
+    var clamped = {};
     function toFn(fn) { return typeof fn === 'function' ? fn : new Function(String(fn)); }
     window.setTimeout = function (fn, ms) {
       var args = Array.prototype.slice.call(arguments, 2), cb = toFn(fn), id = seq++;
-      live[id] = nativeSet(function () { delete live[id]; cb.apply(undefined, args); }, ms);
+      ms = +ms || 0;
+      var wasClamped = false;
+      if (deadline > 0) {
+        var remaining = deadline - Date.now();
+        if (remaining < 0) remaining = 0;
+        if (ms > remaining) { ms = remaining; wasClamped = true; clamped[id] = true; }
+      }
+      live[id] = nativeSet(function () { delete live[id]; delete clamped[id]; cb.apply(undefined, args); }, ms);
       return id;
     };
     window.clearTimeout = function (id) {
-      var h = live[id]; if (h !== undefined) { delete live[id]; nativeClear(h); }
+      var h = live[id]; if (h !== undefined) { delete live[id]; delete clamped[id]; nativeClear(h); }
     };
     if (nativeSetI) {
       window.setInterval = function (fn, ms) {
@@ -307,6 +337,17 @@ const preludeJS = `
       window.clearInterval = function (id) {
         var h = live[id]; if (h !== undefined) { delete live[id]; nativeClearI(h); }
       };
+    }
+    // Audit hook: report how many clamped one-shot timers are still unfired. The
+    // settle poll reads this every tick — non-zero holds it open (deferred
+    // content pending) — and at close reports it as timers_pending, so a snapshot
+    // taken with content still behind a timer is flagged rather than silently
+    // truncated.
+    if (typeof window.__unblinkRegisterTimerAudit === 'function') {
+      window.__unblinkRegisterTimerAudit(function () {
+        var n = 0; for (var k in clamped) n++; return n;
+      });
+      delete window.__unblinkRegisterTimerAudit;
     }
   })();
   // The engine's built-in console is disabled (its printer writes to stdout, which

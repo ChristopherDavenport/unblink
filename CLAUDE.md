@@ -131,13 +131,20 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   that recover+ctx couldn't contain — sync upstream manually, re-fuzz before
   adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
   pseudo-version pins are deliberate — bumping goja is its own reviewed
-  change). Add a new ADR when a decision would otherwise live only in a PR
-  description. (`reference/` and `internal/config/` were empty scaffolding,
-  deleted in Phase 20.)
+  change); 0003 is the JS memory guard (process-level heap watchdog +
+  `debug.SetMemoryLimit`, because goja has no per-runtime accounting). Add a new
+  ADR when a decision would otherwise live only in a PR description.
+  (`reference/` and `internal/config/` were empty scaffolding, deleted in
+  Phase 20.)
 - **Framework rendering (flat-DOM model)**: under `--js` the engine renders
   mainstream SPA frameworks (React/Vue/Preact/Svelte/Lit) — a real Node/Element
   prototype chain, MutationObserver, custom-element upgrade, and a *flattened*
   (non-encapsulating) Shadow DOM whose content is visible to extraction. **Still
-  permanent non-goals** (no layout engine): real layout/geometry (constant-stubbed
-  to zeros/empty, never computed), canvas/WebGL, Workers/WebSocket/IndexedDB, and
-  true Shadow-DOM encapsulation. See `docs/architecture.md` (Phase 8).
+  permanent non-goals** (no layout engine): real *element* layout/geometry and
+  CSSOM (constant-stubbed to zeros/empty, never computed), canvas/WebGL,
+  Workers/WebSocket/IndexedDB, and true Shadow-DOM encapsulation. The **viewport
+  environment** is the one exception (Phase 21): `innerWidth`/`screen`/
+  `devicePixelRatio` are a truthful constant 1280×720@1x and `matchMedia`
+  evaluates against it, so responsive code takes its real branch. Untrusted page
+  JS is also bounded on heap (`--js-memory-limit`, ADR 0003), time, network, and
+  live-runtime count. See `docs/architecture.md` (Phases 8 and 21).
