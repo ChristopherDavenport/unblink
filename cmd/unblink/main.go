@@ -22,8 +22,8 @@ import (
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	logLevel := flag.String("log-level", "warn", "log level: debug|info|warn|error (logs go to stderr)")
-	rateLimit := flag.Float64("rate-limit", browser.DefaultRateRPS, "per-host requests/sec (0 disables)")
-	rateBurst := flag.Int("rate-burst", browser.DefaultRateBurst, "per-host request burst")
+	rateLimit := flag.Float64("rate-limit", browser.DefaultRateRPS, "per-host requests/sec politeness limiter (0 = off, the default; e.g. 5 to crawl politely)")
+	rateBurst := flag.Int("rate-burst", browser.DefaultRateBurst, "per-host request burst (used when --rate-limit is set)")
 	retries := flag.Int("retries", browser.DefaultRetries, "retries for transient fetch failures")
 	tlsMimic := flag.Bool("tls-mimic", false, "present a Chrome fingerprint (utls ClientHello + tuned h2 SETTINGS/headers) to evade anti-bot blocks")
 	allowPrivate := flag.Bool("allow-private", false, "permit page fetches to private/loopback/metadata IPs (off by default; needed for localhost/internal targets)")

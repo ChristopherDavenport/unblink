@@ -521,12 +521,14 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     paying the window per click. `SettledIdle` in the render diagnostics
     records which tier closed the settle. The invariant this rests on — every
     new async primitive must route through the audit — is recorded in ADR 0004.
-  - **Crossbench measured the limiter, not the engine**: the unblink adapter
-    now passes `--rate-limit 0` (single loopback fixture host + cache-busted
-    URLs meant the default 5 req/s politeness limiter paced every render at
-    ~200ms; no other benchmarked tool ships one). Recorded as the one
-    deviation from tool defaults in the harness fairness rules; production
-    defaults unchanged.
+  - **Crossbench measured the limiter, not the engine — and the limiter is
+    now opt-in**: the single loopback fixture host + cache-busted URLs meant
+    the then-default 5 req/s politeness limiter paced every published render
+    at ~200ms (no other benchmarked tool ships one). `--rate-limit` now
+    defaults to **off** so unblink runs like-for-like out of the box; set it
+    (e.g. `--rate-limit 5`) to crawl politely. Live-session JS subrequests
+    stay bounded regardless: the rolling window (300/min, transport.go) is
+    the same 5/s average the old default enforced.
   - **`--js-concurrency`**: the one-shot render semaphore (previously pinned at
     4 with no knob) now defaults to GOMAXPROCS clamped to [4, 16] — renders are
     CPU-bound goja interpretation, so it scales with cores while the ceiling
@@ -534,8 +536,8 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     regardless). `--js-prewarm` deliberately stays at 4: an idle prewarmed loop
     costs a runtime's worth of heap, and a burst past the pool only pays ~1.5ms
     inline creation. `MaxIdleConnsPerHost` rises 8 → 16 to match, so a full
-    concurrency burst's connections stay reusable. Politeness defaults
-    (`--rate-limit` 5 req/s/host) are untouched.
+    concurrency burst's connections stay reusable. Same-host fetch pacing
+    remains `--rate-limit`'s job (opt-in, see below).
   - **Concurrent script-body prefetch** (`internal/js/prefetch.go`): the
     initial external `<script src>` bodies previously fetched synchronously on
     the loop goroutine, one round trip after another. They now prefetch through

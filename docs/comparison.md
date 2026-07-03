@@ -240,13 +240,15 @@ Measured 2026-07-03 · WSL2 (Linux 6.6, 4 vCPU / 5.8 GiB) · unblink v0.17.1
 0.0.77 (Playwright 1.62.0-alpha) · charlotte 0.6.3 · obscura 0.1.9 ·
 lightpanda nightly 1.0.0-7742 · median of 3 runs.
 
-One recorded deviation from tool defaults: the unblink adapter passes
-`--rate-limit 0`. Its default politeness limiter (5 req/s per host) is a
-crawl-courtesy policy no other benchmarked tool ships, and the whole corpus is
-served from a single loopback host with cache-busted URLs — under the default,
-every SPA latency median collapsed to token pacing (~200 ms/request) and
-sequential throughput pinned at exactly 5 pages/s. Latency and throughput
-numbers published before this date measured that policy, not the engine.
+Every tool runs at its defaults, and as of this date that is clean
+like-for-like: unblink's per-host politeness limiter is now opt-in
+(`--rate-limit`, default off), matching the other tools, none of which ships a
+crawl limiter. Latency and throughput numbers published before this date are
+not comparable — the limiter then defaulted to 5 req/s, and against this
+harness's single loopback host with cache-busted URLs every SPA latency
+median collapsed to token pacing (~200 ms/request) and sequential throughput
+pinned at exactly 5 pages/s: those rows measured the crawl policy, not the
+engine.
 
 ### Measured footprint
 

@@ -36,16 +36,25 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 - **`--js-concurrency`** (new flag, default auto = CPU count clamped to
   4..16): the one-shot render semaphore was silently pinned at 4; it now
   scales with cores. `--js-prewarm` stays at 4; `MaxIdleConnsPerHost` rises
-  8 → 16 to match. Politeness defaults (`--rate-limit`) are untouched.
+  8 → 16 to match.
 - **Crossbench was measuring unblink's politeness limiter, not its engine**:
-  the adapter never passed `--rate-limit`, so the single-host cache-busted
+  with the limiter at its old 5 req/s default, the single-host cache-busted
   corpus paced every render at ~200 ms and pinned sequential throughput at
-  exactly 5 pages/s. The adapter now runs `--rate-limit 0` (recorded as the
-  one deviation from tool defaults in the fairness rules — no other
-  benchmarked tool ships a crawl-politeness limiter), and
-  `docs/comparison.md` now also publishes the concurrent-throughput row.
-  Re-measured medians: SPA renders ~2–10 ms (was ~200 ms), ~249 pages/s
-  sequential / ~827 pages/s at 8-way concurrent (was ~5 pages/s).
+  exactly 5 pages/s. `docs/comparison.md` now also publishes the
+  concurrent-throughput row. Re-measured medians: SPA renders ~2–10 ms (was
+  ~200 ms), ~249 pages/s sequential / ~827 pages/s at 8-way concurrent (was
+  ~5 pages/s).
+
+### Changed
+
+- **The per-host politeness rate limiter is now opt-in** (`--rate-limit`
+  defaults to `0`/off, was 5 req/s): out of the box unblink runs
+  like-for-like with the other benchmarked tools, none of which ships a
+  crawl limiter, and throughput is bounded by the site rather than by
+  unblink. Set `--rate-limit 5` (with `--rate-burst`) to restore the old
+  polite-crawl behavior. Live-session JS subrequests stay bounded either
+  way: the rolling window (300/min) enforces the same 5/s average the old
+  default did.
 
 ### Added
 
