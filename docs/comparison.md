@@ -39,7 +39,7 @@ explicit about both directions.
 | Install footprint | One static binary (linux/darwin/windows), nothing else; ~36 MB, ~26 MB idle RSS ([measured](#measured-footprint)) | Node + full browser install | Node + Chromium (npm or Docker) | ~147 MB of binaries; [measured](#measured-footprint): 8 MB idle RSS, 2 ms cold start — leaner than its own claims | ~138 MB single binary; [measured](#measured-footprint): 15 MB idle RSS, 5 ms cold start; no native Windows, glibc-only Linux |
 | Token efficiency | Core design: token-budgeted, cursor-paginated Markdown; cheap `browse`/`find` orientation. [Measured](#token-cost-per-page): reads a nav-heavy portal for ~1% of a snapshot's tokens | Verbose — [measured](#token-cost-per-page): ×88 unblink's read on a nav-heavy portal; no orientation surface | Core design: orientation 23–178× smaller than a11y-tree dumps. [Measured](#token-cost-per-page): orientation 1.3–2× unblink's `browse`; *reading* costs snapshot-scale | Not a design concern — [measured](#token-cost-per-page): its snapshot truncates at ~4 KB and never reaches the article on a nav-heavy page | Not a design concern, though its `markdown` tool is genuinely dense — [measured](#token-cost-per-page): cheapest column on small clean pages, ×68 unblink on a nav-heavy portal (no reduction, budget, or orientation) |
 | Sessions | Cookies + history + persistent live JS runtime per session | Real browser profile, tabs, storage | Persistent Chromium session, stable hashed element IDs, structural diffs | Fast-boot ephemeral sessions | CDP sessions |
-| Agent-safety defaults | SSRF dial guard + untrusted-content fence + origin-scoped credentials, all on by default; [measured](#content-boundary-what-reaches-the-model): only tool that fences content as untrusted and defangs image-beacon exfiltration to inert text | — | Chromium sandbox on by default | Stealth / anti-fingerprinting, tracker blocking (secures the browser, not the content boundary; [measured](#content-boundary-what-reaches-the-model): no untrusted-content fence) | robots.txt respect, proxy support ([measured](#content-boundary-what-reaches-the-model): leaks all hidden text + a live image-beacon, no fence) |
+| Agent-safety defaults | SSRF dial guard + untrusted-content fence + origin-scoped credentials, all on by default; [measured](#content-boundary-what-reaches-the-model): only tool that strips all hidden-instruction text, fences content as untrusted, and defangs image-beacon exfiltration to inert text | — | Chromium sandbox on by default | Stealth / anti-fingerprinting, tracker blocking (secures the browser, not the content boundary; [measured](#content-boundary-what-reaches-the-model): no untrusted-content fence) | robots.txt respect, proxy support ([measured](#content-boundary-what-reaches-the-model): leaks all hidden text + a live image-beacon, no fence) |
 | License | MIT | Apache-2.0 | MIT | Apache-2.0 | AGPL-3.0 |
 | Maturity (07/2026) | v0.17.1 | Mature incumbent (in GitHub Copilot's coding agent) | v0.6.3 (npm) | v0.1.9 | Beta |
 
@@ -390,7 +390,7 @@ Reading that page (and a one-page PDF) through each tool's read surface:
 
 | Behavior | unblink | Playwright MCP | Charlotte | Obscura | Lightpanda |
 |---|---|---|---|---|---|
-| Hidden-instruction blocks leaked (of 3) | 1 | 2 | 1 | 3 | 3 |
+| Hidden-instruction blocks leaked (of 3) | **0** | 2 | 1 | 3 | 3 |
 | Image-beacon exfiltration URL | **defanged**¹ | dropped | dropped | dropped² | live `![](url)` |
 | Output fenced as untrusted | **yes** | no | no | no | no |
 | One-page PDF | **clean text** | other³ | other³ | raw `%PDF` bytes² | empty |
@@ -405,24 +405,27 @@ raw PDF bytes.
 ³ navigating a browser tool to a PDF yields neither extracted text nor raw
 bytes — a viewer/download shell the model can't read as content.
 
-Two properties are unique to unblink and clean. **It is the only tool that
-fences its output** as untrusted data — an `[UNTRUSTED WEB CONTENT …]` wrapper
-with a random marker, so injected imperatives read as data, not instructions,
-*regardless of what slipped past extraction*. And **it is the only tool that
-turns the PDF into readable text** (the others render what a browser renders;
-unblink fetches and parses, so PDFs, feeds, and images go through the same
-`read`).
+Three properties set unblink apart. **It strips all three hidden-instruction
+blocks** where the others leak one to three: the raw DOM dumps (Obscura,
+Lightpanda) pass all three through, and the structured surfaces (Playwright's
+a11y tree, Charlotte's decomposition) still leak one or two. **It is the only
+tool that fences its output** as untrusted data — an `[UNTRUSTED WEB CONTENT …]`
+wrapper with a random marker, so injected imperatives read as data, not
+instructions, *regardless of what slipped past extraction*. And **it is the only
+tool that turns the PDF into readable text** (the others render what a browser
+renders; unblink fetches and parses, so PDFs, feeds, and images go through the
+same `read`).
 
-The **hidden-text** picture is more of a spectrum than a win: the raw DOM dumps
-(Obscura, Lightpanda) leak all three blocks, the structured surfaces (unblink's
-reduction, Playwright's a11y tree, Charlotte's decomposition) each incidentally
-drop one or two, and none is airtight — unblink itself leaks the off-screen
-block through its *default article* read (though `display:none` and
-`aria-hidden` are always stripped, and `mode:"full"` strips all three; the
-harness exists to catch exactly this, and article-mode off-screen stripping is
-worth tightening). What makes unblink's posture different isn't a perfect
-filter — it's that the fence backstops whatever leaks, and the beacon is defanged
-rather than dropped or fired.
+That clean sweep on hidden text is recent, and worth being honest about how it
+got there: the probe first caught unblink leaking the off-screen block through
+its *default article* read (`display:none`/`aria-hidden` were always stripped,
+and `mode:"full"` stripped all three, but readability dropped the off-screen
+element's inline style before the strip ran). That's now fixed — the strip runs
+before extraction too — which is exactly what a regression harness is for. Even
+so, hidden-text filtering is a heuristic on every tool here; what makes unblink's
+posture structurally different is that the fence backstops anything that ever
+does slip through, and the beacon is defanged to auditable text rather than
+dropped or fired.
 
 This is the crux of the differentiation. Obscura and Lightpanda are lean
 real-browser *automation* engines — richer interaction surfaces than unblink
