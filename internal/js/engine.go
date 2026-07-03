@@ -235,6 +235,10 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()
+		// Kick off the concurrent script-body prefetch before the prelude runs so
+		// the fetches overlap prelude execution and each other; runScripts blocks
+		// on each body in document order.
+		b.startPrefetch(scripts)
 		// Timer clamp deadline (one-shot renders only): a wall-clock instant, read
 		// by the prelude timer wrapper, past which a long one-shot timer is pulled
 		// in so its content still materializes. Live sessions leave this unset.

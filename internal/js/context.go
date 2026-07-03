@@ -115,6 +115,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()
+		b.startPrefetch(scripts) // overlap script-body fetches with the prelude
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
 		b.runScripts(scripts)

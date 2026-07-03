@@ -167,9 +167,10 @@ func scriptText(n *html.Node) string {
 }
 
 // runScripts compiles and runs each script in document order. External (src)
-// scripts are fetched synchronously via the Transport — classic scripts block —
-// then run; inline scripts use their text. A syntax or runtime error skips that
-// script so one bad script doesn't blank the page.
+// script bodies come from the asset cache, the concurrent prefetch
+// (startPrefetch), or a synchronous Transport fetch, in that order — execution
+// itself always blocks in document order, as classic scripts must. A syntax or
+// runtime error skips that script so one bad script doesn't blank the page.
 func (b *bridge) runScripts(scripts []*html.Node) {
 	for i, s := range scripts {
 		var src string
@@ -182,6 +183,11 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 				continue
 			}
 			if body, ok := b.assets.get(assetKey(abs)); ok {
+				src = string(body)
+			} else if body, ok, found := b.prefetched(abs); found {
+				if !ok {
+					continue // fetch failed; same skip as the synchronous path
+				}
 				src = string(body)
 			} else {
 				ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)

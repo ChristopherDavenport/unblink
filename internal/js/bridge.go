@@ -140,6 +140,12 @@ type bridge struct {
 	// when the render has no network); render diagnostics read its totals.
 	netCount *countingTransport
 
+	// prefetch holds the in-flight concurrent fetches of the initial external
+	// <script src> bodies (nil unless startPrefetch armed it). Written once on
+	// the loop goroutine before runScripts; entries are filled by off-loop
+	// workers and read via prefetched(), which blocks on the entry's done.
+	prefetch map[string]*prefetchEntry
+
 	// assets is the Engine's shared cross-render script/module/bundle cache (nil
 	// when disabled). Set by the engine right after newBridge. Asset-cache hits
 	// bypass the transport, so they never count toward NetRequests or the budget.
