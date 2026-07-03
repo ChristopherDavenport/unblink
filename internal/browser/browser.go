@@ -683,7 +683,7 @@ func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 		"url", url, "framework", diag.Framework,
 		"upgrades", diag.Upgrades, "errors", len(diag.Errors),
 		"net_requests", diag.NetRequests, "net_pending", diag.NetPending,
-		"deadline_hit", diag.DeadlineHit,
+		"deadline_hit", diag.DeadlineHit, "settled_idle", diag.SettledIdle,
 		"setup", diag.SetupDur, "exec", diag.ExecDur,
 		"settle", diag.SettleDur, "total", diag.TotalDur)
 	for _, e := range diag.Errors {

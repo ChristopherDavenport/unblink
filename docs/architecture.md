@@ -536,6 +536,29 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     inline creation. `MaxIdleConnsPerHost` rises 8 → 16 to match, so a full
     concurrency burst's connections stay reusable. Politeness defaults
     (`--rate-limit` 5 req/s/host) are untouched.
+  - **Concurrent script-body prefetch** (`internal/js/prefetch.go`): the
+    initial external `<script src>` bodies previously fetched synchronously on
+    the loop goroutine, one round trip after another. They now prefetch through
+    the same counting/budgeted/SSRF-guarded transport with 4 bounded workers
+    while `runScripts` consumes them in strict document order — sum(RTT)
+    collapses to max(RTT), and since runScripts executes exactly the collected
+    snapshot the prefetch is not speculative (no over-fetch, identical request
+    accounting). Applies to one-shot renders and live session opens.
+  - **Content-only compile caches**: `progKey` dropped the script name (page
+    position / chunk URL) — identical bytes now share one `goja.Program`
+    regardless of which URL or position delivered them, with the first-seen
+    name embedded (diagnostic-only; external scripts now compile under their
+    absolute URL, better than the old positional `script-N.js`). `bundleKey`
+    clears the base URL's query/fragment before hashing — relative specifiers
+    resolve against scheme/host/path only — so `?utm=`/cache-busted variants
+    of a module page stop re-running the whole esbuild build.
+  - **Markdown memo on the page cache** (`internal/browser/cache.go`): each
+    stateless cache entry carries the reduced+emitted Markdown keyed
+    {mode, safeOutput}; repeat reads and pagination cursor pages skip
+    reduce+emit+defang (warm read 657µs → 11µs, allocs −99%). Invalidation is
+    structural — the memo dies with its entry, survives a 304 touch, and
+    lookups require pointer identity with the resolved page. Sessions, waited
+    renders, and credentialed one-shots bypass it entirely.
 
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
