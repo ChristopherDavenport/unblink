@@ -1,7 +1,7 @@
 {
   "name": "unblink",
   "description": "Pure-Go browser for AI: fetch pages, optionally render JS (no Chromium), get clean token-budgeted Markdown over MCP.",
-  "version": "0.17.1",
+  "version": "0.18.0",
   "author": {
     "name": "Christopher Davenport"
   },
@@ -23,7 +23,7 @@
         "run",
         "-i",
         "--rm",
-        "ghcr.io/christopherdavenport/unblink:0.17.1",
+        "ghcr.io/christopherdavenport/unblink:0.18.0",
         "--js"
       ]
     }
