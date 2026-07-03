@@ -317,7 +317,7 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 	if b != nil {
 		lastVersion = b.domVersion
 	}
-	condMet := cond.empty() // nil/blank condition is satisfied from the first check
+	condMet := cond.empty()  // nil/blank condition is satisfied from the first check
 	var quietSince time.Time // zero while the page is (or was just) busy
 	idleArmed := false       // previous check was provably idle; this one confirms
 	var tick func(*goja.Runtime)

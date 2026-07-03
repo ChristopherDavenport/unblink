@@ -105,3 +105,30 @@ func BenchmarkReadConcurrent(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkReadPaginatedCursor reads page 2 of a warm multi-page document —
+// the pagination hot path. Before the per-entry markdown memo every cursor
+// page recomputed reduce+emit over the whole document and discarded the other
+// chunks; now it reslices the memoized markdown.
+func BenchmarkReadPaginatedCursor(b *testing.B) {
+	srv := benchFixtureServer(b)
+	defer srv.Close()
+	br := benchBrowser(b)
+	defer br.Close()
+	ctx := context.Background()
+	url := srv.URL + "/post"
+	first, err := br.Read(ctx, browser.Request{URL: url}, "full", 300, "")
+	if err != nil {
+		b.Fatalf("warm read: %v", err)
+	}
+	if first.NextCursor == "" {
+		b.Fatal("fixture did not paginate at 300 tokens")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := br.Read(ctx, browser.Request{URL: url}, "full", 300, first.NextCursor); err != nil {
+			b.Fatalf("cursor read: %v", err)
+		}
+	}
+}
