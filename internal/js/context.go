@@ -256,12 +256,6 @@ func (c *Context) interrupt(msg string) {
 	}
 }
 
-// settleThenClose runs the shared settle poll for the live Context: quiet-period
-// only, no wait condition.
-func (c *Context) settleThenClose(closeDone func()) {
-	settlePoll(c.loop, c.bridge, c.timeout, nil, nil, closeDone)
-}
-
 // settlePoll schedules an on-loop quiet-period poll that closes done once the page
 // has been quiet — no in-flight network *and* no DOM mutations (frameworks render
 // after microtasks/rAF, not network) — for settleQuietTicks, or the budget elapses.

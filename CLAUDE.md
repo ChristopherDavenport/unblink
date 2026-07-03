@@ -15,8 +15,10 @@ The single binary is `cmd/unblink`. The authoritative design doc is
 ## Commands
 
 The `Makefile` is the canonical task runner. CI (`.github/workflows/ci.yml`)
-runs the gofmt check plus `make vet test eval` on every push/PR; there is no
-separate linter config — `gofmt` + `go vet` are the static tooling.
+runs the gofmt check, `make vet`, golangci-lint (`.golangci.yml` — default
+linters, errcheck relaxed for idiomatic Close/test handlers, `third_party/`
+exempt), then `make test eval` on every push/PR. `make lint` runs the same
+lint locally (needs the golangci-lint binary).
 
 ```sh
 make build     # go build (version stamped from the nearest v* tag)

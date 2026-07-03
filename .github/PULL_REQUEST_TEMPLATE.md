@@ -4,7 +4,7 @@
 
 ## Checklist
 
-- [ ] `make fmt vet test eval` is clean
+- [ ] `make fmt vet lint test eval` is clean
 - [ ] New or changed tool behavior has a test, and an eval case (`eval/`) where it affects extraction quality
 - [ ] Architectural decisions are recorded as an ADR under `docs/decisions/`
 - [ ] Docs updated where relevant (README flags table, `docs/architecture.md`)

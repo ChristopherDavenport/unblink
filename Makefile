@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval fuzz bench membench vet fmt tidy clean
+.PHONY: all build run version test eval fuzz bench membench vet lint fmt tidy clean
 
 all: build
 
@@ -71,6 +71,11 @@ membench: build
 # byte-close to upstream for easy syncing — it is exempt from vet, not fixed.
 vet:
 	go vet $$(go list ./... | grep -v /third_party/)
+
+# Needs the golangci-lint binary (https://golangci-lint.run/docs/welcome/install/);
+# CI runs the same config via golangci-lint-action.
+lint:
+	golangci-lint run
 
 fmt:
 	gofmt -w .

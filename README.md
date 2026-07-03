@@ -3,7 +3,6 @@
 [![CI](https://github.com/ChristopherDavenport/unblink/actions/workflows/ci.yml/badge.svg)](https://github.com/ChristopherDavenport/unblink/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ChristopherDavenport/unblink)](https://github.com/ChristopherDavenport/unblink/releases)
 [![Go Reference](https://pkg.go.dev/badge/github.com/christopherdavenport/unblink.svg)](https://pkg.go.dev/github.com/christopherdavenport/unblink)
-[![Go Report Card](https://goreportcard.com/badge/github.com/christopherdavenport/unblink)](https://goreportcard.com/report/github.com/christopherdavenport/unblink)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A pure-Go (no cgo, no Chromium) "web browser" whose purpose is **not** visual

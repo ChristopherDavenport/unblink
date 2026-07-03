@@ -6,9 +6,9 @@ read it before any non-trivial change.
 
 ## Workflow
 
-The `Makefile` is the canonical task runner. CI runs the gofmt check plus
-`make vet test eval` on every push and PR; `gofmt` + `go vet` are the only static
-tooling (no separate linter).
+The `Makefile` is the canonical task runner. CI runs the gofmt check,
+`make vet`, golangci-lint (via the official action, same `.golangci.yml`
+config), then `make test eval` on every push and PR.
 
 ```sh
 make build     # go build (version stamped from the nearest v* tag)
@@ -18,12 +18,13 @@ make fuzz      # coverage-guided fuzzing of the untrusted-input parsers
 make bench     # perf benchmarks over the hot-path packages
 make membench  # footprint benchmark vs headless Chromium (separate module)
 make vet       # go vet ./...
+make lint      # golangci-lint run (needs the golangci-lint binary installed)
 make fmt       # gofmt -w .
 make tidy      # go mod tidy
 ```
 
-Before opening a PR: `make fmt vet test eval` must be clean, and new behavior
-needs a test. The MCP SDK needs Go ≥ 1.25; the Makefile exports `GOTOOLCHAIN=auto`
+Before opening a PR: `make fmt vet lint test eval` must be clean, and new
+behavior needs a test. The MCP SDK needs Go ≥ 1.25; the Makefile exports `GOTOOLCHAIN=auto`
 so the toolchain is downloaded automatically — if you invoke `go` directly,
 prefix with `GOTOOLCHAIN=auto`.
 

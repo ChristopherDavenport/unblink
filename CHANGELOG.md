@@ -3,6 +3,21 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## Unreleased
+
+### Added
+
+- **golangci-lint** as the linter (`.golangci.yml`, `make lint`, CI step):
+  default linter set, errcheck relaxed for idiomatic `Close` and test HTTP
+  handlers, `third_party/` exempt. Its first run removed one piece of dead
+  code (`js.Context.settleThenClose`).
+
+### Changed
+
+- Removed the Go Report Card badge — the service is retired (it recommends
+  golangci-lint, adopted above). GitHub Actions bumped to current majors
+  (checkout v7, goreleaser-action v7, docker actions v4; all Node 24).
+
 ## v0.17.1 — go install fix
 
 ### Fixed
