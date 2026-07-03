@@ -20,9 +20,16 @@ func (unblinkAdapter) resolve(cfg toolConfig) (spawn, error) {
 	if _, err := os.Stat(bin); err != nil {
 		return spawn{}, fmt.Errorf("bin/unblink not found at %s — run `make build` first", bin)
 	}
+	// --rate-limit 0 disables unblink's default politeness limiter (5 req/s per
+	// host). Every fixture is served from one loopback host and the perf pass
+	// cache-busts each page URL, so with the default limit the latency medians
+	// measure token pacing (~200ms/request), not engine capability. No other
+	// benchmarked tool ships a crawl-politeness limiter, so leaving it on would
+	// compare unblink's crawl policy against their absence of one. Production
+	// defaults are unchanged.
 	return spawn{
 		cmd:       bin,
-		args:      []string{"--js", "--allow-private", "--js-allow-private", "--log-level", "error"},
+		args:      []string{"--js", "--allow-private", "--js-allow-private", "--rate-limit", "0", "--log-level", "error"},
 		installMB: fileMB(bin),
 	}, nil
 }
