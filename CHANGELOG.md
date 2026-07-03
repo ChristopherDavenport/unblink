@@ -12,6 +12,19 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   handlers, `third_party/` exempt. Its first run removed one piece of dead
   code (`js.Context.settleThenClose`).
 
+### Fixed
+
+- **Off-screen hidden text leaked through the default article read.** The
+  safe-output hidden-strip ran *after* readability extraction, but readability
+  drops inline `style` attributes while cleaning — erasing the
+  off-screen-positioning signal (`left:-9999px`, `clip:rect(0…)`) the strip
+  keys on, so injected "screen-reader" text survived into `read`'s default
+  article Markdown (`display:none`/`aria-hidden`/`hidden` were already stripped,
+  and `mode:"full"` stripped all channels). The strip now also runs *before*
+  readability, on a clone, guarded by a cheap `dom.HasHidden` pre-scan so pages
+  with no hidden nodes skip the copy (article hot path unchanged: +0.0% B/op
+  on hidden-free pages). Surfaced by the cross-tool content-boundary probe.
+
 ### Changed
 
 - Removed the Go Report Card badge — the service is retired (it recommends
