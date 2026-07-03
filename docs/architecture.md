@@ -527,6 +527,15 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     ~200ms; no other benchmarked tool ships one). Recorded as the one
     deviation from tool defaults in the harness fairness rules; production
     defaults unchanged.
+  - **`--js-concurrency`**: the one-shot render semaphore (previously pinned at
+    4 with no knob) now defaults to GOMAXPROCS clamped to [4, 16] — renders are
+    CPU-bound goja interpretation, so it scales with cores while the ceiling
+    bounds worst-case transient heap (the ADR-0003 guard bounds the total
+    regardless). `--js-prewarm` deliberately stays at 4: an idle prewarmed loop
+    costs a runtime's worth of heap, and a burst past the pool only pays ~1.5ms
+    inline creation. `MaxIdleConnsPerHost` rises 8 → 16 to match, so a full
+    concurrency burst's connections stay reusable. Politeness defaults
+    (`--rate-limit` 5 req/s/host) are untouched.
 
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are

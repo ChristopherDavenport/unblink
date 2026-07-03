@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,6 +116,7 @@ type options struct {
 	jsAllowPrivate bool
 	jsTimeout      time.Duration
 	jsPrewarm      int
+	jsConcurrency  int
 	jsMaxLive      int
 	jsMemLimit     uint64
 	jsAssetCache   bool
@@ -157,8 +159,30 @@ func WithJS(timeout time.Duration) Option {
 }
 
 // WithJSPrewarm sets how many fresh JS runtimes are kept ready in the background
-// (0 disables the pool). Defaults to the render concurrency cap.
+// (0 disables the pool). Stays at its own small default rather than tracking
+// WithJSConcurrency: an idle prewarmed loop is a live goja runtime's worth of
+// heap, and a burst past the pool only pays ~1.5ms of inline loop creation.
 func WithJSPrewarm(n int) Option { return func(o *options) { o.jsPrewarm = n } }
+
+// WithJSConcurrency caps how many one-shot JS renders may run at once (each holds
+// a runtime's worth of memory while it runs). n <= 0 selects the auto default:
+// GOMAXPROCS clamped to [4, 16] — renders are CPU-bound goja interpretation, so
+// scale with cores; the ceiling bounds worst-case transient heap (the ADR-0003
+// memory guard bounds the total regardless). Same-host fetch pacing is governed
+// separately by the politeness rate limit (--rate-limit).
+func WithJSConcurrency(n int) Option { return func(o *options) { o.jsConcurrency = n } }
+
+// DefaultJSConcurrency is the auto value WithJSConcurrency(0) resolves to.
+func DefaultJSConcurrency() int {
+	n := runtime.GOMAXPROCS(0)
+	if n < 4 {
+		n = 4
+	}
+	if n > 16 {
+		n = 16
+	}
+	return n
+}
 
 // WithJSNetwork enables/disables page-JS network requests (default enabled).
 func WithJSNetwork(enabled bool) Option { return func(o *options) { o.jsNetwork = enabled } }
@@ -236,7 +260,11 @@ func New(opts ...Option) (*Browser, error) {
 	if o.renderer == nil && o.js {
 		// navigator.webdriver is true (honest) by default; --tls-mimic is the
 		// operator's opt-in to fingerprint parity, so it extends to the JS env.
-		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic), js.WithMemoryLimit(o.jsMemLimit)}
+		conc := o.jsConcurrency
+		if conc <= 0 {
+			conc = DefaultJSConcurrency()
+		}
+		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithConcurrency(conc), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic), js.WithMemoryLimit(o.jsMemLimit)}
 		if o.jsAssetCache {
 			jsOpts = append(jsOpts, js.WithAssetCache(DefaultCacheTTL))
 		}

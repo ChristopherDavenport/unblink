@@ -35,6 +35,7 @@ func main() {
 	jsAllowPrivate := flag.Bool("js-allow-private", false, "permit page-JS requests to private/loopback IPs (internal/dev use)")
 	jsMaxRequests := flag.Int("js-max-requests", browser.DefaultJSMaxRequests, "max page-JS network requests per render")
 	jsPrewarm := flag.Int("js-prewarm", browser.DefaultJSPrewarm, "number of pre-warmed JS runtimes kept ready (0 disables)")
+	jsConcurrency := flag.Int("js-concurrency", 0, "max concurrent JS renders (0 = auto: CPU count clamped to 4..16); same-host fetch pacing is --rate-limit's job")
 	jsMaxLive := flag.Int("js-max-live", browser.DefaultJSMaxLive, "max concurrent live per-session JS runtimes (LRU torn down over the cap)")
 	jsMemLimit := flag.Int64("js-memory-limit", browser.DefaultJSMemLimit/(1024*1024), "MiB of Go heap page JS may grow before every render is interrupted (0 disables the guard)")
 	jsAssetCache := flag.Bool("js-asset-cache", true, "cache page-JS script/module downloads and bundle outputs across renders for 60s (page fetch/XHR data requests are never cached)")
@@ -79,6 +80,7 @@ func main() {
 			browser.WithJSAllowPrivate(*jsAllowPrivate),
 			browser.WithJSMaxRequests(*jsMaxRequests),
 			browser.WithJSPrewarm(*jsPrewarm),
+			browser.WithJSConcurrency(*jsConcurrency),
 			browser.WithJSMaxLive(*jsMaxLive),
 			browser.WithJSMemoryLimit(memLimit),
 			browser.WithJSAssetCache(*jsAssetCache),

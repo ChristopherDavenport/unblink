@@ -284,6 +284,7 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 | `--js-allow-private` | off | Permit page-JS subrequests to private/loopback IPs. |
 | `--js-max-requests` | `50` | Max page-JS network requests per render. |
 | `--js-prewarm` | `4` | Pre-warmed JS runtimes kept ready (0 disables). |
+| `--js-concurrency` | auto | Max concurrent JS renders (auto = CPU count clamped to 4..16). Same-host fetch pacing stays `--rate-limit`'s job. |
 | `--js-max-live` | `16` | Max concurrent live per-session JS runtimes (LRU torn down over the cap). |
 | `--js-memory-limit` | `1024` | MiB of Go heap page JS may grow before every render is interrupted (0 disables the guard). |
 | `--js-asset-cache` | on | Cache page-JS script/module/bundle downloads across renders for 60s (data fetch/XHR never cached). |
