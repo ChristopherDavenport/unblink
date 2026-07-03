@@ -94,4 +94,19 @@ writes every counted task output for eyeball review; `-probe <tool>` prints a
 server's identity and tool list (use it to re-pin adapter vocabularies when
 bumping pinned versions).
 
+## Content-boundary probe
+
+```sh
+make crossbench ARGS="-safety"      # regenerates docs/comparison.md's content-boundary table
+```
+
+Separate from the numeric passes: instead of *how much* a read costs, this
+measures *what an untrusted page can smuggle into the model*. It drives each
+tool's `read-article` against a fixture carrying three hidden-instruction
+blocks (`display:none`, `aria-hidden`, off-screen) and an image-beacon
+exfiltration URL, plus a one-page PDF, and reports — per tool — how many hidden
+blocks leaked, whether the beacon reached the model live/inert/dropped, whether
+the output was fenced as untrusted, and how the PDF read came back. The fixture
+lives in `safety.go` (no external corpus beyond the repo's `eval/corpus/sample.pdf`).
+
 Linux-only (WSL2 included): memory sampling reads `/proc`.

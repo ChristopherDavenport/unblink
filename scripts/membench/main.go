@@ -48,6 +48,7 @@ func main() {
 	toolsFlag := flag.String("tools", "unblink,chrome", "comma-separated tools to measure, or 'all' (known: "+strings.Join(knownTools(), ", ")+")")
 	verbose := flag.Bool("verbose", false, "tee each tool's stderr to ours with a [tool] prefix")
 	probe := flag.String("probe", "", "spawn the named tool, print its serverInfo and tools/list, and exit")
+	safety := flag.Bool("safety", false, "run the content-boundary probe (hidden text, image beacon, PDF) on -tools and exit")
 	dumpDir := flag.String("dump-dir", "", "write each token task's raw output here for eyeball review")
 	selfCheck := flag.Bool("selfcheck", false, "run directional sanity assertions on the token results; exit nonzero on violation")
 	debugMem := flag.Bool("debug-mem", false, "print per-PID PSS breakdowns for cross-checking against smem/ps")
@@ -72,6 +73,11 @@ func main() {
 
 	if *probe != "" {
 		runProbe(*probe, cfg)
+		return
+	}
+
+	if *safety {
+		runSafety(parseTools(*toolsFlag), cfg)
 		return
 	}
 

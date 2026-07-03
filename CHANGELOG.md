@@ -17,7 +17,10 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   o200k_base BPE tokenizer, bytes alongside, every output sentinel-validated
   so an error can never score as token efficiency — and whole-document reads
   tail-verified, so a silent truncation can't either (this caught Obscura's
-  ~4 KB snapshot cap). Plus `-probe` (dump a
+  ~4 KB snapshot cap). Plus a **content-boundary probe** (`-safety`) that
+  measures what an untrusted page smuggles into the model — hidden-instruction
+  text, image-beacon exfiltration, PDF handling, untrusted-content fencing —
+  across each tool's read surface. And `-probe` (dump a
   server's tool list), `-selfcheck` (directional sanity assertions),
   `-dump-dir`, `-debug-mem`, and a generated provenance header.
   `docs/comparison.md`'s measured sections are now produced by this harness.
