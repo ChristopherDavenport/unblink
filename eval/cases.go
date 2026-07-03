@@ -246,6 +246,9 @@ mark(22, typeof TextEncoderStream === 'function' && typeof TextDecoderStream ===
 mark(23, (function(){ navigation.navigate('/x2', { state: { n: 2 } }); return navigation.currentEntry.getState().n === 2 && navigation.entries().length >= 2; })());
 mark(24, typeof cookieStore.getAll === 'function' && typeof reportError === 'function');
 mark(25, typeof crypto.subtle.digest === 'function' && typeof crypto.subtle.encrypt === 'function' && (function(){ var a = new Uint8Array(8); crypto.getRandomValues(a); var z = 0; for (var i = 0; i < 8; i++) z |= a[i]; return z !== 0; })());
+// Phase 26 (Tier 3 crash-avoidance stubs):
+mark(26, typeof document.createElement('video').play === 'function' && new AudioContext().state === 'suspended' && new Audio('/x').tagName === 'AUDIO');
+mark(27, Notification.permission === 'denied' && typeof RTCPeerConnection === 'function' && navigator.getGamepads().length === 0 && typeof document.body.showPopover === 'function' && typeof document.startViewTransition === 'function');
 // async chain: message -> FileReader -> ReadableStream -> indexedDB -> flush.
 // Each hop is wrapped-timer / microtask async, so #out is written only once the
 // whole chain completes — a full-pipeline settle proof for the Tier 1 async APIs.
@@ -1039,7 +1042,8 @@ func cases() []Case {
 					"api-6-ok", "api-7-ok", "api-8-ok", "api-9-ok", "api-10-ok",
 					"api-11-ok", "api-12-ok", "api-13-ok", "api-14-ok", "api-15-ok",
 					"api-16-ok", "api-17-ok", "api-18-ok", "api-19-ok", "api-20-ok",
-					"api-21-ok", "api-22-ok", "api-23-ok", "api-24-ok", "api-25-ok"),
+					"api-21-ok", "api-22-ok", "api-23-ok", "api-24-ok", "api-25-ok",
+					"api-26-ok", "api-27-ok"),
 			},
 			Floor:    0.9,
 			MustPass: true,

@@ -988,9 +988,16 @@ const preludeAPIJS = `
     }
     if (!navigator.serviceWorker) {
       var swReg = {
-        scope: swOrigin + '/', active: null, installing: null, waiting: null,
+        scope: swOrigin + '/', active: null, installing: null, waiting: null, updateViaCache: 'imports',
         update: function () { return Promise.resolve(); },
         unregister: function () { return Promise.resolve(true); },
+        // Background Sync / Periodic Sync / Push / Notifications — all inert.
+        sync: { register: function () { return Promise.resolve(); }, getTags: function () { return Promise.resolve([]); } },
+        periodicSync: { register: function () { return Promise.resolve(); }, unregister: function () { return Promise.resolve(); }, getTags: function () { return Promise.resolve([]); } },
+        pushManager: { subscribe: function () { return Promise.resolve(null); }, getSubscription: function () { return Promise.resolve(null); }, permissionState: function () { return Promise.resolve('denied'); } },
+        navigationPreload: { enable: function () { return Promise.resolve(); }, disable: function () { return Promise.resolve(); }, setHeaderValue: function () { return Promise.resolve(); }, getState: function () { return Promise.resolve({ enabled: false, headerValue: '' }); } },
+        showNotification: function () { return Promise.resolve(); },
+        getNotifications: function () { return Promise.resolve([]); },
         addEventListener: noop, removeEventListener: noop
       };
       navigator.serviceWorker = {
@@ -1661,6 +1668,216 @@ const preludeAPIJS = `
       traverseTo: function () { return navResult(); }
     };
     window.navigation = nav;
+  }
+
+  // ---- Tier 3 crash-avoidance stubs: media & Web Audio (no playback) ----
+  //
+  // Inert by design: a page that calls video.play(), new Audio(), or
+  // new AudioContext() at boot keeps running (and its surrounding DOM renders)
+  // instead of throwing. Nothing is ever decoded or played.
+  (function () {
+    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    if (ep && typeof ep.play !== 'function') {
+      ep.play = function () { return Promise.resolve(); };
+      ep.pause = noop;
+      ep.load = noop;
+      ep.canPlayType = function () { return ''; };
+      ep.fastSeek = noop;
+      ep.addTextTrack = function () { return { cues: [], activeCues: [], addCue: noop, removeCue: noop, mode: 'disabled', addEventListener: noop, removeEventListener: noop }; };
+      ep.setSinkId = function () { return Promise.resolve(); };
+      ep.setMediaKeys = function () { return Promise.resolve(); };
+      ep.captureStream = function () { return { getTracks: function () { return []; }, getAudioTracks: function () { return []; }, getVideoTracks: function () { return []; }, addEventListener: noop, removeEventListener: noop }; };
+    }
+  })();
+  if (typeof window.Audio === 'undefined') {
+    window.Audio = function (src) { var a = document.createElement('audio'); if (src) a.src = src; return a; };
+  }
+  if (typeof window.MediaSource === 'undefined') {
+    var MS = function () { this.readyState = 'closed'; this.sourceBuffers = []; this.activeSourceBuffers = []; this.duration = NaN; };
+    MS.isTypeSupported = function () { return false; };
+    MS.prototype.addSourceBuffer = function () {
+      var sb = { updating: false, appendBuffer: noop, abort: noop, remove: noop, changeType: noop, addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; }, buffered: { length: 0, start: function () { return 0; }, end: function () { return 0; } } };
+      this.sourceBuffers.push(sb); return sb;
+    };
+    MS.prototype.removeSourceBuffer = noop; MS.prototype.endOfStream = noop; MS.prototype.clearLiveSeekableRange = noop; MS.prototype.setLiveSeekableRange = noop;
+    MS.prototype.addEventListener = noop; MS.prototype.removeEventListener = noop; MS.prototype.dispatchEvent = function () { return true; };
+    window.MediaSource = MS;
+    window.ManagedMediaSource = MS;
+  }
+  if (typeof window.AudioContext === 'undefined') {
+    var audioParam = function (v) { return { value: v, defaultValue: v, minValue: -3.4e38, maxValue: 3.4e38, setValueAtTime: function () { return this; }, linearRampToValueAtTime: function () { return this; }, exponentialRampToValueAtTime: function () { return this; }, setTargetAtTime: function () { return this; }, setValueCurveAtTime: function () { return this; }, cancelScheduledValues: function () { return this; }, cancelAndHoldAtTime: function () { return this; } }; };
+    var audioNode = function () {
+      return { connect: function (d) { return d; }, disconnect: noop, gain: audioParam(1), frequency: audioParam(440), detune: audioParam(0), Q: audioParam(1), pan: audioParam(0), type: 'sine', start: noop, stop: noop, setPeriodicWave: noop, numberOfInputs: 1, numberOfOutputs: 1, channelCount: 2, addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; } };
+    };
+    var audioBuffer = function () { return { duration: 0, length: 0, numberOfChannels: 1, sampleRate: 44100, getChannelData: function () { return new Float32Array(0); }, copyFromChannel: noop, copyToChannel: noop }; };
+    var AC = function () {
+      this.state = 'suspended'; this.sampleRate = 44100; this.currentTime = 0; this.baseLatency = 0; this.outputLatency = 0;
+      this.destination = audioNode(); this.listener = { positionX: audioParam(0), forwardX: audioParam(0), setPosition: noop, setOrientation: noop };
+      this.audioWorklet = { addModule: function () { return Promise.resolve(); } };
+    };
+    var acProto = AC.prototype;
+    ['createGain', 'createOscillator', 'createBufferSource', 'createBiquadFilter', 'createDynamicsCompressor', 'createConvolver', 'createDelay', 'createStereoPanner', 'createPanner', 'createWaveShaper', 'createChannelSplitter', 'createChannelMerger', 'createConstantSource', 'createScriptProcessor', 'createMediaElementSource', 'createMediaStreamSource', 'createMediaStreamDestination', 'createIIRFilter'].forEach(function (m) { acProto[m] = audioNode; });
+    acProto.createAnalyser = function () { var n = audioNode(); n.fftSize = 2048; n.frequencyBinCount = 1024; n.minDecibels = -100; n.maxDecibels = -30; n.smoothingTimeConstant = 0.8; n.getByteFrequencyData = noop; n.getByteTimeDomainData = noop; n.getFloatFrequencyData = noop; n.getFloatTimeDomainData = noop; return n; };
+    acProto.createBuffer = audioBuffer;
+    acProto.createPeriodicWave = function () { return {}; };
+    acProto.decodeAudioData = function (data, cb) { var b = audioBuffer(); if (typeof cb === 'function') { try { cb(b); } catch (e) {} } return Promise.resolve(b); };
+    acProto.resume = function () { this.state = 'running'; return Promise.resolve(); };
+    acProto.suspend = function () { return Promise.resolve(); };
+    acProto.close = function () { this.state = 'closed'; return Promise.resolve(); };
+    acProto.getOutputTimestamp = function () { return { contextTime: 0, performanceTime: 0 }; };
+    acProto.addEventListener = noop; acProto.removeEventListener = noop; acProto.dispatchEvent = function () { return true; };
+    window.AudioContext = AC;
+    window.webkitAudioContext = AC;
+    var OAC = function () { AC.call(this); this.length = 0; };
+    OAC.prototype = Object.create(AC.prototype); OAC.prototype.constructor = OAC;
+    OAC.prototype.startRendering = function () { return Promise.resolve(audioBuffer()); };
+    window.OfflineAudioContext = OAC;
+  }
+
+  // ---- Tier 3 crash-avoidance stubs: navigator device APIs ----
+  //
+  // All inert: requestDevice/permission-style calls reject or resolve empty so a
+  // feature-detecting app degrades instead of throwing at boot.
+  if (typeof navigator !== 'undefined') {
+    var rejectDevice = function () { var e = new Error('NotFoundError: no device selected'); e.name = 'NotFoundError'; return Promise.reject(e); };
+    if (!navigator.bluetooth) navigator.bluetooth = { getAvailability: function () { return Promise.resolve(false); }, requestDevice: rejectDevice, getDevices: function () { return Promise.resolve([]); }, addEventListener: noop, removeEventListener: noop };
+    if (!navigator.usb) navigator.usb = { getDevices: function () { return Promise.resolve([]); }, requestDevice: rejectDevice, addEventListener: noop, removeEventListener: noop };
+    if (!navigator.serial) navigator.serial = { getPorts: function () { return Promise.resolve([]); }, requestPort: rejectDevice, addEventListener: noop, removeEventListener: noop };
+    if (!navigator.hid) navigator.hid = { getDevices: function () { return Promise.resolve([]); }, requestDevice: function () { return Promise.resolve([]); }, addEventListener: noop, removeEventListener: noop };
+    if (!navigator.xr) navigator.xr = { isSessionSupported: function () { return Promise.resolve(false); }, requestSession: function () { var e = new Error('NotSupportedError'); e.name = 'NotSupportedError'; return Promise.reject(e); }, addEventListener: noop, removeEventListener: noop };
+    if (!navigator.gpu) navigator.gpu = { requestAdapter: function () { return Promise.resolve(null); }, getPreferredCanvasFormat: function () { return 'bgra8unorm'; }, wgslLanguageFeatures: { has: function () { return false; } } };
+    if (!navigator.getGamepads) navigator.getGamepads = function () { return []; };
+    if (!navigator.getBattery) navigator.getBattery = function () { return Promise.resolve({ charging: true, chargingTime: 0, dischargingTime: Infinity, level: 1, addEventListener: noop, removeEventListener: noop, onchargingchange: null, onlevelchange: null }); };
+    if (!navigator.requestMIDIAccess) navigator.requestMIDIAccess = function () { return Promise.resolve({ inputs: new Map(), outputs: new Map(), sysexEnabled: false, addEventListener: noop, removeEventListener: noop, onstatechange: null }); };
+    if (!navigator.wakeLock) navigator.wakeLock = { request: function () { return Promise.resolve({ released: false, type: 'screen', release: function () { this.released = true; return Promise.resolve(); }, addEventListener: noop, removeEventListener: noop }); } };
+    if (!navigator.locks) navigator.locks = { request: function (name, opts, cb) { if (typeof opts === 'function') { cb = opts; } var lock = { name: String(name), mode: 'exclusive' }; return Promise.resolve(typeof cb === 'function' ? cb(lock) : undefined); }, query: function () { return Promise.resolve({ held: [], pending: [] }); } };
+    if (!navigator.presentation) navigator.presentation = { defaultRequest: null, receiver: null };
+    if (!navigator.ink) navigator.ink = { requestPresenter: function () { return Promise.reject(new Error('NotSupportedError')); } };
+    if (!navigator.storage) navigator.storage = { estimate: function () { return Promise.resolve({ usage: 0, quota: 0 }); }, persist: function () { return Promise.resolve(false); }, persisted: function () { return Promise.resolve(false); }, getDirectory: function () { return Promise.reject(new Error('SecurityError')); } };
+    if (!navigator.credentials) navigator.credentials = { get: function () { return Promise.resolve(null); }, store: function () { return Promise.resolve(); }, create: function () { return Promise.resolve(null); }, preventSilentAccess: function () { return Promise.resolve(); } };
+    if (!navigator.contacts) navigator.contacts = { select: function () { return Promise.resolve([]); }, getProperties: function () { return Promise.resolve([]); } };
+    if (typeof navigator.setAppBadge !== 'function') { navigator.setAppBadge = function () { return Promise.resolve(); }; navigator.clearAppBadge = function () { return Promise.resolve(); }; }
+    if (typeof navigator.share !== 'function') { navigator.share = function () { var e = new Error('AbortError'); e.name = 'AbortError'; return Promise.reject(e); }; navigator.canShare = function () { return false; }; }
+    if (typeof navigator.vibrate !== 'function') navigator.vibrate = function () { return false; };
+    if (typeof navigator.registerProtocolHandler !== 'function') navigator.registerProtocolHandler = noop;
+  }
+
+  // ---- Tier 3 crash-avoidance stubs: niche constructors ----
+  if (typeof window.RTCPeerConnection === 'undefined') {
+    var RTCPC = function () { this.localDescription = null; this.remoteDescription = null; this.signalingState = 'stable'; this.iceConnectionState = 'new'; this.iceGatheringState = 'new'; this.connectionState = 'new'; this.__l = {}; };
+    RTCPC.prototype.createOffer = function () { return Promise.resolve({ type: 'offer', sdp: '' }); };
+    RTCPC.prototype.createAnswer = function () { return Promise.resolve({ type: 'answer', sdp: '' }); };
+    RTCPC.prototype.setLocalDescription = function () { return Promise.resolve(); };
+    RTCPC.prototype.setRemoteDescription = function () { return Promise.resolve(); };
+    RTCPC.prototype.addIceCandidate = function () { return Promise.resolve(); };
+    RTCPC.prototype.createDataChannel = function () { return { send: noop, close: noop, readyState: 'connecting', addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; } }; };
+    RTCPC.prototype.addTrack = function () { return {}; }; RTCPC.prototype.removeTrack = noop;
+    RTCPC.prototype.getSenders = function () { return []; }; RTCPC.prototype.getReceivers = function () { return []; }; RTCPC.prototype.getTransceivers = function () { return []; }; RTCPC.prototype.addTransceiver = function () { return {}; };
+    RTCPC.prototype.getStats = function () { return Promise.resolve(new Map()); };
+    RTCPC.prototype.close = noop; RTCPC.prototype.restartIce = noop;
+    RTCPC.prototype.addEventListener = function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); }; RTCPC.prototype.removeEventListener = noop; RTCPC.prototype.dispatchEvent = function () { return true; };
+    window.RTCPeerConnection = RTCPC; window.webkitRTCPeerConnection = RTCPC;
+    window.RTCSessionDescription = function (o) { o = o || {}; this.type = o.type; this.sdp = o.sdp; };
+    window.RTCIceCandidate = function (o) { o = o || {}; this.candidate = o.candidate || ''; this.sdpMid = o.sdpMid; this.sdpMLineIndex = o.sdpMLineIndex; };
+    window.MediaStream = function () { this.active = false; this.id = ''; this.getTracks = function () { return []; }; this.getAudioTracks = function () { return []; }; this.getVideoTracks = function () { return []; }; this.addTrack = noop; this.removeTrack = noop; this.getTrackById = function () { return null; }; this.clone = function () { return this; }; this.addEventListener = noop; this.removeEventListener = noop; };
+  }
+  if (typeof window.PaymentRequest === 'undefined') {
+    window.PaymentRequest = function () {
+      this.show = function () { var e = new Error('AbortError'); e.name = 'AbortError'; return Promise.reject(e); };
+      this.canMakePayment = function () { return Promise.resolve(false); };
+      this.abort = function () { return Promise.resolve(); };
+      this.addEventListener = noop; this.removeEventListener = noop;
+    };
+  }
+  if (typeof window.speechSynthesis === 'undefined') {
+    window.speechSynthesis = { speaking: false, pending: false, paused: false, speak: noop, cancel: noop, pause: noop, resume: noop, getVoices: function () { return []; }, addEventListener: noop, removeEventListener: noop, onvoiceschanged: null };
+    window.SpeechSynthesisUtterance = function (text) { this.text = text || ''; this.lang = ''; this.voice = null; this.volume = 1; this.rate = 1; this.pitch = 1; this.onstart = null; this.onend = null; this.onerror = null; this.addEventListener = noop; this.removeEventListener = noop; };
+  }
+  if (typeof window.SpeechRecognition === 'undefined' && typeof window.webkitSpeechRecognition === 'undefined') {
+    var SR = function () { this.lang = ''; this.continuous = false; this.interimResults = false; this.maxAlternatives = 1; this.start = noop; this.stop = noop; this.abort = noop; this.onresult = null; this.onerror = null; this.onend = null; this.addEventListener = noop; this.removeEventListener = noop; };
+    window.SpeechRecognition = SR; window.webkitSpeechRecognition = SR;
+  }
+  if (typeof window.Accelerometer === 'undefined') {
+    var Sensor = function () { this.activated = false; this.hasReading = false; this.x = null; this.y = null; this.z = null; this.start = noop; this.stop = noop; this.addEventListener = noop; this.removeEventListener = noop; this.onreading = null; this.onerror = null; this.onactivate = null; };
+    ['Accelerometer', 'LinearAccelerationSensor', 'GravitySensor', 'Gyroscope', 'Magnetometer', 'AbsoluteOrientationSensor', 'RelativeOrientationSensor', 'AmbientLightSensor'].forEach(function (n) { window[n] = Sensor; });
+  }
+  if (typeof window.Notification === 'undefined') {
+    // The priorities-doc escape hatch: present but permission 'denied'.
+    var Notif = function (title, opts) { opts = opts || {}; this.title = title || ''; this.body = opts.body || ''; this.icon = opts.icon || ''; this.tag = opts.tag || ''; this.data = opts.data; this.onclick = null; this.onclose = null; this.onerror = null; this.onshow = null; this.close = noop; this.addEventListener = noop; this.removeEventListener = noop; };
+    Notif.permission = 'denied'; Notif.maxActions = 0;
+    Notif.requestPermission = function (cb) { var p = Promise.resolve('denied'); if (typeof cb === 'function') p.then(cb); return p; };
+    window.Notification = Notif;
+  }
+  if (typeof window.BarcodeDetector === 'undefined') {
+    window.BarcodeDetector = function () { this.detect = function () { return Promise.resolve([]); }; };
+    window.BarcodeDetector.getSupportedFormats = function () { return Promise.resolve([]); };
+  }
+  if (typeof window.EyeDropper === 'undefined') {
+    window.EyeDropper = function () { this.open = function () { var e = new Error('AbortError'); e.name = 'AbortError'; return Promise.reject(e); }; };
+  }
+  if (typeof window.IdleDetector === 'undefined') {
+    var IdleDet = function () { this.userState = null; this.screenState = null; this.start = function () { return Promise.resolve(); }; this.addEventListener = noop; this.removeEventListener = noop; };
+    IdleDet.requestPermission = function () { return Promise.resolve('denied'); };
+    window.IdleDetector = IdleDet;
+  }
+  if (typeof window.WebTransport === 'undefined') {
+    window.WebTransport = function (url) {
+      this.url = String(url || '');
+      this.closed = Promise.resolve({ closeCode: 0, reason: '' });
+      this.ready = Promise.reject(new Error('WebTransport is not supported in this environment'));
+      this.ready.catch(function () {});
+      this.datagrams = { readable: null, writable: null };
+      this.createBidirectionalStream = function () { return Promise.reject(new Error('closed')); };
+      this.createUnidirectionalStream = function () { return Promise.reject(new Error('closed')); };
+      this.close = noop;
+    };
+  }
+  if (typeof window.CloseWatcher === 'undefined') {
+    window.CloseWatcher = function () { this.__l = {}; this.destroy = noop; this.close = noop; this.requestClose = noop; this.oncancel = null; this.onclose = null; this.addEventListener = function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); }; this.removeEventListener = noop; this.dispatchEvent = function () { return true; }; };
+  }
+
+  // ---- Tier 3 crash-avoidance stubs: element/document interaction ----
+  //
+  // Popover/fullscreen/PiP are no-ops with no layout to change; the popover's
+  // content is already in the light tree, so extraction sees it regardless.
+  // View Transitions run the update callback synchronously (so a router's new
+  // view materializes) and resolve.
+  (function () {
+    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    if (ep && typeof ep.showPopover !== 'function') {
+      ep.showPopover = noop; ep.hidePopover = noop;
+      ep.togglePopover = function (force) { return force !== undefined ? !!force : true; };
+    }
+    if (ep && typeof ep.requestFullscreen !== 'function') {
+      ep.requestFullscreen = function () { return Promise.resolve(); };
+      ep.webkitRequestFullscreen = noop; ep.mozRequestFullScreen = noop; ep.msRequestFullscreen = noop;
+    }
+    if (ep && typeof ep.requestPictureInPicture !== 'function') {
+      ep.requestPictureInPicture = function () { var e = new Error('NotSupportedError'); e.name = 'NotSupportedError'; return Promise.reject(e); };
+    }
+    if (ep && typeof ep.requestPointerLock !== 'function') { ep.requestPointerLock = noop; }
+    if (ep && !ep.remote) {
+      ep.remote = { state: 'disconnected', watchAvailability: function () { return Promise.resolve(0); }, cancelWatchAvailability: function () { return Promise.resolve(); }, prompt: function () { return Promise.reject(new Error('NotSupportedError')); }, addEventListener: noop, removeEventListener: noop };
+    }
+  })();
+  if (typeof document !== 'undefined') {
+    if (document.fullscreenElement === undefined) { document.fullscreenElement = null; document.fullscreenEnabled = true; document.webkitFullscreenElement = null; document.webkitFullscreenEnabled = true; }
+    if (typeof document.exitFullscreen !== 'function') { document.exitFullscreen = function () { return Promise.resolve(); }; document.webkitExitFullscreen = noop; }
+    if (document.pictureInPictureEnabled === undefined) { document.pictureInPictureEnabled = false; document.pictureInPictureElement = null; }
+    if (typeof document.exitPictureInPicture !== 'function') { document.exitPictureInPicture = function () { return Promise.resolve(); }; }
+    if (typeof document.exitPointerLock !== 'function') { document.exitPointerLock = noop; document.pointerLockElement = null; }
+    if (typeof document.hasStorageAccess !== 'function') { document.hasStorageAccess = function () { return Promise.resolve(false); }; document.requestStorageAccess = function () { return Promise.resolve(); }; }
+    if (typeof document.startViewTransition !== 'function') {
+      document.startViewTransition = function (cb) {
+        var done = Promise.resolve();
+        try { if (typeof cb === 'function') { var res = cb(); if (res && typeof res.then === 'function') done = Promise.resolve(res); } } catch (e) { done = Promise.reject(e); }
+        var swallow = function () {};
+        return { ready: done.then(swallow, swallow), finished: done.then(swallow, swallow), updateCallbackDone: done, skipTransition: noop, types: { has: function () { return false; }, add: noop, 'delete': noop, clear: noop } };
+      };
+    }
+  }
+  if (typeof window.ToggleEvent === 'undefined') {
+    window.ToggleEvent = function (type, opts) { opts = opts || {}; this.type = type; this.bubbles = !!opts.bubbles; this.cancelable = !!opts.cancelable; this.oldState = opts.oldState || ''; this.newState = opts.newState || ''; this.defaultPrevented = false; };
   }
 
   // ---- crypto.subtle (broad, Go-backed; ADR 0006) ----

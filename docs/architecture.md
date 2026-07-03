@@ -628,6 +628,23 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   demonstrated break). **Deferred**: `adoptedCallback` (cross-document adoption) and
   `CompressionStream` (needs a Go codec).
 
+- **Phase 26 — Tier 3 crash-avoidance stubs (see `docs/web-api-priorities.md`).** ✅ Flips the
+  niche surface from "leave undefined until a page crashes" to **proactive inert stubs**, all in
+  `preludeAPIJS`. None of these gate textual content, but a page touching one unconditionally at
+  boot (`video.play()`, `new AudioContext()`, `new Notification()`, a WebGPU/WebRTC probe) would
+  abort hydration without them. Every stub is inert — construction/access never throws, promises
+  resolve empty or reject *catchably*, no device/media work happens: media playback + the full
+  Web Audio node graph + `MediaSource`; the `navigator` device family (`bluetooth`/`usb`/`serial`/
+  `hid`/`xr`/`gpu`/`getGamepads`/`getBattery`/`requestMIDIAccess`/`wakeLock`/`locks`/`credentials`/
+  `share`/…); niche constructors (`RTCPeerConnection`, `PaymentRequest`, Web Speech, the sensor
+  family, `Notification` at `permission:'denied'`, `WebTransport`, `BarcodeDetector`, `EyeDropper`,
+  `IdleDetector`, `CloseWatcher`, `ToggleEvent`); and element/document interaction (Popover,
+  Fullscreen, Picture-in-Picture, Pointer Lock, background sync/push on the serviceWorker
+  registration, and **View Transitions** — `document.startViewTransition` runs the update callback
+  synchronously so a router's new view materializes). Regression nets:
+  `internal/js/webapi_tier3_test.go` + `js-api-smoke` markers `api-26`/`api-27`. **Still not
+  stubbed** (reactive): EME, Web NFC, File System Access, and the Privacy Sandbox proposals.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`
