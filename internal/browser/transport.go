@@ -110,7 +110,8 @@ func (b *Browser) newRenderTransport(client *fetch.Client, reqTimeout time.Durat
 // newLiveTransport builds the guarded transport for a persistent per-session
 // runtime. Unlike a one-shot render, a live page runs for the session's lifetime,
 // so the per-render request count cap doesn't fit; abuse is bounded instead by the
-// SSRF dial guard, the per-host rate limiter, and the session idle TTL/cap.
+// SSRF dial guard, the rolling subrequest window below, the session idle TTL/cap,
+// and the per-host rate limiter when one is configured (--rate-limit, default off).
 func (b *Browser) newLiveTransport(client *fetch.Client) js.Transport {
 	opts := []fetch.Option{
 		fetch.WithJar(client.Jar()),
@@ -127,13 +128,16 @@ func (b *Browser) newLiveTransport(client *fetch.Client) js.Transport {
 		return nil
 	}
 	// No monotonic per-render cap (a live page runs for the session's lifetime), but a
-	// rolling window bounds sustained abuse on top of the SSRF guard + rate limiter.
+	// rolling window bounds sustained abuse on top of the SSRF guard (and the rate
+	// limiter, when configured).
 	return &guardedTransport{client: gc, windowMax: liveJSWindowMax, window: liveJSWindow}
 }
 
 // Rolling-window subrequest cap for persistent live sessions. Generous enough for a
 // heavy SPA's initial burst, low enough to bound a malicious page's sustained
-// beaconing/scanning below the per-host rate limiter over a long session.
+// beaconing/scanning over a long session — 300/min is the same 5/s average the
+// old default rate limit enforced, so the bound survives the limiter being
+// opt-in.
 const (
 	liveJSWindow    = time.Minute
 	liveJSWindowMax = 300

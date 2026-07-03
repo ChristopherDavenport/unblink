@@ -317,9 +317,10 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 	if b != nil {
 		lastVersion = b.domVersion
 	}
-	condMet := cond.empty()  // nil/blank condition is satisfied from the first check
-	var quietSince time.Time // zero while the page is (or was just) busy
-	idleArmed := false       // previous check was provably idle; this one confirms
+	condMet := cond.empty()     // nil/blank condition is satisfied from the first check
+	var quietSince time.Time    // zero while the page is (or was just) busy
+	var lastDOMChange time.Time // last check that observed a DOM mutation
+	idleArmed := false          // previous check was provably idle; this one confirms
 	var tick func(*goja.Runtime)
 	tick = func(vm *goja.Runtime) {
 		if !condMet && b != nil && cond.satisfied(b.doc) {
@@ -335,6 +336,9 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 			v := b.domVersion
 			domQuiet = v == lastVersion
 			lastVersion = v
+			if !domQuiet {
+				lastDOMChange = now
+			}
 		}
 		clamped, liveTimers := auditTimers(b)
 		// Provable idleness needs a real bridge (only then is every work source
@@ -359,7 +363,14 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 		if settled || now.After(deadline) {
 			if stats != nil {
 				stats.deadline = !settled
-				stats.domBusy = !domQuiet
+				// "Still mutating at close" is judged over the quiet window, not
+				// just the final tick: at 5ms granularity a page mutating every
+				// few ms can slip a single quiet tick right at the deadline, and
+				// a starved render must not read as DOM-quiet. Settled closes
+				// were quiet for the full window (or provably idle) by
+				// construction, so this widening only applies to deadline exits.
+				stats.domBusy = !domQuiet ||
+					(!settled && !lastDOMChange.IsZero() && now.Sub(lastDOMChange) < settleQuietWindow)
 				stats.timersPending = clamped
 				stats.timersLive = liveTimers
 				stats.idleExit = settledIdle

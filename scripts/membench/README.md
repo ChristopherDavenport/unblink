@@ -59,16 +59,15 @@ chmod +x ~/.cache/unblink-membench/lightpanda
   JS-coverage differences can't distort the token metric.
 - **Shared Chromium**: playwright (`--executable-path`) and charlotte
   (`PUPPETEER_EXECUTABLE_PATH`) drive the same binary as the raw baseline.
-- **Tool defaults only**, with one recorded exception: unblink runs with
-  `--rate-limit 0`. Its default politeness limiter (5 req/s per host) is a
-  crawl-courtesy policy, and the whole corpus is served from a single loopback
-  host with cache-busted page URLs — under the default, every SPA latency
-  median collapses to token pacing (~200 ms/request) regardless of engine
-  speed, and sequential throughput pins at exactly the limiter rate. No other
-  benchmarked tool ships such a limiter, so disabling it measures capability
-  against capability. (Numbers published before 2026-07-03 included the
-  limiter; their render-latency and sequential-throughput rows measured the
-  policy, not the engine.) The task set is abstract: `read-article` is each
+- **Tool defaults only.** This is now clean like-for-like: unblink's per-host
+  politeness limiter is opt-in (`--rate-limit`, default off), matching every
+  other benchmarked tool (none ships a crawl limiter). History worth knowing
+  when comparing against old numbers: before 2026-07-03 the limiter defaulted
+  to 5 req/s, and because the whole corpus is served from a single loopback
+  host with cache-busted page URLs, every published SPA latency median
+  collapsed to token pacing (~200 ms/request) and sequential throughput
+  pinned at exactly the limiter rate — those rows measured the crawl policy,
+  not the engine. The task set is abstract: `read-article` is each
   tool's canonical way to get the page's content in front of the model,
   `read-full` retrieves the *whole* document (unblink follows pagination
   cursors — its budget cap can't masquerade as efficiency), `orient` is the

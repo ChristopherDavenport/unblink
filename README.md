@@ -234,8 +234,10 @@ sitemap.xml and same-origin links, bounded by `max_urls`/`max_depth`.
 
 ### Networking
 
-The HTTP layer decodes **brotli/gzip/deflate**, **rate-limits per host** and
-**retries** transient failures (429/5xx, honoring `Retry-After`), and logs
+The HTTP layer decodes **brotli/gzip/deflate**, can **rate-limit per host**
+(opt-in politeness limiter, `--rate-limit`; off by default so throughput is
+bounded by the site, not by unblink), **retries** transient failures
+(429/5xx, honoring `Retry-After`), and logs
 (structured, to stderr — `--log-level`). `--tls-mimic` presents a browser
 fingerprint to get past naive anti-bot blocks: a Chrome JA3/JA4 ClientHello (utls)
 plus best-effort Chrome-tuned HTTP/2 SETTINGS and request headers (`sec-ch-ua`,
@@ -273,8 +275,8 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 | Flag | Default | What it does |
 | --- | --- | --- |
 | `--log-level` | `warn` | Log level (`debug`/`info`/`warn`/`error`); logs go to stderr, stdout is reserved for MCP. |
-| `--rate-limit` | `5.0` | Per-host requests/sec (0 disables). |
-| `--rate-burst` | `10` | Per-host request burst. |
+| `--rate-limit` | off | Per-host requests/sec politeness limiter (opt-in; e.g. `5` to crawl politely). |
+| `--rate-burst` | `10` | Per-host request burst (used when `--rate-limit` is set). |
 | `--retries` | `2` | Retries for transient fetch failures (429/5xx, honoring `Retry-After`). |
 | `--tls-mimic` | off | Present a Chrome TLS/h2 fingerprint (utls) to get past naive anti-bot blocks; also sets `navigator.webdriver=false`. |
 | `--allow-private` | off | Permit page fetches to private/loopback/metadata IPs (needed for localhost/internal targets). |

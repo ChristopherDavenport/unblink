@@ -58,9 +58,14 @@ const (
 	// tunes it, 0 disables.
 	DefaultJSMemLimit = 1024 * 1024 * 1024
 	DefaultJSPrewarm  = js.DefaultMaxConcurrent
-	DefaultRateRPS    = 5.0 // per-host requests/sec (0 disables)
-	DefaultRateBurst  = 10
-	DefaultRetries    = fetch.DefaultRetries
+	// DefaultRateRPS is 0: the per-host politeness limiter is opt-in
+	// (--rate-limit N), so out of the box unblink runs like-for-like with other
+	// tools, none of which ship a crawl limiter. Live-session JS subrequests
+	// stay bounded regardless by the rolling window in transport.go (300/min ≈
+	// the same 5/s average the old default enforced).
+	DefaultRateRPS   = 0.0
+	DefaultRateBurst = 10 // burst when a rate is set
+	DefaultRetries   = fetch.DefaultRetries
 )
 
 // Renderer executes a page's scripts against its DOM, mutating doc in place. env
