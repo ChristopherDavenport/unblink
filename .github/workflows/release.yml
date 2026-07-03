@@ -6,9 +6,30 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
+  # Same gate as ci.yml — never publish artifacts the test suite wouldn't pass.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: vet
+        run: make vet
+      - name: test
+        run: make test
+      - name: eval
+        run: make eval
+
   goreleaser:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,8 +38,56 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # QEMU is not strictly needed while the Dockerfile has no RUN steps,
+      # but it keeps a future RUN from breaking arm64 releases mysteriously.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: goreleaser/goreleaser-action@v6
         with:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Keep the Claude Code plugin manifest pinned to the released image. The
+  # marketplace reads .claude-plugin/plugin.json from HEAD of main, so a bot
+  # commit there is what users actually install.
+  sync-plugin-manifest:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: sync-plugin-manifest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Bump plugin manifest to ${{ github.ref_name }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$VERSION" \
+            '.version = $v
+             | .mcpServers.unblink.args =
+                 (.mcpServers.unblink.args
+                  | map(if startswith("ghcr.io/christopherdavenport/unblink:")
+                        then "ghcr.io/christopherdavenport/unblink:" + $v
+                        else . end))' \
+            .claude-plugin/plugin.json > plugin.json.tmp
+          mv plugin.json.tmp .claude-plugin/plugin.json
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .claude-plugin/plugin.json
+          git diff --cached --quiet && { echo "already in sync"; exit 0; }
+          git commit -m "chore: sync plugin manifest to ${GITHUB_REF_NAME}"
+          for i in 1 2 3; do
+            git push origin main && exit 0
+            git pull --rebase origin main
+          done
+          git push origin main

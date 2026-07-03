@@ -20,3 +20,67 @@ archives:
 
 checksum:
   name_template: checksums.txt
+
+# Multi-arch images on ghcr. The io.modelcontextprotocol.server.name label
+# must sit on BOTH per-arch image configs (the MCP registry resolves the
+# manifest list to a platform image and validates that image's labels), and
+# its value must byte-match the `name` in server.json.
+dockers:
+  - use: buildx
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - ghcr.io/christopherdavenport/unblink:{{ .Version }}-amd64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --label=org.opencontainers.image.title=unblink
+      - --label=org.opencontainers.image.description=Pure-Go browser for AI over MCP
+      - --label=org.opencontainers.image.source=https://github.com/ChristopherDavenport/unblink
+      - --label=org.opencontainers.image.url=https://github.com/ChristopherDavenport/unblink
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.created={{ .Date }}
+      - --label=org.opencontainers.image.licenses=MIT
+      - --label=io.modelcontextprotocol.server.name=io.github.ChristopherDavenport/unblink
+  - use: buildx
+    goos: linux
+    goarch: arm64
+    image_templates:
+      - ghcr.io/christopherdavenport/unblink:{{ .Version }}-arm64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.title=unblink
+      - --label=org.opencontainers.image.description=Pure-Go browser for AI over MCP
+      - --label=org.opencontainers.image.source=https://github.com/ChristopherDavenport/unblink
+      - --label=org.opencontainers.image.url=https://github.com/ChristopherDavenport/unblink
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.created={{ .Date }}
+      - --label=org.opencontainers.image.licenses=MIT
+      - --label=io.modelcontextprotocol.server.name=io.github.ChristopherDavenport/unblink
+
+docker_manifests:
+  - name_template: ghcr.io/christopherdavenport/unblink:{{ .Version }}
+    image_templates:
+      - ghcr.io/christopherdavenport/unblink:{{ .Version }}-amd64
+      - ghcr.io/christopherdavenport/unblink:{{ .Version }}-arm64
+  # skip_push: auto — a prerelease tag (v1.2.3-rc1) still publishes its
+  # versioned image but never steals :latest.
+  - name_template: ghcr.io/christopherdavenport/unblink:latest
+    skip_push: auto
+    image_templates:
+      - ghcr.io/christopherdavenport/unblink:{{ .Version }}-amd64
+      - ghcr.io/christopherdavenport/unblink:{{ .Version }}-arm64
+
+changelog:
+  use: github-native
+
+release:
+  footer: |
+    ---
+
+    Docker: `docker run -i --rm ghcr.io/christopherdavenport/unblink:{{ .Version }} --js`
+
+    Full details in [CHANGELOG.md](https://github.com/ChristopherDavenport/unblink/blob/main/CHANGELOG.md).

@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # ADR-0002: the goja pins are deliberate pseudo-versions; bumping goja
+      # is its own reviewed change, never automated.
+      - dependency-name: github.com/dop251/goja
+      - dependency-name: github.com/dop251/goja_nodejs
+      # replace'd to ./third_party/pdf (vendored, ADR-0001); bumps would be
+      # inert noise.
+      - dependency-name: github.com/dslipak/pdf
+  # The nested scripts/membench module (dev-only chromedp benchmark harness)
+  # is deliberately not covered.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
