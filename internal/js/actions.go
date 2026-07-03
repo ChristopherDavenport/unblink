@@ -59,7 +59,7 @@ func (b *bridge) runActions(actions []Action) {
 		if typ == "" {
 			typ = "click"
 		}
-		n := query(b.doc, a.Selector)
+		n := b.queryPierce(b.doc, a.Selector) // pierce shadow: target controls a component rendered into its shadow root
 		if n == nil {
 			continue // a.Matched stays false
 		}

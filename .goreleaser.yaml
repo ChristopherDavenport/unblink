@@ -81,6 +81,6 @@ release:
   footer: |
     ---
 
-    Docker: `docker run -i --rm ghcr.io/christopherdavenport/unblink:{{ .Version }} --js`
+    Docker: `docker run -i --rm ghcr.io/christopherdavenport/unblink:{{ .Version }}`
 
     Full details in [CHANGELOG.md](https://github.com/ChristopherDavenport/unblink/blob/main/CHANGELOG.md).

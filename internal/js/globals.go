@@ -541,6 +541,7 @@ const preludeJS = `
       this.type = type;
       this.bubbles = !!opts.bubbles;
       this.cancelable = !!opts.cancelable;
+      this.composed = !!opts.composed;
       this.defaultPrevented = false;
       if (init) init(this, opts);
     };

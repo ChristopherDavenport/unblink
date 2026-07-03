@@ -239,11 +239,36 @@ func (b *bridge) installNodeProto() {
 		return b.documentObj
 	})
 	b.protoGetter(p, "isConnected", func(n *html.Node) goja.Value { return vm.ToValue(b.isConnected(n)) })
-	b.protoMethod(p, "getRootNode", func(n *html.Node, _ goja.FunctionCall) goja.Value {
-		if sr, ok := b.shadowRoots[n]; ok {
-			return sr
+	b.protoMethod(p, "getRootNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		composed := false
+		if opts := call.Argument(0); opts != nil && !goja.IsUndefined(opts) && !goja.IsNull(opts) {
+			if oo := opts.ToObject(vm); oo != nil {
+				composed = boolProp(oo, "composed")
+			}
 		}
-		return b.documentObj
+		// Climb to the top of n's tree; if that is a shadow-root backing node, either
+		// return its ShadowRoot (getRootNode) or cross to the host and keep climbing
+		// (getRootNode({composed:true})). A host itself lives in the light tree, so its
+		// root is the document — matching the spec (not its own shadow root).
+		cur := n
+		for {
+			root := cur
+			for root.Parent != nil {
+				root = root.Parent
+			}
+			host, ok := b.shadowHostOf[root]
+			if !ok {
+				return b.documentObj
+			}
+			if composed {
+				cur = host
+				continue
+			}
+			if sr := b.shadowRoots[host]; sr != nil {
+				return sr
+			}
+			return b.documentObj
+		}
 	})
 	b.protoGetter(p, "firstChild", func(n *html.Node) goja.Value { return b.wrap(n.FirstChild) })
 	b.protoGetter(p, "lastChild", func(n *html.Node) goja.Value { return b.wrap(n.LastChild) })
@@ -616,6 +641,12 @@ func (b *bridge) installHTMLElementProto() {
 	})
 	b.protoGetter(p, "shadowRoot", func(n *html.Node) goja.Value {
 		if sr, ok := b.shadowRoots[n]; ok {
+			// A closed root is hidden from page JS (browser-faithful feature detection),
+			// but its content is still composed into extraction output (mission: see
+			// everything) — the compose pass iterates b.shadowRoots regardless of mode.
+			if m := sr.Get("mode"); m != nil && m.String() == "closed" {
+				return goja.Null()
+			}
 			return sr
 		}
 		return goja.Null()
@@ -625,6 +656,19 @@ func (b *bridge) installHTMLElementProto() {
 			return b.templateContent(n)
 		}
 		return goja.Undefined()
+	})
+
+	// <slot> API (Phase 23). Distribution itself is computed by the compose pass; these
+	// expose it to component code. assignedNodes/assignedElements resolve the slot's host
+	// across the shadow boundary and return the host's light children for this slot name.
+	b.protoProp(p, "slot",
+		func(n *html.Node) goja.Value { return vm.ToValue(getAttr(n, "slot")) },
+		func(n *html.Node, v goja.Value) { b.setAttrMut(n, "slot", v.String()) })
+	b.protoMethod(p, "assignedNodes", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		return b.slotAssigned(n, call.Argument(0), false)
+	})
+	b.protoMethod(p, "assignedElements", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		return b.slotAssigned(n, call.Argument(0), true)
 	})
 	b.protoMethod(p, "remove", func(n *html.Node, _ goja.FunctionCall) goja.Value {
 		if n.Parent != nil {

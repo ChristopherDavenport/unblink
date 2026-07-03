@@ -54,8 +54,9 @@ automatically. If you invoke `go` directly instead of via `make`, prefix it with
 `GOTOOLCHAIN=auto`.
 
 Drive the server by hand (MCP over stdio) — see the JSON-RPC snippet in
-`README.md`. `./bin/unblink --js` enables opt-in JavaScript rendering; `--version`
-prints the version.
+`README.md`. JavaScript rendering is **on by default** (reads render unless the
+caller passes `render=false`); `./bin/unblink --disable-js` turns it off for the
+static-only path. `--version` prints the version.
 
 ## Architecture
 
@@ -142,15 +143,22 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
-- **Framework rendering (flat-DOM model)**: under `--js` the engine renders
+- **Framework rendering (flat-DOM model)**: with its JavaScript engine (on by
+  default; `--disable-js` opts out) the engine renders
   mainstream SPA frameworks (React/Vue/Preact/Svelte/Lit) — a real Node/Element
-  prototype chain, MutationObserver, custom-element upgrade, and a *flattened*
-  (non-encapsulating) Shadow DOM whose content is visible to extraction. **Still
-  permanent non-goals** (no layout engine): real *element* layout/geometry and
-  CSSOM (constant-stubbed to zeros/empty, never computed), canvas/WebGL,
-  Workers/WebSocket/IndexedDB, and true Shadow-DOM encapsulation. The **viewport
+  prototype chain, MutationObserver, custom-element upgrade, and an
+  **encapsulating, composed Shadow DOM** (Phase 23, ADR 0005): each shadow root is a
+  detached subtree (page-JS `querySelector` respects the boundary), and a compose pass
+  flattens it — resolving `<slot>` distribution — into the light tree for extraction.
+  Events cross the boundary correctly (composed path + `target` retargeting +
+  `composedPath()`); declarative Shadow DOM (`<template shadowrootmode>`) is flattened
+  on the static no-JS path. **Still permanent non-goals** (no layout engine): real
+  *element* layout/geometry and CSSOM (constant-stubbed to zeros/empty, never
+  computed), canvas/WebGL, Workers/WebSocket/IndexedDB, and Shadow-DOM *style scoping*
+  (`:host`/`::slotted`/`::part`) / slot reprojection / closed-mode privacy from
+  extraction. The **viewport
   environment** is the one exception (Phase 21): `innerWidth`/`screen`/
   `devicePixelRatio` are a truthful constant 1280×720@1x and `matchMedia`
   evaluates against it, so responsive code takes its real branch. Untrusted page
   JS is also bounded on heap (`--js-memory-limit`, ADR 0003), time, network, and
-  live-runtime count. See `docs/architecture.md` (Phases 8 and 21).
+  live-runtime count. See `docs/architecture.md` (Phases 8, 21, and 23).

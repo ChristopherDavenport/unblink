@@ -283,28 +283,45 @@ func (b *bridge) afterAttr(n *html.Node, key, oldVal, newVal string) {
 }
 
 // isConnected reports whether n is attached to the document (not a detached or
-// fragment subtree).
+// fragment subtree). Shadow content lives in a detached subtree, so at the top of one
+// (a shadow-root backing node) the walk crosses to the host and continues — a node
+// inside an attached component's shadow root is "connected".
 func (b *bridge) isConnected(n *html.Node) bool {
-	for p := n; p != nil; p = p.Parent {
+	for p := n; p != nil; {
 		if p == b.doc {
 			return true
 		}
+		if p.Parent == nil {
+			host, ok := b.shadowHostOf[p]
+			if !ok {
+				return false
+			}
+			p = host
+			continue
+		}
+		p = p.Parent
 	}
 	return false
 }
 
-// attachShadow returns a flat ShadowRoot whose backing node is the host element, so
-// shadow content is written into the light tree (visible to extraction). The mode
-// and slot/encapsulation semantics are intentionally ignored.
+// attachShadow attaches a shadow root to host. The root's backing node is a fresh
+// *detached* DocumentNode (NOT the host), so shadow writes build a separate subtree
+// that page-JS document queries and light-tree serialization never enter — real
+// encapsulation. The compose pass (slots.go) flattens that subtree, resolving <slot>
+// distribution, into the light tree so extraction still sees everything. The ShadowRoot
+// object carries Element methods (querySelector/innerHTML/appendChild) rooted at the
+// backing node (objNode maps sr → srn; cache maps srn → sr for parentNode identity).
+// mode is recorded for the closed-root getter but never hides content from extraction.
 func (b *bridge) attachShadow(host *html.Node, opts goja.Value) *goja.Object {
 	if sr, ok := b.shadowRoots[host]; ok {
 		return sr
 	}
 	vm := b.vm
-	// Element prototype gives the root querySelector/innerHTML/appendChild that
-	// operate on the host's children (objNode maps it to the host node).
+	srn := &html.Node{Type: html.DocumentNode}
 	sr := vm.CreateObject(b.protoElement)
-	b.objNode[sr] = host
+	b.cache[srn] = sr
+	b.objNode[sr] = srn
+	b.shadowHostOf[srn] = host
 	mode := "open"
 	if opts != nil && !goja.IsUndefined(opts) && !goja.IsNull(opts) {
 		if oo := opts.ToObject(vm); oo != nil {

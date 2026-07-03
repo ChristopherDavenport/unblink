@@ -29,7 +29,11 @@ func main() {
 	allowPrivate := flag.Bool("allow-private", false, "permit page fetches to private/loopback/metadata IPs (off by default; needed for localhost/internal targets)")
 	noSiteHints := flag.Bool("no-site-hints", false, "omit robots.txt/llms.txt presence hints from browse output")
 	noSafeOutput := flag.Bool("no-safe-output", false, "disable untrusted-content safety on returned content: keep raw output (no provenance fence, no hidden-text stripping, no image-beacon defanging)")
-	enableJS := flag.Bool("js", false, "enable opt-in JavaScript rendering (the render tool arg)")
+	disableJS := flag.Bool("disable-js", false, "disable JavaScript rendering entirely (JS is on by default; reads render unless the caller passes render=false)")
+	// Deprecated: JS is on by default now, so --js is a no-op kept for backward
+	// compatibility (existing configs/plugin manifests still pass it). Use --disable-js
+	// to turn JS off.
+	_ = flag.Bool("js", false, "deprecated no-op: JavaScript is on by default (use --disable-js to turn it off)")
 	jsTimeout := flag.Duration("js-timeout", browser.DefaultJSTimeout, "per-render wall-clock budget for JavaScript")
 	jsNoNetwork := flag.Bool("js-no-network", false, "disable page-JS network requests (DOM-only render)")
 	jsAllowPrivate := flag.Bool("js-allow-private", false, "permit page-JS requests to private/loopback IPs (internal/dev use)")
@@ -65,7 +69,7 @@ func main() {
 		browser.WithSafeOutput(!*noSafeOutput),
 		browser.WithSessionLimits(*sessionTTL, *sessionCap),
 	}
-	if *enableJS {
+	if !*disableJS {
 		var memLimit uint64
 		if *jsMemLimit > 0 {
 			memLimit = uint64(*jsMemLimit) * 1024 * 1024

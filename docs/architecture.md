@@ -53,7 +53,7 @@ re-fetch or re-parse. See `internal/page/page.go`.
 | `internal/search`    | Optional web-search behind a `Provider` interface (SearXNG + Brave JSON adapters). Off by default; injected into `browser`. |
 | `internal/browser`   | Orchestrator. Wires the pipeline + sessions; the only thing `mcpserver` calls. Holds a host-scoped robots.txt/llms.txt cache (`sitecache.go`) and the sitemap/crawl `map` + `search` surface (`discover.go`).|
 | `internal/mcpserver` | Thin MCP adapter: tool registration + handlers + transport.           |
-| `internal/js`        | goja + eventloop DOM bridge over the `*html.Node` tree: scripts/ESM, fetch/XHR, events, a real prototype chain + MutationObserver + custom elements / flat Shadow DOM so React/Vue/Lit render (Phase 8). Quarantined. |
+| `internal/js`        | goja + eventloop DOM bridge over the `*html.Node` tree: scripts/ESM, fetch/XHR, events, a real prototype chain + MutationObserver + custom elements / composed Shadow DOM (slots + cross-boundary events) so React/Vue/Lit render (Phases 8, 23). Quarantined. |
 | `internal/tokens`    | Token estimation + Markdown cursor pagination.                        |
 
 Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`emit`/`tokens`/`session`/
@@ -86,8 +86,9 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   tools. Eight tools total.
 - **Phase 4a — JS / DOM bridge (first slice).** ✅ Hand-rolled goja +
   `goja_nodejs/eventloop` DOM bridge over the live `*html.Node` tree (mutated in
-  place); runs inline scripts, settles async, wall-clock interrupt guard. Opt-in
-  per request (`render`) and per server (`--js`).
+  place); runs inline scripts, settles async, wall-clock interrupt guard.
+  On by default — toggled per request (`render`, default on) and per server
+  (`--disable-js`).
 - **Phase 4b — Real JS networking & lifecycle.** ✅ External `<script src>`
   (document order); `window.fetch` + `XMLHttpRequest` routed through a guarded
   transport (one `__unblinkFetch` Go primitive with the race-free inline-keepalive
@@ -142,7 +143,7 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   handlers they attach during hydration fire.
 - **Phase 8 — Framework rendering (flat-DOM model).** ✅ Client-side rendering and
   hydration for the mainstream SPA frameworks (React, Vue, Preact, Svelte, and
-  Lit / web components), always-on under `--js`. The goja↔DOM bridge gained a real
+  Lit / web components), on by default (opt out with `--disable-js`). The goja↔DOM bridge gained a real
   `Node`/`Element`/`HTMLElement`/`Text`/`Comment`/`DocumentFragment`/`Document`
   prototype chain (so `instanceof` and prototype-patching work; `internal/js/proto.go`),
   the DOM-tree APIs frameworks call at mount (`createComment`/`createDocumentFragment`/
@@ -150,8 +151,9 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   `createTreeWalker`/`getAttributeNames`, and the `HTML*Element` interface globals;
   `domapi.go`/`treewalker.go`), a real `MutationObserver` + `queueMicrotask`, real
   `history.pushState`/`popstate` for client-side routing, custom-element upgrade plus
-  a **flat** (non-encapsulating) Shadow DOM that renders into the light tree
-  (`customelements.go`), and render diagnostics — detected framework + uncaught/async
+  an **encapsulating, composed** Shadow DOM — a detached shadow subtree flattened with
+  `<slot>` distribution into the light tree for extraction (Phase 23, ADR 0005;
+  `customelements.go`/`slots.go`) — and render diagnostics — detected framework + uncaught/async
   errors surfaced on `page.Page.RenderDiag` and `slog` debug (`diagnostics.go`).
   Validated against pinned real bundles (`testdata/frameworks`,
   `internal/js/frameworks_test.go`).
@@ -562,6 +564,34 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     lookups require pointer identity with the resolved page. Sessions, waited
     renders, and credentialed one-shots bypass it entirely.
 
+- **Phase 23 — Shadow DOM composition (ADR 0005).** ✅ Replaces the flat,
+  non-encapsulating Shadow DOM with a **composed, encapsulating** one, fixing real
+  content loss (a component setting `shadowRoot.innerHTML` after light children
+  existed used to destroy them) and spec-incorrect event flow.
+  - **Detached shadow subtree**: `attachShadow` now backs the root with its own
+    detached `DocumentNode` (`shadowRoots[host]` + reverse `shadowHostOf`), so page-JS
+    `document.querySelector` provably stops at the boundary while a shadow-internal
+    `querySelector` still works. `isConnected`/`getRootNode` bridge the boundary.
+  - **Compose = the browser flattened tree** (`internal/js/slots.go`): one
+    clone-producing walk replaces each host with its shadow subtree and resolves every
+    `<slot>` to the host's assigned light children (by name, with fallback), recursing
+    through nested hosts. Destructive into `doc` at the end of one-shot `Render`;
+    clone-only at live `Snapshot` (the live session keeps its separate subtrees across
+    `Dispatch`). `assignedNodes`/`assignedElements`/`slot` are exposed to component code.
+  - **Cross-boundary events**: `elementTargetPath` builds the shadow-including composed
+    path with per-hop `target` retargeting; `composedPath()` was added and the
+    `composed` flag is plumbed/honored. `bubbles` and `composed` stay orthogonal —
+    `composed` gates crossing the boundary, `bubbles` gates only the bubble phase, and
+    anchors are retargeted in every phase.
+  - **unblink pierces, page JS does not**: interact and `wait_for` resolve selectors
+    through shadow subtrees (`queryPierce`), so an agent can target a shadow-rendered
+    control; page code still sees a real boundary.
+  - **Declarative Shadow DOM** (`internal/dom/shadow.go`): `<template shadowrootmode>`
+    is flattened into composed light content on the static no-JS path (SSR web
+    components render without `--js`); under `--js` the imperative path owns it.
+  - **Closed mode**: `.shadowRoot` is `null` for a closed root, but its content is
+    still composed into extraction output (mission: see everything).
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`
@@ -569,9 +599,15 @@ return zeros/empty so framework probes don't crash; no pixels are ever computed.
 The **viewport environment**, by contrast, is now a truthful constant (Phase 21):
 `window.innerWidth`/`screen`/`devicePixelRatio` report a fixed 1280×720@1x desktop
 and `matchMedia` genuinely evaluates queries against it, so responsive code takes
-its real branch instead of the always-false fallback. Shadow DOM is **flattened,
-not encapsulated**: shadow content renders into the light tree (visible to
-extraction) and `:host`/`<slot>`/style scoping are ignored.
+its real branch instead of the always-false fallback. Shadow DOM is **encapsulated
+and composed** (Phase 23, ADR 0005): each shadow root is a detached subtree — page-JS
+`document.querySelector` respects the boundary — and a compose pass flattens it,
+resolving `<slot>` distribution, into the light tree so extraction still sees
+everything (unblink's own interact/wait selectors pierce the boundary). Events cross
+the boundary correctly (composed path + `target` retargeting + `composedPath()`, with
+`bubbles`/`composed` kept orthogonal), and declarative Shadow DOM
+(`<template shadowrootmode>`) is flattened on the static no-JS path. Only CSS-level
+scoping (`:host`/`::slotted`/`::part`) and slot reprojection stay out of scope.
 `IntersectionObserver`/`ResizeObserver` report one synthetic "visible / zero-size"
 entry so lazy content renders.
 
@@ -608,11 +644,13 @@ the pure-Go / no-Chromium constraint).
 ## Risks
 
 - **JS/DOM gap**: most modern SPA content is client-rendered and the static path
-  won't see it. Mitigation: ship static value first; treat JS as opt-in (`--js`)
-  and degrade gracefully to the static path. With `--js` the flat-DOM model
-  (Phase 8) now renders mainstream React/Vue/Preact/Svelte/Lit apps, so the
-  remaining gap is layout-dependent behaviour (geometry, canvas, true Shadow-DOM
-  encapsulation), which stays out of scope.
+  won't see it. Mitigation: JS renders by default; a caller can drop to the static
+  path per read (`render=false`) or per server (`--disable-js`), and the engine
+  degrades gracefully to static when a render fails. With JS on, the flat-DOM model
+  (Phase 8), plus composed Shadow DOM (Phase 23), now renders mainstream
+  React/Vue/Preact/Svelte/Lit apps and web components, so the remaining gap is
+  layout-dependent behaviour (geometry, canvas, CSS-level Shadow-DOM style scoping),
+  which stays out of scope.
 - **goja goroutine-safety**: a runtime is single-goroutine; concurrency is
   handled by a pool, capped separately from fetch concurrency.
 - **Output token budget**: whole-page Markdown can be huge; `read` will paginate
