@@ -126,8 +126,9 @@ type bridge struct {
 	jsClearTimeout goja.Callable
 	noopVal        goja.Value
 
-	// timerAudit, when the prelude registered it, returns the count of one-shot
-	// timers still scheduled — read on the settle-close tick for timers_pending.
+	// timerAudit, when the prelude registered it, returns {c, t}: clamped
+	// one-shot timers still scheduled (read on the settle-close tick for
+	// timers_pending) and all live wrapped timers (the provable-idle signal).
 	timerAudit goja.Callable
 
 	// pending counts in-flight off-loop network requests (brackets the keepalive
@@ -138,6 +139,12 @@ type bridge struct {
 	// netCount is the countingTransport installed over the caller's Transport (nil
 	// when the render has no network); render diagnostics read its totals.
 	netCount *countingTransport
+
+	// prefetch holds the in-flight concurrent fetches of the initial external
+	// <script src> bodies (nil unless startPrefetch armed it). Written once on
+	// the loop goroutine before runScripts; entries are filled by off-loop
+	// workers and read via prefetched(), which blocks on the entry's done.
+	prefetch map[string]*prefetchEntry
 
 	// assets is the Engine's shared cross-render script/module/bundle cache (nil
 	// when disabled). Set by the engine right after newBridge. Asset-cache hits

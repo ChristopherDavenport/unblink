@@ -338,14 +338,29 @@ const preludeJS = `
         var h = live[id]; if (h !== undefined) { delete live[id]; nativeClearI(h); }
       };
     }
-    // Audit hook: report how many clamped one-shot timers are still unfired. The
-    // settle poll reads this every tick — non-zero holds it open (deferred
-    // content pending) — and at close reports it as timers_pending, so a snapshot
-    // taken with content still behind a timer is flagged rather than silently
-    // truncated.
+    // goja's event loop exposes a native setImmediate (a 0-delay macrotask
+    // here). Route it through the wrapped setTimeout so immediates land in the
+    // live table: the settle audit must see every scheduled macrotask, and
+    // React's scheduler prefers setImmediate over MessageChannel when it
+    // exists — an unwrapped one would hide work-loop continuations from the
+    // provable-idle check.
+    window.setImmediate = function (fn) {
+      var args = Array.prototype.slice.call(arguments, 1);
+      return window.setTimeout.apply(undefined, [fn, 0].concat(args));
+    };
+    window.clearImmediate = window.clearTimeout;
+    // Audit hook: {c: clamped one-shot timers still unfired, t: all live wrapped
+    // timers (one-shots, intervals, immediates)}. The settle poll reads this
+    // every tick: non-zero c holds the poll open (deferred content pending) and
+    // is reported at close as timers_pending; t==0 combined with zero in-flight
+    // network is the provable-idle signal — no mechanism left to run more JS —
+    // that lets the settle close without waiting out the quiet window.
     if (typeof window.__unblinkRegisterTimerAudit === 'function') {
       window.__unblinkRegisterTimerAudit(function () {
-        var n = 0; for (var k in clamped) n++; return n;
+        var c = 0, t = 0, k;
+        for (k in clamped) c++;
+        for (k in live) t++;
+        return { c: c, t: t };
       });
       delete window.__unblinkRegisterTimerAudit;
     }

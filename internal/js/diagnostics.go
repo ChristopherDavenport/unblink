@@ -35,11 +35,16 @@ type RenderResult struct {
 	NetPending  int  // subrequests still in flight when the snapshot was taken
 	DeadlineHit bool // settle closed by the JS budget deadline rather than by quiescence
 	DOMBusy     bool // the DOM was still mutating when the settle closed
-	// TimersPending is the count of one-shot timers still scheduled when the
-	// settle closed. Long timers are clamped into the budget so most fire, but a
-	// non-zero count flags that content may still be behind a timer — raise
-	// wait_timeout / use wait_for.
+	// TimersPending is the count of clamped one-shot timers still scheduled when
+	// the settle closed. Long timers are clamped into the budget so most fire,
+	// but a non-zero count flags that content may still be behind a timer —
+	// raise wait_timeout / use wait_for.
 	TimersPending int
+	// SettledIdle reports that the settle closed via the provable-idle fast
+	// path: no in-flight network and no live timers, so no mechanism existed to
+	// run more JS and the snapshot is complete by construction. False means the
+	// quiet-window heuristic (or the budget) closed it.
+	SettledIdle bool
 
 	// Timing: where the render's wall clock went, filled by the engine after the
 	// settle. SetupDur covers loop acquisition + bridge install + prelude; ExecDur

@@ -505,6 +505,61 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     faster to start). ADR 0003 added; README gains an MCP-client-config section, a
     flags table, `SECURITY.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`.
 
+- **Phase 22 — Throughput.** ✅ Closes the render-latency and aggregate-throughput
+  gap against warm-browser MCP tools without touching the politeness defaults or
+  resource bounds.
+  - **Provable-idle settle (ADR 0004)**: the quiet-window heuristic gains a fast
+    tier above it. Every JS work source was already instrumented (network via
+    the `pending` bracket, macrotasks via the prelude's wrapped-timer table) —
+    the one leak, goja's native `setImmediate`, is now routed through the
+    wrapped `setTimeout`. When nothing is in flight and no live timers remain,
+    no mechanism exists to run more JS, so `settlePoll` closes after one ~1ms
+    confirmation tick instead of waiting out the 60ms window; anything armed
+    falls back to the unchanged 60ms-quiet-after-last-activity heuristic (now
+    polled at 5ms granularity, first check synchronous at poll entry). Idle
+    renders drop ~63ms → ~3ms; synchronous-only `interact` dispatches stop
+    paying the window per click. `SettledIdle` in the render diagnostics
+    records which tier closed the settle. The invariant this rests on — every
+    new async primitive must route through the audit — is recorded in ADR 0004.
+  - **Crossbench measured the limiter, not the engine**: the unblink adapter
+    now passes `--rate-limit 0` (single loopback fixture host + cache-busted
+    URLs meant the default 5 req/s politeness limiter paced every render at
+    ~200ms; no other benchmarked tool ships one). Recorded as the one
+    deviation from tool defaults in the harness fairness rules; production
+    defaults unchanged.
+  - **`--js-concurrency`**: the one-shot render semaphore (previously pinned at
+    4 with no knob) now defaults to GOMAXPROCS clamped to [4, 16] — renders are
+    CPU-bound goja interpretation, so it scales with cores while the ceiling
+    bounds worst-case transient heap (the ADR-0003 guard bounds the total
+    regardless). `--js-prewarm` deliberately stays at 4: an idle prewarmed loop
+    costs a runtime's worth of heap, and a burst past the pool only pays ~1.5ms
+    inline creation. `MaxIdleConnsPerHost` rises 8 → 16 to match, so a full
+    concurrency burst's connections stay reusable. Politeness defaults
+    (`--rate-limit` 5 req/s/host) are untouched.
+  - **Concurrent script-body prefetch** (`internal/js/prefetch.go`): the
+    initial external `<script src>` bodies previously fetched synchronously on
+    the loop goroutine, one round trip after another. They now prefetch through
+    the same counting/budgeted/SSRF-guarded transport with 4 bounded workers
+    while `runScripts` consumes them in strict document order — sum(RTT)
+    collapses to max(RTT), and since runScripts executes exactly the collected
+    snapshot the prefetch is not speculative (no over-fetch, identical request
+    accounting). Applies to one-shot renders and live session opens.
+  - **Content-only compile caches**: `progKey` dropped the script name (page
+    position / chunk URL) — identical bytes now share one `goja.Program`
+    regardless of which URL or position delivered them, with the first-seen
+    name embedded (diagnostic-only; external scripts now compile under their
+    absolute URL, better than the old positional `script-N.js`). `bundleKey`
+    clears the base URL's query/fragment before hashing — relative specifiers
+    resolve against scheme/host/path only — so `?utm=`/cache-busted variants
+    of a module page stop re-running the whole esbuild build.
+  - **Markdown memo on the page cache** (`internal/browser/cache.go`): each
+    stateless cache entry carries the reduced+emitted Markdown keyed
+    {mode, safeOutput}; repeat reads and pagination cursor pages skip
+    reduce+emit+defang (warm read 657µs → 11µs, allocs −99%). Invalidation is
+    structural — the memo dies with its entry, survives a 304 touch, and
+    lookups require pointer identity with the resolved page. Sessions, waited
+    renders, and credentialed one-shots bypass it entirely.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

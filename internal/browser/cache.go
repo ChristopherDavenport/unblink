@@ -27,7 +27,73 @@ type cache struct {
 
 type cacheEntry struct {
 	page *page.Page
+	memo *pageMemo
 	at   time.Time
+}
+
+// pageMemo caches the reduced+emitted Markdown for one cached page, keyed by
+// the read options that shape it, so repeat reads and pagination cursor pages
+// skip reduce+emit entirely. It lives and dies with its cache entry: a new
+// fetch installs a fresh memo, a 304 touch keeps it (the origin confirmed the
+// bytes are unchanged), and eviction drops both together — there is no second
+// invalidation policy to get wrong. Values are plain strings computed from a
+// copy of the page; the shared page is never mutated.
+type pageMemo struct {
+	mu sync.Mutex
+	m  map[memoKey]memoVal
+}
+
+type memoKey struct {
+	mode       string // effective reduction mode requested: "article" | "full"
+	safeOutput bool
+}
+
+type memoVal struct {
+	markdown        string
+	mode            string // mode actually reported (article→full fallback, non-HTML kind)
+	articleFallback bool
+}
+
+// lookup is nil-safe: a nil memo (session page, waited render, authed one-shot)
+// always misses.
+func (m *pageMemo) lookup(k memoKey) (memoVal, bool) {
+	if m == nil {
+		return memoVal{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.m[k]
+	return v, ok
+}
+
+// store is nil-safe. Concurrent racers compute identical values, so last-write
+// wins is fine.
+func (m *pageMemo) store(k memoKey, v memoVal) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.m == nil {
+		m.m = make(map[memoKey]memoVal, 2)
+	}
+	m.m[k] = v
+}
+
+// memoFor returns the memo attached to key's entry iff that entry still holds
+// exactly p. The pointer-identity check ties the memo to the page it was
+// computed from: a concurrently replaced entry can never serve another page's
+// markdown.
+func (c *cache) memoFor(key string, p *page.Page) *pageMemo {
+	if c == nil || c.ttl <= 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[key]; ok && e.page == p {
+		return e.memo
+	}
+	return nil
 }
 
 func newCache(ttl time.Duration, capacity int) *cache {
@@ -99,7 +165,7 @@ func (c *cache) put(key string, p *page.Page) {
 	if _, exists := c.entries[key]; !exists && len(c.entries) >= c.cap {
 		c.evictOldest()
 	}
-	c.entries[key] = cacheEntry{page: p, at: time.Now()}
+	c.entries[key] = cacheEntry{page: p, memo: &pageMemo{}, at: time.Now()}
 }
 
 // evictOldest removes the least-recently-stored entry. Caller holds c.mu.

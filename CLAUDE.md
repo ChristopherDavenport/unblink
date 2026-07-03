@@ -44,8 +44,9 @@ GOTOOLCHAIN=auto go test ./internal/dom -run TestExtract/subtest -v
 Proving a performance change: `make bench > /tmp/base.txt` on the baseline
 commit, apply the change, `make bench > /tmp/new.txt`, then
 `go run golang.org/x/perf/cmd/benchstat@latest /tmp/base.txt /tmp/new.txt`.
-Include the benchstat table in the PR. JS render benchmarks each pay the
-~60ms settle floor by design — engine wins appear as absolute deltas.
+Include the benchstat table in the PR. JS renders settle on two tiers (ADR
+0004): provably-idle pages (no in-flight network, no live timers) close in
+~1-3ms; anything armed pays the ~60ms quiet window after its last activity.
 
 **Go-version gotcha:** the MCP SDK needs Go ≥ 1.25. The Makefile exports
 `GOTOOLCHAIN=auto` so `go` downloads the toolchain pinned in `go.mod`

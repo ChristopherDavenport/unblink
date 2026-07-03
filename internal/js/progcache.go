@@ -10,17 +10,22 @@ import (
 // The program cache shares compiled goja.Programs across renders and runtimes:
 // a Program is immutable and documented safe to run in multiple runtimes
 // concurrently, so repeat renders of the same site skip goja's parse+compile
-// of its bundles entirely. Keys include the script name (a Program embeds it
-// in stack traces/errors, so reuse must keep diagnostics byte-identical) plus
-// a hash of the source. Compile *outcomes* are cached — including failures and
-// the esbuild dynamic-import-lowering fallback — so a broken or lowered script
-// doesn't re-pay parse/Transform on every render.
+// of its bundles entirely. Keys are content-only per compile pathway: the same
+// bytes compile to the same Program regardless of which URL, page position, or
+// query-busted variant delivered them (a CDN bundle re-served under a new URL
+// must not re-pay a multi-MB parse). The Program embeds the *first-seen* name
+// in stack traces/errors; identical bytes behave identically, so the name is
+// diagnostic-only — and external scripts now compile under their absolute URL,
+// which reads better in a trace than the old positional script-N.js anyway.
+// Compile *outcomes* are cached — including failures and the esbuild
+// dynamic-import-lowering fallback — so a broken or lowered script doesn't
+// re-pay parse/Transform on every render.
 //
 // Bounded by entry count and summed source bytes per generation, evicted by
 // two-generation swap (hits in the previous generation re-promote).
 
 type progKey struct {
-	name string
+	kind string // compile pathway ("classic", "module.js", "dynimport.js"), never identity
 	hash [32]byte
 }
 
@@ -66,10 +71,12 @@ func progCachePut(key progKey, e progEntry) {
 	progCache.curBytes += e.size
 }
 
-// compileCached compiles src under name with cross-render caching. It caches
-// errors too: identical source yields an identical compile outcome.
+// compileCached compiles src under name with cross-render caching. Callers pass
+// a constant pathway name ("module.js", "dynimport.js"), which doubles as the
+// key's kind — the cache is content-only within each pathway. It caches errors
+// too: identical source yields an identical compile outcome.
 func compileCached(name, src string) (*goja.Program, error) {
-	key := progKey{name: name, hash: sha256.Sum256([]byte(src))}
+	key := progKey{kind: name, hash: sha256.Sum256([]byte(src))}
 	if e, ok := progCacheGet(key); ok {
 		return e.prog, e.err
 	}

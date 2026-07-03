@@ -18,10 +18,10 @@ import (
 	"github.com/christopherdavenport/unblink/internal/js"
 )
 
-// End-to-end render benchmarks. Every full render pays the settle floor
-// (settleQuietTicks quiet ticks before the poll closes), so engine-side wins
-// show up as absolute deltas on top of that floor; the in-package benchmarks
-// in internal_bench_test.go isolate the setup costs the floor would mute.
+// End-to-end render benchmarks. Provably-idle pages settle in ~1-3ms (ADR
+// 0004); a page with anything armed pays the ~60ms quiet window after its last
+// activity. The in-package benchmarks in internal_bench_test.go isolate the
+// per-render setup costs.
 
 func loadBundleBench(b *testing.B, name string) string {
 	b.Helper()

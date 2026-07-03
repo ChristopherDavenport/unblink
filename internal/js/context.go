@@ -14,18 +14,29 @@ import (
 	"golang.org/x/net/html"
 )
 
-// Settle tuning for the persistent (live Context) path. A Start()ed loop never
-// drains its job queue (background +1, and any setInterval pins it), so "the page
-// settled" is a heuristic: the in-flight network count has held at zero across a
-// short quiet period, bounded by a wall-clock budget.
+// Settle tuning. A Start()ed loop never drains its job queue (background +1, and
+// any setInterval pins it), so "the page settled" is inferred, on two tiers:
+//
+//   - Provable idleness: every JS work source is instrumented — network through
+//     the `pending` bracket, macrotasks through the prelude's wrapped-timer table
+//     (ADR 0004) — so zero in-flight requests plus zero live timers means no
+//     mechanism exists to run more JS and the page cannot change again. The poll
+//     closes after one short confirmation tick instead of waiting out the quiet
+//     window.
+//   - Quiet-window heuristic (anything armed: intervals, pending timers, network):
+//     no DOM change, no in-flight network, and no clamped one-shot timers for
+//     settleQuietWindow of wall clock. 30ms proved too aggressive historically —
+//     a framework idling between microtask batches, or an XHR scheduled but not
+//     yet dispatched, could trip it and return a half-hydrated page — so the
+//     window stays at 60ms, now detected at 5ms granularity instead of 15ms.
 const (
-	settleTick = 15 * time.Millisecond
-	// 4 quiet ticks ≈ 60ms with no DOM change and no in-flight network before the
-	// page is declared settled. 2 ticks (~30ms) proved too aggressive: a framework
-	// idling between microtask batches, or an XHR scheduled but not yet dispatched,
-	// could trip the quiet counter and return a half-hydrated page.
-	settleQuietTicks = 4
-	settleGrace      = 500 * time.Millisecond // hard-watchdog margin past the settle budget
+	settleTick        = 5 * time.Millisecond
+	settleQuietWindow = 60 * time.Millisecond
+	// settleConfirm delays the provable-idle close by one short tick as
+	// defense-in-depth: a work source that escaped the audit would have to
+	// surface within it. Documented as droppable with field evidence.
+	settleConfirm = 1 * time.Millisecond
+	settleGrace   = 500 * time.Millisecond // hard-watchdog margin past the settle budget
 )
 
 var errContextClosed = errors.New("js: live context is closed")
@@ -104,6 +115,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()
+		b.startPrefetch(scripts) // overlap script-body fetches with the prelude
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
 		b.runScripts(scripts)
@@ -225,7 +237,7 @@ func (c *Context) run(ctx context.Context, waitSettle bool, cond *WaitCondition,
 		vm.ClearInterrupt() // clear any flag a previously-interrupted op left armed
 		fn(vm)
 		if waitSettle {
-			settlePoll(c.loop, c.bridge, c.timeout, cond, stats, closeDone)
+			settlePoll(vm, c.loop, c.bridge, c.timeout, cond, stats, closeDone)
 		} else {
 			closeDone()
 		}
@@ -256,29 +268,58 @@ func (c *Context) interrupt(msg string) {
 	}
 }
 
-// settlePoll schedules an on-loop quiet-period poll that closes done once the page
-// has been quiet — no in-flight network *and* no DOM mutations (frameworks render
-// after microtasks/rAF, not network) — for settleQuietTicks, or the budget elapses.
-// It clears any armed interrupt before closing so background JS resumes.
+// auditTimers reads the prelude's timer audit: clamped one-shot timers still
+// unfired (deferred content pending — holds the settle open) and all live wrapped
+// timers of any kind (the provable-idle signal). Runs on the loop goroutine; the
+// bridge's own runtime resolves the returned object.
+func auditTimers(b *bridge) (clamped, live int) {
+	if b == nil || b.timerAudit == nil {
+		return 0, 0
+	}
+	v, err := b.timerAudit(goja.Undefined())
+	if err != nil || v == nil {
+		return 0, 0
+	}
+	obj := v.ToObject(b.vm)
+	if obj == nil {
+		return 0, 0
+	}
+	if c := obj.Get("c"); c != nil {
+		clamped = int(c.ToInteger())
+	}
+	if t := obj.Get("t"); t != nil {
+		live = int(t.ToInteger())
+	}
+	return clamped, live
+}
+
+// settlePoll closes done once the page has settled, on two tiers: immediately
+// (after one confirmation tick) when the page is provably idle — no in-flight
+// network and no live wrapped timers, so no mechanism exists to run more JS — or
+// once the page has been quiet (no in-flight network, no DOM mutations, no clamped
+// one-shot timers) for settleQuietWindow of wall clock, bounded by the budget. It
+// clears any armed interrupt before closing so background JS resumes.
 //
-// When cond is non-nil and non-empty it is a gate: the quiet counter is held at zero
-// until cond holds in the live DOM, so the poll waits (within the same budget) for
+// When cond is non-nil and non-empty it is a gate: neither tier can close the poll
+// until cond holds in the live DOM, so it waits (within the same budget) for
 // late-arriving content before settling. met, when non-nil, is set true the first
-// tick the condition holds.
+// check the condition holds.
 //
-// pending/domVersion are read on the loop goroutine (same as where they are written),
-// so no synchronization is needed. A page that stops mutating after load has a stable
-// domVersion from the first tick, so with no condition it settles on the same schedule
-// as before — the DOM-quiet gate only adds latency while a framework is rendering. All
-// SetTimeout callbacks run on-loop, so callers must schedule the first tick from there.
-func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond *WaitCondition, stats *settleStats, closeDone func()) {
+// pending/domVersion are read on the loop goroutine (same as where they are
+// written), so no synchronization is needed. settlePoll must be called on the loop
+// goroutine: the first check runs synchronously — script execution and lifecycle
+// dispatch have completed and their microtasks drained, so an idle page is
+// detectable at entry rather than one tick later. vm is the caller's runtime,
+// used for that entry check; subsequent checks run as loop timer callbacks.
+func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond *WaitCondition, stats *settleStats, closeDone func()) {
 	deadline := time.Now().Add(budget)
-	quiet := 0
 	var lastVersion uint64
 	if b != nil {
 		lastVersion = b.domVersion
 	}
-	condMet := cond.empty() // nil/blank condition is satisfied from the first tick
+	condMet := cond.empty()  // nil/blank condition is satisfied from the first check
+	var quietSince time.Time // zero while the page is (or was just) busy
+	idleArmed := false       // previous check was provably idle; this one confirms
 	var tick func(*goja.Runtime)
 	tick = func(vm *goja.Runtime) {
 		if !condMet && b != nil && cond.satisfied(b.doc) {
@@ -287,6 +328,7 @@ func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond
 				stats.met = true
 			}
 		}
+		now := time.Now()
 		netIdle := b == nil || b.pending.Load() == 0
 		domQuiet := true
 		if b != nil {
@@ -294,25 +336,33 @@ func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond
 			domQuiet = v == lastVersion
 			lastVersion = v
 		}
+		clamped, liveTimers := auditTimers(b)
+		// Provable idleness needs a real bridge (only then is every work source
+		// instrumented) and an audit-registered prelude; liveTimers==0 without a
+		// bridge proves nothing, so b==nil stays on the heuristic tier.
+		idle := condMet && b != nil && b.timerAudit != nil && netIdle && liveTimers == 0
+		settledIdle := idle && idleArmed && domQuiet
+		idleArmed = idle
 		// A clamped one-shot timer that hasn't fired is pending deferred content;
-		// hold the poll open (within the budget) so it lands before the snapshot.
-		timersPending := 0
-		if b != nil && b.timerAudit != nil {
-			if v, err := b.timerAudit(goja.Undefined()); err == nil && v != nil {
-				timersPending = int(v.ToInteger())
+		// hold the quiet window open (within the budget) so it lands before the
+		// snapshot. Unclamped live timers do NOT hold it — an interval must not
+		// pin the settle to the budget (matches the pre-idle-tier behavior).
+		if condMet && netIdle && domQuiet && clamped == 0 {
+			if quietSince.IsZero() {
+				quietSince = now
 			}
-		}
-		if condMet && netIdle && domQuiet && timersPending == 0 {
-			quiet++
 		} else {
-			quiet = 0
+			quietSince = time.Time{}
 		}
-		settled := condMet && quiet >= settleQuietTicks
-		if settled || time.Now().After(deadline) {
+		settled := settledIdle ||
+			(condMet && !quietSince.IsZero() && now.Sub(quietSince) >= settleQuietWindow)
+		if settled || now.After(deadline) {
 			if stats != nil {
 				stats.deadline = !settled
 				stats.domBusy = !domQuiet
-				stats.timersPending = timersPending
+				stats.timersPending = clamped
+				stats.timersLive = liveTimers
+				stats.idleExit = settledIdle
 				if b != nil {
 					stats.pending = b.pending.Load()
 				}
@@ -321,11 +371,13 @@ func settlePoll(loop *eventloop.EventLoop, b *bridge, budget time.Duration, cond
 			closeDone()
 			return
 		}
-		if loop.SetTimeout(tick, settleTick) == nil {
+		delay := settleTick
+		if idle {
+			delay = settleConfirm
+		}
+		if loop.SetTimeout(tick, delay) == nil {
 			closeDone() // loop terminated mid-settle
 		}
 	}
-	if loop.SetTimeout(tick, settleTick) == nil {
-		closeDone()
-	}
+	tick(vm)
 }

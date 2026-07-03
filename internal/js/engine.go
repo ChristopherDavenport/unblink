@@ -235,6 +235,10 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()
+		// Kick off the concurrent script-body prefetch before the prelude runs so
+		// the fetches overlap prelude execution and each other; runScripts blocks
+		// on each body in document order.
+		b.startPrefetch(scripts)
 		// Timer clamp deadline (one-shot renders only): a wall-clock instant, read
 		// by the prelude timer wrapper, past which a long one-shot timer is pulled
 		// in so its content still materializes. Live sessions leave this unset.
@@ -258,7 +262,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		if env.Diag != nil {
 			*env.Diag = b.collectDiagnostics()
 		}
-		settlePoll(loop, b, budget, env.Wait, &stats, closeDone)
+		settlePoll(vm, loop, b, budget, env.Wait, &stats, closeDone)
 	})
 	if !scheduled {
 		loop.Terminate()
@@ -317,6 +321,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		env.Diag.DOMBusy = stats.domBusy
 		env.Diag.NetPending = int(stats.pending)
 		env.Diag.TimersPending = stats.timersPending
+		env.Diag.SettledIdle = stats.idleExit && !interrupted
 		if b != nil {
 			if interrupted {
 				// The settle never closed on its own (a wedged script or cancellation),

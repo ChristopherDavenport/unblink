@@ -248,8 +248,9 @@ func (c *Client) buildTransport() http.RoundTripper {
 		MaxIdleConns:      100,
 		// The stdlib default of 2 idle conns per host makes concurrent same-host
 		// work (page + subresources, parallel agent reads) pay fresh TCP+TLS
-		// handshakes; 8 keeps a small burst's connections reusable.
-		MaxIdleConnsPerHost:   8,
+		// handshakes; 16 keeps a full render-concurrency burst's connections
+		// reusable (matches the --js-concurrency auto cap).
+		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,

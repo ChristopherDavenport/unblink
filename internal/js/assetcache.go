@@ -79,11 +79,16 @@ func (a *assetCache) put(key string, body []byte) {
 
 // bundleKey builds the cache key for an esbuild output: the bundle is a pure
 // function of the entry source, the base URL its imports resolve against, and
-// the import map — all hashed (import map serialized in sorted order).
+// the import map — all hashed (import map serialized in sorted order). The
+// base's query and fragment are cleared first: relative specifiers resolve
+// against scheme/host/path only, so `?utm=`-style variants of the same page
+// must not each pay a full esbuild rebuild of the module graph.
 func bundleKey(base *url.URL, entry string, importMap map[string]string) string {
 	h := sha256.New()
 	if base != nil {
-		h.Write([]byte(base.String()))
+		c := *base
+		c.RawQuery, c.Fragment, c.RawFragment = "", "", ""
+		h.Write([]byte(c.String()))
 	}
 	h.Write([]byte{0})
 	h.Write([]byte(entry))

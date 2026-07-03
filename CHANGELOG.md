@@ -5,6 +5,48 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ## Unreleased
 
+### Performance
+
+- **Provable-idle settle (ADR 0004).** Every JS work source was already
+  instrumented (network via the in-flight bracket, macrotasks via the wrapped
+  timer table) except goja's native `setImmediate` — now wrapped. With that
+  leak closed, zero in-flight requests plus zero live timers *proves* the page
+  cannot change again, so the settle closes after a ~1 ms confirmation tick
+  instead of waiting out the 60 ms quiet window; pages with anything armed
+  keep the unchanged 60 ms-quiet-after-last-activity heuristic (now polled at
+  5 ms granularity). Render benchmarks: minimal 63.3 ms → 1.8 ms, React
+  81.6 ms → 9.4 ms, Vue 65.7 ms → 3.5 ms; synchronous-only `interact`
+  dispatches stop paying the window per click. `SettledIdle` is recorded in
+  render diagnostics.
+- **Concurrent script-body prefetch.** The initial external `<script src>`
+  bodies fetch in parallel (4 bounded workers, same counting/budgeted/
+  SSRF-guarded transport) while execution stays strictly document-ordered:
+  N scripts cost max(RTT) instead of sum(RTT), with identical request
+  accounting (nothing speculative is fetched).
+- **Content-only compile caches.** Identical script bytes share one compiled
+  `goja.Program` regardless of URL or page position (external scripts now
+  compile under their absolute URL — better stack traces than the positional
+  `script-N.js`), and the esbuild bundle key ignores the page URL's
+  query/fragment, so `?utm=`-style variants stop re-running the whole
+  module-graph build.
+- **Markdown memo on the page cache.** Repeat reads and pagination cursor
+  pages within the 60 s cache TTL skip reduce+emit+defang entirely (warm read
+  657 µs → 11 µs, allocations −99%). The memo lives and dies with its cache
+  entry; sessions, waited renders, and credentialed one-shots are unaffected.
+- **`--js-concurrency`** (new flag, default auto = CPU count clamped to
+  4..16): the one-shot render semaphore was silently pinned at 4; it now
+  scales with cores. `--js-prewarm` stays at 4; `MaxIdleConnsPerHost` rises
+  8 → 16 to match. Politeness defaults (`--rate-limit`) are untouched.
+- **Crossbench was measuring unblink's politeness limiter, not its engine**:
+  the adapter never passed `--rate-limit`, so the single-host cache-busted
+  corpus paced every render at ~200 ms and pinned sequential throughput at
+  exactly 5 pages/s. The adapter now runs `--rate-limit 0` (recorded as the
+  one deviation from tool defaults in the fairness rules — no other
+  benchmarked tool ships a crawl-politeness limiter), and
+  `docs/comparison.md` now also publishes the concurrent-throughput row.
+  Re-measured medians: SPA renders ~2–10 ms (was ~200 ms), ~249 pages/s
+  sequential / ~827 pages/s at 8-way concurrent (was ~5 pages/s).
+
 ### Added
 
 - **Cross-tool benchmark harness** (`make crossbench`): `scripts/membench`

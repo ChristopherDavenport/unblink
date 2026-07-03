@@ -235,21 +235,29 @@ masquerade as efficiency. Reproduce with `make crossbench` (see
 [`scripts/membench`](../scripts/membench), a separate module so its
 dependencies never touch the published binary).
 
-Measured 2026-07-03 · WSL2 (Linux 6.6, 4 vCPU / 5.8 GiB) · unblink v0.17.1 ·
-Chromium 140.0.7339.16 · @playwright/mcp 0.0.77 (Playwright 1.62.0-alpha) ·
-charlotte 0.6.3 · obscura 0.1.9 · lightpanda nightly 1.0.0-7742 · median of
-3 runs:
+Measured 2026-07-03 · WSL2 (Linux 6.6, 4 vCPU / 5.8 GiB) · unblink v0.17.1
+(+ the Phase 22 throughput work) · Chromium 140.0.7339.16 · @playwright/mcp
+0.0.77 (Playwright 1.62.0-alpha) · charlotte 0.6.3 · obscura 0.1.9 ·
+lightpanda nightly 1.0.0-7742 · median of 3 runs.
+
+One recorded deviation from tool defaults: the unblink adapter passes
+`--rate-limit 0`. Its default politeness limiter (5 req/s per host) is a
+crawl-courtesy policy no other benchmarked tool ships, and the whole corpus is
+served from a single loopback host with cache-busted URLs — under the default,
+every SPA latency median collapsed to token pacing (~200 ms/request) and
+sequential throughput pinned at exactly 5 pages/s. Latency and throughput
+numbers published before this date measured that policy, not the engine.
 
 ### Measured footprint
 
 | Metric | unblink | Chromium (headless) | Playwright MCP | Charlotte | Obscura | Lightpanda |
 |---|---|---|---|---|---|---|
 | Binary on disk | 36 MB | 439 MB | npx pkg + Chromium | npx pkg + Chromium | 147 MB | 138 MB |
-| Cold start → MCP ready | 16 ms | 153 ms¹ | 514 ms | 555 ms | 2 ms | 5 ms |
-| First page ready | ~1 ms | 190 ms | 206 ms | 200 ms | 9 ms | ~1 ms |
-| Idle RSS (post-init) | 26 MB | 123 MB | 135 MB | 112 MB | 8 MB | 15 MB |
-| Peak RSS (sequential renders) | 42 MB | 149 MB | 298 MB | 270 MB | 13 MB | 17 MB |
-| Peak RSS (8 concurrent) | 43 MB | 245 MB | n/a² | n/a² | n/a² | n/a² |
+| Cold start → MCP ready | 14 ms | 153 ms¹ | 497 ms | 545 ms | 6 ms | 6 ms |
+| First page ready | ~1 ms | 194 ms | 227 ms | 192 ms | 26 ms | 4 ms |
+| Idle RSS (post-init) | 26 MB | 132 MB | 130 MB | 113 MB | 8 MB | 15 MB |
+| Peak RSS (sequential renders) | 43 MB | 157 MB | 295 MB | 281 MB | 28 MB | 16 MB |
+| Peak RSS (8 concurrent) | 44 MB | 246 MB | n/a² | n/a² | n/a² | n/a² |
 | Fixtures fully rendered (of 4) | 4 | 4 | 4 | 4 | 3³ | 4 |
 
 ¹ the raw baseline's "ready" is a blank CDP target, not an MCP handshake.
@@ -260,11 +268,11 @@ a single stdio connection, the raw baseline opens tabs.
 Shadow-DOM gap); React and Vue rendered.
 
 Three readings. **Against the browser-backed tools**, unblink's pitch holds:
-it answers its first read in ~17 ms total while they pay ~0.5 s of Node+MCP
+it answers its first read in ~15 ms total while they pay ~0.5 s of Node+MCP
 start plus ~200 ms of browser/tab work (npx cache warm; package download
-excluded), idles at ~a fifth of their footprint, and peaks at 42 MB against
-their ~270–300 MB — serializing a11y trees or typed decompositions on top of
-the browser costs real memory above even the raw baseline's 149 MB.
+excluded), idles at ~a fifth of their footprint, and peaks at 43 MB against
+their ~280–295 MB — serializing a11y trees or typed decompositions on top of
+the browser costs real memory above even the raw baseline's 157 MB.
 **Against the from-scratch engines, unblink no longer holds the footprint
 floor** — an idle Obscura is 8 MB and Lightpanda 15 MB, both under unblink's
 26 MB, and both cold-start faster. Their bet (rebuild the browser smaller)
@@ -279,32 +287,49 @@ render's goja heap is bounded and torn down after the snapshot.
 
 Per-call latency, URL → that tool's page-ready output, on a cache-missed URL
 each iteration. Each column uses the tool's **own readiness definition**:
-unblink's number is the full `read` (fetch, parse, JS render with its ~60 ms
-settle heuristic, semantic reduction, Markdown emit); the raw Chromium
-baseline opens a fresh tab and gets a settle window matched to unblink's; the
-MCP browser tools navigate a warm tab and serialize at their defaults (load
-event, no settle — content presence on these fixtures is sentinel-verified).
+unblink's number is the full `read` (fetch, parse, JS render, semantic
+reduction, Markdown emit) with its two-tier settle — a page whose scripts
+leave nothing armed is *provably* idle (no in-flight network, no live timers;
+ADR 0004) and settles in ~1 ms, while anything armed pays a 60 ms quiet
+window after its last activity. The raw Chromium baseline opens a fresh tab
+and keeps its fixed 60 ms settle window (CDP exposes no equivalent idle
+proof, so its column carries that flat cost); the MCP browser tools navigate
+a warm tab and serialize at their defaults (load event, no settle — content
+presence on these fixtures is sentinel-verified).
 
 | Page | unblink | Chromium (headless) | Playwright MCP | Charlotte | Obscura | Lightpanda |
 |---|---|---|---|---|---|---|
-| Static / server-rendered article | ~1 ms | ~98 ms | ~19 ms | ~13 ms | ~4 ms | ~1 ms |
-| React SPA render | ~201 ms | ~102 ms | ~22 ms | ~16 ms | ~12 ms | ~9 ms |
-| Vue SPA render | ~199 ms | ~105 ms | ~23 ms | ~16 ms | ~13 ms | ~11 ms |
-| Lit SPA render | ~201 ms | ~101 ms | ~21 ms | ~15 ms | (~5 ms)¹ | ~3 ms |
-| Throughput (mixed corpus, sequential) | ~5 pages/s | ~10 pages/s | ~50 pages/s | ~64 pages/s | ~117 pages/s | ~162 pages/s |
+| Static / server-rendered article | ~1 ms | ~97 ms | ~16 ms | ~13 ms | ~4 ms | ~1 ms |
+| React SPA render | ~10 ms | ~106 ms | ~20 ms | ~16 ms | ~12 ms | ~8 ms |
+| Vue SPA render | ~3 ms | ~104 ms | ~22 ms | ~16 ms | ~13 ms | ~11 ms |
+| Lit SPA render | ~2 ms | ~99 ms | ~19 ms | ~15 ms | (~5 ms)¹ | ~3 ms |
+| Throughput (mixed corpus, sequential) | ~249 pages/s | ~10 pages/s | ~52 pages/s | ~67 pages/s | ~120 pages/s | ~165 pages/s |
+| Throughput (mixed corpus, 8 concurrent) | ~827 pages/s | ~38 pages/s | n/a² | n/a² | n/a² | n/a² |
 
 ¹ call timing only — Obscura's Lit output carried no content (see footprint
 table), so this is not a comparable render.
+² single browsing context per server — pipelined navigations would corrupt
+each other; unblink dispatches concurrent MCP requests on one stdio
+connection, the raw baseline opens tabs.
 
-Two honest halves, sharper than before. On **static pages** — the bulk of
-what an agent reads — unblink and Lightpanda share the floor at ~1 ms; no
-browser round trip at all. On **per-call SPA latency unblink is the slowest
-column here**: goja is a tree-walking interpreter with a deliberate settle
-window, and it builds and tears down an isolated JS runtime per one-shot
-render, while a warm Chromium turns the same navigation around in ~20 ms and
-the embedded-V8 engines in ~3–13 ms. That trade is intentional — bounded
-memory and isolation over a resident renderer — but it is a trade, and this
-table is where it shows. The full picture pairs this table with the next
+This table looked very different before 2026-07-03, for two reasons worth
+being explicit about. First, the harness was pacing unblink against its own
+politeness limiter (see the provenance note above) — the old ~200 ms SPA
+medians measured a crawl policy. Second, the engine's fixed settle floor is
+gone: the settle now *proves* idleness (nothing in flight, nothing armed —
+every async source is instrumented, ADR 0004) instead of always waiting out a
+60 ms quiet window, initial script bodies prefetch concurrently, and compiled
+bundles are cached by content. The result: unblink turns these SPA fixtures
+around in ~2–10 ms — ahead of the warm browsers (~15–22 ms) and level with
+the embedded-V8 engines (~3–13 ms) — while remaining the only column that
+builds and tears down an isolated runtime per render. The honest caveat is
+that goja is still a tree-walking interpreter: the ~10 ms React number is
+dominated by executing react-dom, and a much heavier bundle widens that gap
+against real V8 — the fixtures here are moderate SPAs, not sprawling ones.
+Throughput compounds the per-call story with concurrency: ~249 pages/s
+sequential and ~827 pages/s at 8-way on the mixed corpus, with peak RSS held
+at 44 MB (previous table) because each render's heap is bounded and torn down
+after the snapshot. The full picture still pairs this table with the next
 one: a page an agent reads costs latency *once* but tokens *every time the
 model re-reads its context*.
 
