@@ -174,6 +174,7 @@ func scriptText(n *html.Node) string {
 func (b *bridge) runScripts(scripts []*html.Node) {
 	for i, s := range scripts {
 		var src string
+		name := fmt.Sprintf("script-%d.js", i) // inline fallback; externals use their URL
 		if srcAttr := strings.TrimSpace(getAttr(s, "src")); srcAttr != "" {
 			if b.transport == nil {
 				continue // networking disabled: external scripts can't load
@@ -182,6 +183,7 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 			if err != nil {
 				continue
 			}
+			name = abs
 			if body, ok := b.assets.get(assetKey(abs)); ok {
 				src = string(body)
 			} else if body, ok, found := b.prefetched(abs); found {
@@ -206,7 +208,7 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 			continue
 		}
 		b.currentScript = s
-		b.compileAndRun(fmt.Sprintf("script-%d.js", i), src)
+		b.compileAndRun(name, src)
 		b.currentScript = nil
 	}
 }
@@ -229,9 +231,11 @@ func (b *bridge) compileAndRun(name, src string) {
 // classicProgram resolves the Program for a classic script: goja compile with
 // the esbuild dynamic-import-lowering fallback. The whole outcome — the lowered
 // program or the original compile error — is cached across renders, so neither
-// goja's parse nor esbuild's Transform re-runs for identical source.
+// goja's parse nor esbuild's Transform re-runs for identical source. The key is
+// content-only: name (the script URL, or a positional fallback for inline
+// scripts) reaches goja for diagnostics but never splits the cache.
 func classicProgram(name, src string) (*goja.Program, error) {
-	key := progKey{name: "classic\x00" + name, hash: sha256.Sum256([]byte(src))}
+	key := progKey{kind: "classic", hash: sha256.Sum256([]byte(src))}
 	if e, ok := progCacheGet(key); ok {
 		return e.prog, e.err
 	}
