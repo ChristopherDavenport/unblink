@@ -258,7 +258,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		if env.Diag != nil {
 			*env.Diag = b.collectDiagnostics()
 		}
-		settlePoll(loop, b, budget, env.Wait, &stats, closeDone)
+		settlePoll(vm, loop, b, budget, env.Wait, &stats, closeDone)
 	})
 	if !scheduled {
 		loop.Terminate()
@@ -317,6 +317,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		env.Diag.DOMBusy = stats.domBusy
 		env.Diag.NetPending = int(stats.pending)
 		env.Diag.TimersPending = stats.timersPending
+		env.Diag.SettledIdle = stats.idleExit && !interrupted
 		if b != nil {
 			if interrupted {
 				// The settle never closed on its own (a wedged script or cancellation),

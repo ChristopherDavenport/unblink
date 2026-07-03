@@ -505,6 +505,29 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     faster to start). ADR 0003 added; README gains an MCP-client-config section, a
     flags table, `SECURITY.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`.
 
+- **Phase 22 — Throughput.** ✅ Closes the render-latency and aggregate-throughput
+  gap against warm-browser MCP tools without touching the politeness defaults or
+  resource bounds.
+  - **Provable-idle settle (ADR 0004)**: the quiet-window heuristic gains a fast
+    tier above it. Every JS work source was already instrumented (network via
+    the `pending` bracket, macrotasks via the prelude's wrapped-timer table) —
+    the one leak, goja's native `setImmediate`, is now routed through the
+    wrapped `setTimeout`. When nothing is in flight and no live timers remain,
+    no mechanism exists to run more JS, so `settlePoll` closes after one ~1ms
+    confirmation tick instead of waiting out the 60ms window; anything armed
+    falls back to the unchanged 60ms-quiet-after-last-activity heuristic (now
+    polled at 5ms granularity, first check synchronous at poll entry). Idle
+    renders drop ~63ms → ~3ms; synchronous-only `interact` dispatches stop
+    paying the window per click. `SettledIdle` in the render diagnostics
+    records which tier closed the settle. The invariant this rests on — every
+    new async primitive must route through the audit — is recorded in ADR 0004.
+  - **Crossbench measured the limiter, not the engine**: the unblink adapter
+    now passes `--rate-limit 0` (single loopback fixture host + cache-busted
+    URLs meant the default 5 req/s politeness limiter paced every render at
+    ~200ms; no other benchmarked tool ships one). Recorded as the one
+    deviation from tool defaults in the harness fairness rules; production
+    defaults unchanged.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

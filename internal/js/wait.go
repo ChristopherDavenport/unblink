@@ -30,7 +30,9 @@ type settleStats struct {
 	deadline      bool  // closed by the budget deadline, not by quiescence
 	pending       int32 // network requests still in flight at close
 	domBusy       bool  // the DOM mutated within the final tick window
-	timersPending int   // one-shot timers still scheduled at close (content may be behind one)
+	timersPending int   // clamped one-shot timers still scheduled at close (content may be behind one)
+	timersLive    int   // all live wrapped timers at close (why the idle fast path did/didn't fire)
+	idleExit      bool  // closed by the provable-idle fast path, not the quiet-window heuristic
 }
 
 // satisfied reports whether the condition holds in the tree rooted at doc. An empty

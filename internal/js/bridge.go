@@ -126,8 +126,9 @@ type bridge struct {
 	jsClearTimeout goja.Callable
 	noopVal        goja.Value
 
-	// timerAudit, when the prelude registered it, returns the count of one-shot
-	// timers still scheduled — read on the settle-close tick for timers_pending.
+	// timerAudit, when the prelude registered it, returns {c, t}: clamped
+	// one-shot timers still scheduled (read on the settle-close tick for
+	// timers_pending) and all live wrapped timers (the provable-idle signal).
 	timerAudit goja.Callable
 
 	// pending counts in-flight off-loop network requests (brackets the keepalive
