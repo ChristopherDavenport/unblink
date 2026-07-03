@@ -1,0 +1,36 @@
+# golangci-lint v2 (make lint; CI runs the same via golangci-lint-action).
+# Default linter set: errcheck, govet, ineffassign, staticcheck, unused.
+version: "2"
+
+run:
+  # Lint the eval gate too (eval/ builds behind this tag).
+  build-tags:
+    - eval
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        # Deferred/fire-and-forget Close on read paths is idiomatic; the
+        # write paths that must check Close do so explicitly. The interface
+        # rule only matches interface-typed receivers, so the two concrete
+        # read-path closers are listed too.
+        - (io.Closer).Close
+        - (*compress/gzip.Reader).Close
+        - (*golang.org/x/net/http2.ClientConn).Close
+  exclusions:
+    rules:
+      # Test HTTP handlers write responses constantly; unchecked
+      # Fprintf/WriteString there is noise, not signal.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # eval/ is the offline eval harness (build tag `eval`): fixture HTTP
+      # handlers and a stderr scorecard — same noise class as test files.
+      - path: ^eval/
+        linters:
+          - errcheck
+    # third_party/ carries vendored upstream code (ADR-0001) kept byte-close
+    # to upstream for easy syncing — exempt from lint, same as make vet.
+    paths:
+      - ^third_party/
