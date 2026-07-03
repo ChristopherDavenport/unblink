@@ -131,3 +131,64 @@ func TestArticleSourceReporting(t *testing.T) {
 		t.Errorf("SPA shell Source = %q, want full (fallback must be reported)", shell.Article.Source)
 	}
 }
+
+// articleAround wraps an injected block in enough real prose that readability
+// keeps it as the main content (asserted via Source), so the hidden-strip is
+// exercised on the article path — not silently on the Full fallback.
+func articleAround(inject string) string {
+	prose := strings.Repeat("Substantial article prose that readability keeps as the dominant content region. ", 20)
+	return `<nav><a href="/">Home</a><a href="/about">About</a></nav>` +
+		`<article><h1>Real Story</h1>` +
+		`<p>` + prose + `</p>` +
+		inject +
+		`<p>` + prose + `</p></article>` +
+		`<footer>Copyright boilerplate footer</footer>`
+}
+
+// The article path strips every human-hiding channel — the regression the
+// crossbench content-boundary probe surfaced was off-screen text surviving
+// readability (which drops the inline style, erasing the signal a post-
+// extraction strip relied on). Each case must run on the readability path.
+func TestArticleStripHiddenVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     string
+		stripped bool
+	}{
+		{"display none", `<div style="display:none">SMUGGLED-INJECT</div>`, true},
+		{"hidden attribute", `<div hidden>SMUGGLED-INJECT</div>`, true},
+		{"aria-hidden true", `<span aria-hidden="true">SMUGGLED-INJECT</span>`, true},
+		{"visibility hidden", `<p style="visibility: hidden">SMUGGLED-INJECT</p>`, true},
+		{"offscreen left", `<p style="position:absolute; left: -9999px">SMUGGLED-INJECT</p>`, true},
+		{"offscreen top", `<div style="position:absolute;left:-9999px;top:-9999px">SMUGGLED-INJECT</div>`, true},
+		{"offscreen em", `<p style="text-indent:-999em">SMUGGLED-INJECT</p>`, true},
+		{"clip rect", `<p style="clip: rect(0,0,0,0);position:absolute">SMUGGLED-INJECT</p>`, true},
+		{"ordinary positioning is visible", `<p style="position:absolute; left: 10px">SMUGGLED-INJECT</p>`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPage(t, articleAround(tc.body))
+			if err := reduce.Article(p, true); err != nil {
+				t.Fatalf("Article: %v", err)
+			}
+			if p.Article.Source != "readability" {
+				t.Fatalf("Source = %q, want readability (test must exercise the article path, not the Full fallback)", p.Article.Source)
+			}
+			leaked := strings.Contains(p.Article.ContentHTML, "SMUGGLED-INJECT")
+			if leaked == tc.stripped {
+				t.Errorf("leaked=%v, want stripped=%v:\n%s", leaked, tc.stripped, p.Article.ContentHTML)
+			}
+		})
+	}
+}
+
+// The stripHidden opt-out leaves hidden text in the article output, confirming
+// the pre-extraction strip is gated on the flag (parity with Full).
+func TestArticleStripHiddenOptOut(t *testing.T) {
+	p := newPage(t, articleAround(`<div style="position:absolute;left:-9999px">SMUGGLED-INJECT</div>`))
+	if err := reduce.Article(p, false); err != nil {
+		t.Fatalf("Article: %v", err)
+	}
+	if !strings.Contains(p.Article.ContentHTML, "SMUGGLED-INJECT") {
+		t.Errorf("stripHidden=false should retain hidden text:\n%s", p.Article.ContentHTML)
+	}
+}

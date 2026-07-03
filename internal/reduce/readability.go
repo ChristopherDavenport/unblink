@@ -26,12 +26,31 @@ func Article(p *page.Page, stripHidden bool) error {
 		return fmt.Errorf("reduce: page has no parsed document")
 	}
 
-	art, err := readability.FromDocument(p.Doc, p.FinalURL)
+	// Strip hidden subtrees BEFORE readability extracts. Readability drops inline
+	// style attributes while cleaning, which erases the off-screen-positioning
+	// signal (left:-9999px, clip:rect(0…)) that StripHidden keys on — so if the
+	// strip only ran after extraction (on art.Node), off-screen "screen-reader"
+	// text would survive with its style gone and its prose intact. Removing
+	// hidden nodes up front closes that gap. p.Doc is shared with the cached/
+	// session page (Read passes a shallow page copy), so strip a clone, never
+	// p.Doc itself. readability clones its input internally, so p.Doc stays
+	// canonical either way. Clone only when the page actually has hidden nodes —
+	// the common page carries none and skips the copy entirely.
+	src := p.Doc
+	if stripHidden && dom.HasHidden(p.Doc) {
+		src = dom.CloneTree(p.Doc)
+		dom.StripHidden(src)
+	}
+
+	art, err := readability.FromDocument(src, p.FinalURL)
 	if err != nil || art.Node == nil {
 		return Full(p, stripHidden)
 	}
 
-	// art.Node is readability's clone; rewriting/pruning it in place is safe.
+	// art.Node is readability's clone; rewriting/pruning it in place is safe. The
+	// post-extraction strip is defence-in-depth: the pre-strip already removed
+	// hidden nodes, but readability can restructure the tree, so re-run it on the
+	// small extracted subtree.
 	dom.AbsolutizeURLs(art.Node, dom.BaseURL(p))
 	if stripHidden {
 		dom.StripHidden(art.Node)

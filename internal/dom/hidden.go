@@ -52,6 +52,23 @@ func styleHides(style string) bool {
 	return false
 }
 
+// HasHidden reports whether the tree rooted at root contains any hidden element
+// (see IsHidden) or comment node — the nodes StripHidden would remove. It is a
+// read-only walk with no allocation, so a caller that would otherwise clone the
+// tree just to strip it can skip the clone when nothing needs stripping (the
+// common case: most pages carry no hidden-injection nodes).
+func HasHidden(root *html.Node) bool {
+	if root == nil {
+		return false
+	}
+	for c := root.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.CommentNode || IsHidden(c) || HasHidden(c) {
+			return true
+		}
+	}
+	return false
+}
+
 // StripHidden removes hidden element subtrees (see IsHidden) and all comment nodes
 // from the tree rooted at root, in place. Callers must pass a tree they own (e.g. a
 // reduce clone) — it mutates the nodes. Comments are dropped because they never
