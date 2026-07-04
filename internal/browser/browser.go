@@ -1045,6 +1045,7 @@ type BrowseResult struct {
 	Lang        string         `json:"lang,omitempty"`
 	Metadata    *PageMetadata  `json:"metadata,omitempty"`
 	Counts      Counts         `json:"counts"`
+	Regions     []page.Region  `json:"regions,omitempty"` // semantic landmark map + by-region counts
 	Excerpt     string         `json:"excerpt,omitempty"`
 	Outline     string         `json:"outline,omitempty"`  // indented-text TOC (back-compat)
 	Headings    []page.Heading `json:"headings,omitempty"` // structured TOC: level/text/id (deep-linkable)
@@ -1093,6 +1094,7 @@ func summarize(p *page.Page) *BrowseResult {
 		Bytes:       len(p.Raw),
 	}
 	res.Metadata = pageMetadata(p)
+	res.Regions = capRegions(p.Meta.Regions)
 	res.Headings = capHeadings(p.Meta.Headings)
 	if d := p.RenderDiag; d != nil {
 		res.Framework = d.Framework
@@ -1101,16 +1103,12 @@ func summarize(p *page.Page) *BrowseResult {
 	return res
 }
 
-// maxHeadingsOut bounds the structured heading list so a pathological page can't
-// turn the cheap browse tool into a token bomb.
-const maxHeadingsOut = 200
-
-func capHeadings(h []page.Heading) []page.Heading {
-	if len(h) > maxHeadingsOut {
-		return h[:maxHeadingsOut]
-	}
-	return h
-}
+// maxRegionsOut / maxHeadingsOut bound the structured orientation lists so a
+// pathological page can't turn the cheap browse tool into a token bomb.
+const (
+	maxRegionsOut  = 64
+	maxHeadingsOut = 200
+)
 
 // pageMetadata groups the page's head metadata, returning nil when the page
 // carries none (so the whole object is omitted from browse output).
@@ -1130,6 +1128,20 @@ func pageMetadata(p *page.Page) *PageMetadata {
 		return nil
 	}
 	return m
+}
+
+func capRegions(r []page.Region) []page.Region {
+	if len(r) > maxRegionsOut {
+		return r[:maxRegionsOut]
+	}
+	return r
+}
+
+func capHeadings(h []page.Heading) []page.Heading {
+	if len(h) > maxHeadingsOut {
+		return h[:maxHeadingsOut]
+	}
+	return h
 }
 
 // maxOutlineBytes bounds a browse outline — a pathological page with thousands

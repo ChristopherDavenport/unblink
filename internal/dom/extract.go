@@ -91,6 +91,7 @@ func Extract(p *page.Page) error {
 	m.Images = extractImages(p.Doc, base)
 	m.Headings = extractHeadings(p.Doc, minter)
 	m.Controls = extractInteractive(p.Doc, base, res, minter)
+	m.Regions = extractRegions(p.Doc, res, minter)
 	return nil
 }
 
@@ -274,6 +275,186 @@ func extractHeadings(doc *html.Node, minter *idMinter) []page.Heading {
 		out = append(out, page.Heading{Level: lvl, Text: text, ID: id})
 	}
 	return out
+}
+
+// extractRegions maps the page's semantic landmarks into Region records with a
+// per-region interactive inventory (the "by-landmark" orientation). No spatial
+// data — roles/labels/counts are all computed from the node tree.
+func extractRegions(doc *html.Node, res *idResolver, minter *idMinter) []page.Region {
+	// One cheap DFS with a tag/role switch, rather than a MatchAll over a big
+	// landmark selector group — a 14-way cascadia group evaluated on every node
+	// is a page-wide cost even when there are no landmarks at all.
+	var order []*html.Node
+	roleOf := map[*html.Node]string{}
+	var scan func(*html.Node)
+	scan = func(n *html.Node) {
+		if n.Type == html.ElementNode && isLandmarkCandidate(n) {
+			if role := landmarkRole(n, res); role != "" {
+				roleOf[n] = role
+				order = append(order, n)
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			scan(c)
+		}
+	}
+	scan(doc)
+	if len(order) == 0 {
+		return nil
+	}
+	// Preallocated so &regions[i] stays valid for the regionSet ownership map.
+	regions := make([]page.Region, len(order))
+	regionSet := make(map[*html.Node]*page.Region, len(order))
+	for i, n := range order {
+		role := roleOf[n]
+		label := explicitName(n, res)
+		if label == "" {
+			label = nearestHeadingText(n)
+		}
+		regions[i] = page.Region{
+			ID:    minter.mint("rgn", n, label, role),
+			Role:  role,
+			Label: label,
+		}
+		regionSet[n] = &regions[i]
+	}
+	countRegionMembers(doc, regionSet)
+	return regions
+}
+
+// isLandmarkCandidate cheaply screens whether n could be a landmark before the
+// fuller landmarkRole check. A sectioning tag qualifies outright; any other
+// element qualifies only if it carries a landmark role attribute (one attr scan).
+func isLandmarkCandidate(n *html.Node) bool {
+	switch n.Data {
+	case "header", "footer", "nav", "main", "aside", "section", "form":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(attr(n, "role"))) {
+	case "banner", "contentinfo", "navigation", "main", "complementary", "region", "search", "form":
+		return true
+	}
+	return false
+}
+
+// landmarkRole returns n's ARIA landmark role, or "" if n is not a landmark. An
+// explicit role attribute wins. header/footer are banner/contentinfo only at the
+// top level — scoped inside article/aside/main/nav/section they are generic
+// (ARIA scoping). form and section/[role=region] are landmarks only when they
+// carry an explicit accessible name.
+func landmarkRole(n *html.Node, res *idResolver) string {
+	switch strings.ToLower(strings.TrimSpace(attr(n, "role"))) {
+	case "banner":
+		return "banner"
+	case "navigation":
+		return "navigation"
+	case "main":
+		return "main"
+	case "complementary":
+		return "complementary"
+	case "contentinfo":
+		return "contentinfo"
+	case "search":
+		return "search"
+	case "form":
+		return namedLandmark(n, res, "form")
+	case "region":
+		return namedLandmark(n, res, "region")
+	}
+	switch n.Data {
+	case "nav":
+		return "navigation"
+	case "main":
+		return "main"
+	case "aside":
+		return "complementary"
+	case "header":
+		if sectioningScoped(n) {
+			return ""
+		}
+		return "banner"
+	case "footer":
+		if sectioningScoped(n) {
+			return ""
+		}
+		return "contentinfo"
+	case "form":
+		return namedLandmark(n, res, "form")
+	case "section":
+		return namedLandmark(n, res, "region")
+	}
+	return ""
+}
+
+// namedLandmark returns role only when n has an explicit accessible name.
+func namedLandmark(n *html.Node, res *idResolver, role string) string {
+	if explicitName(n, res) != "" {
+		return role
+	}
+	return ""
+}
+
+// sectioningScoped reports whether n is nested within a sectioning element, in
+// which case a header/footer is generic rather than a banner/contentinfo landmark.
+func sectioningScoped(n *html.Node) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		switch p.Data {
+		case "article", "aside", "main", "nav", "section":
+			return true
+		}
+	}
+	return false
+}
+
+// nearestHeadingText returns the first descendant heading's text (a display-only
+// label fallback for an otherwise-unnamed landmark).
+func nearestHeadingText(n *html.Node) string {
+	if h := selHeadings.MatchFirst(n); h != nil {
+		return collapsedText(h)
+	}
+	return ""
+}
+
+// countRegionMembers tallies links/forms/headings/controls into their innermost
+// owning region in a single DFS that carries the enclosing region down the tree.
+// A node is classified against its *enclosing* region before entering its own,
+// so a landmark element counts toward its parent, never itself — nested
+// landmarks don't double-count. Matching each node against the same compiled
+// selectors the flat extractors use keeps the per-region counts definitionally
+// identical to the links/forms/controls tools, in one walk instead of four.
+func countRegionMembers(doc *html.Node, regionSet map[*html.Node]*page.Region) {
+	if len(regionSet) == 0 {
+		return
+	}
+	var walk func(n *html.Node, current *page.Region)
+	walk = func(n *html.Node, current *page.Region) {
+		if n.Type == html.ElementNode {
+			if current != nil {
+				if selAnchor.Match(n) {
+					current.Links++
+				}
+				if n.Data == "form" {
+					current.Forms++
+				}
+				if selHeadings.Match(n) {
+					current.Headings++
+				}
+				if selInteractive.Match(n) {
+					current.Controls++
+				}
+			}
+			if r := regionSet[n]; r != nil {
+				current = r // n's subtree belongs to n's own region
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c, current)
+		}
+	}
+	walk(doc, nil)
 }
 
 // extractInteractive collects the page's non-anchor interactive controls, each

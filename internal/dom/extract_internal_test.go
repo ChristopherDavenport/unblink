@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"golang.org/x/net/html"
+
+	"github.com/christopherdavenport/unblink/internal/page"
 )
 
 func mustParse(t *testing.T, src string) *html.Node {
@@ -140,6 +142,37 @@ func TestAccessibleNameCycleSafe(t *testing.T) {
 	}
 }
 
+func TestLandmarkRole(t *testing.T) {
+	doc := mustParse(t, `<html><body>
+		<header id="top">banner</header>
+		<nav id="nav">n</nav>
+		<main id="main">
+			<header id="scoped">article header</header>
+			<section id="unnamed"><h2>x</h2></section>
+			<section id="named" aria-label="Details"><h2>y</h2></section>
+		</main>
+		<form id="anonform"><input></form>
+		<form id="namedform" aria-label="Search"><input></form>
+		<footer id="foot">f</footer>
+	</body></html>`)
+	idx, res := buildIDIndex(doc), newIDResolver(doc)
+	for id, want := range map[string]string{
+		"top":       "banner",
+		"nav":       "navigation",
+		"main":      "main",
+		"scoped":    "", // header scoped inside <main> is generic
+		"unnamed":   "", // unnamed section is not a landmark
+		"named":     "region",
+		"anonform":  "", // unnamed form is not a landmark
+		"namedform": "form",
+		"foot":      "contentinfo",
+	} {
+		if got := landmarkRole(idx[id], res); got != want {
+			t.Errorf("%s: role = %q, want %q", id, got, want)
+		}
+	}
+}
+
 func TestHashID(t *testing.T) {
 	doc := mustParse(t, `<html><body><main><button id="x">Go</button></main></body></html>`)
 	n := buildIDIndex(doc)["x"]
@@ -155,5 +188,23 @@ func TestHashID(t *testing.T) {
 	}
 	if len(ids) != 2 || ids[0] == ids[1] || !strings.HasSuffix(ids[1], "-2") {
 		t.Errorf("twin ids = %v, want [base, base-2]", ids)
+	}
+}
+
+func TestCountRegionMembersInnermost(t *testing.T) {
+	// A link inside nav (inside main) is owned by nav, not main; the nav element
+	// itself is owned by main. No double-counting across the nested landmarks.
+	doc := mustParse(t, `<html><body>
+		<main id="m"><nav id="n"><a href="/x">link</a></nav><a href="/y">outer</a></main>
+	</body></html>`)
+	idx := buildIDIndex(doc)
+	main := &page.Region{Role: "main"}
+	nav := &page.Region{Role: "navigation"}
+	countRegionMembers(doc, map[*html.Node]*page.Region{idx["m"]: main, idx["n"]: nav})
+	if nav.Links != 1 {
+		t.Errorf("nav.Links = %d, want 1 (inner link)", nav.Links)
+	}
+	if main.Links != 1 {
+		t.Errorf("main.Links = %d, want 1 (outer link only; nav's link owned by nav)", main.Links)
 	}
 }

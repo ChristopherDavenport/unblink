@@ -221,6 +221,64 @@ func TestExtractControls(t *testing.T) {
 	}
 }
 
+func TestExtractMetadata(t *testing.T) {
+	m := loadStructured(t).Meta
+	for name, got := range map[string]string{
+		"canonical":    m.Canonical,
+		"image":        m.Image,
+		"author":       m.Author,
+		"published":    m.Published,
+		"modified":     m.Modified,
+		"twitter_card": m.TwitterCard,
+		"twitter_site": m.TwitterSite,
+		"theme_color":  m.ThemeColor,
+		"favicon":      m.Favicon,
+	} {
+		if got == "" {
+			t.Errorf("%s empty", name)
+		}
+	}
+	if m.Canonical != "https://example.com/blog/post" {
+		t.Errorf("canonical = %q", m.Canonical)
+	}
+	if m.Image != "https://example.com/images/cover.png" {
+		t.Errorf("image not absolutized: %q", m.Image)
+	}
+	if m.Author != "Ada Lovelace" {
+		t.Errorf("author = %q", m.Author)
+	}
+	if m.Favicon != "https://example.com/favicon.ico" {
+		t.Errorf("favicon = %q", m.Favicon)
+	}
+}
+
+func TestExtractRegions(t *testing.T) {
+	p := loadStructured(t)
+	byRole := map[string]page.Region{}
+	for _, r := range p.Meta.Regions {
+		byRole[r.Role] = r
+		if r.ID == "" {
+			t.Errorf("region %q missing id", r.Role)
+		}
+	}
+	if len(p.Meta.Regions) != 3 {
+		t.Fatalf("regions = %d, want 3 (navigation/main/contentinfo): %+v", len(p.Meta.Regions), p.Meta.Regions)
+	}
+	if nav := byRole["navigation"]; nav.Links != 3 {
+		t.Errorf("navigation region = %+v, want 3 links", nav)
+	}
+	if main := byRole["main"]; main.Headings != 4 || main.Forms != 1 || main.Controls != 1 {
+		t.Errorf("main region = %+v, want 4 headings / 1 form / 1 control", main)
+	}
+	if foot := byRole["contentinfo"]; foot.Links != 1 {
+		t.Errorf("contentinfo region = %+v, want 1 link", foot)
+	}
+	// The unnamed <form> in <main> must NOT be promoted to a landmark.
+	if _, ok := byRole["form"]; ok {
+		t.Error("unnamed form should not be a region")
+	}
+}
+
 func TestExtractControlState(t *testing.T) {
 	p := extractInline(t, `
 		<button aria-expanded="false">Menu</button>
@@ -272,36 +330,5 @@ func TestExtractHashIDStability(t *testing.T) {
 	c := extractInline(t, `<main><div class="x"><button>Gamma</button><button>Beta</button></div></main>`)
 	if id(c, "Gamma") == id(a, "Alpha") {
 		t.Error("renamed control kept its id")
-	}
-}
-
-func TestExtractMetadata(t *testing.T) {
-	m := loadStructured(t).Meta
-	for name, got := range map[string]string{
-		"canonical":    m.Canonical,
-		"image":        m.Image,
-		"author":       m.Author,
-		"published":    m.Published,
-		"modified":     m.Modified,
-		"twitter_card": m.TwitterCard,
-		"twitter_site": m.TwitterSite,
-		"theme_color":  m.ThemeColor,
-		"favicon":      m.Favicon,
-	} {
-		if got == "" {
-			t.Errorf("%s empty", name)
-		}
-	}
-	if m.Canonical != "https://example.com/blog/post" {
-		t.Errorf("canonical = %q", m.Canonical)
-	}
-	if m.Image != "https://example.com/images/cover.png" {
-		t.Errorf("image not absolutized: %q", m.Image)
-	}
-	if m.Author != "Ada Lovelace" {
-		t.Errorf("author = %q", m.Author)
-	}
-	if m.Favicon != "https://example.com/favicon.ico" {
-		t.Errorf("favicon = %q", m.Favicon)
 	}
 }

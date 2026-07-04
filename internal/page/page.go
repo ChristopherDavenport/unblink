@@ -120,6 +120,7 @@ type PageMeta struct {
 	Images   []Image
 	Headings []Heading
 	Controls []Control // non-anchor interactive controls (interact targets)
+	Regions  []Region  // semantic landmark regions (banner/nav/main/…)
 }
 
 // Link is an anchor with its href resolved to an absolute URL.
@@ -192,7 +193,21 @@ type Control struct {
 type Heading struct {
 	Level int    `json:"level"`
 	Text  string `json:"text"`
-	ID    string `json:"id,omitempty"`
+	ID    string `json:"id,omitempty"` // authored DOM id, else a stable content-hash anchor
+}
+
+// Region is a semantic landmark (a page area with an ARIA landmark role), with a
+// per-region interactive inventory. It gives an agent orientation — where the
+// nav / main / footer are and how much is in each — without any spatial data,
+// which unblink has no engine to compute.
+type Region struct {
+	ID       string `json:"id,omitempty"`
+	Role     string `json:"role"` // banner|navigation|main|complementary|contentinfo|form|search|region
+	Label    string `json:"label,omitempty"`
+	Controls int    `json:"controls,omitempty"`
+	Links    int    `json:"links,omitempty"`
+	Forms    int    `json:"forms,omitempty"`
+	Headings int    `json:"headings,omitempty"`
 }
 
 // Article is the reduced, readable content extracted from a Page.

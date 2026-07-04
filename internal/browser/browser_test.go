@@ -231,12 +231,19 @@ func TestBrowse(t *testing.T) {
 	if !strings.Contains(r.Outline, "Installation") {
 		t.Errorf("outline missing Installation:\n%s", r.Outline)
 	}
-	// Metadata is grouped and finally surfaces the long-extracted canonical.
+	// Structured representation: metadata (incl. the long-unsurfaced canonical),
+	// the landmark region map, and a structured heading list with ids.
 	// canonical resolves against the (local test-server) base, so match the path.
 	if r.Metadata == nil || !strings.HasSuffix(r.Metadata.Canonical, "/blog/post") || r.Metadata.Author != "Ada Lovelace" {
 		t.Errorf("metadata = %+v", r.Metadata)
 	}
-	// Structured heading TOC carries level/text/id (deep-linkable).
+	roles := map[string]bool{}
+	for _, rg := range r.Regions {
+		roles[rg.Role] = true
+	}
+	if !roles["navigation"] || !roles["main"] || !roles["contentinfo"] {
+		t.Errorf("regions missing landmarks: %+v", r.Regions)
+	}
 	if len(r.Headings) != 4 || r.Headings[0].ID == "" {
 		t.Errorf("structured headings = %+v", r.Headings)
 	}
