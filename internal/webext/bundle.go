@@ -47,6 +47,29 @@ func (b *Bundle) ReadResource(p string) ([]byte, error) {
 	return fs.ReadFile(b.FS, rel)
 }
 
+// ResourceAccessible reports whether an extension resource at path may be served to a
+// fetch from pageURL: either this extension has a content script on the page (a content
+// script may load its own extension's files), or the resource is declared
+// web_accessible for the page's origin.
+func (b *Bundle) ResourceAccessible(path string, pageURL *url.URL) bool {
+	if b.Manifest == nil {
+		return false
+	}
+	if pageURL != nil && len(b.ContentScriptsFor(pageURL)) > 0 {
+		return true
+	}
+	rel := cleanRel(path)
+	for _, war := range b.Manifest.WebAccessible {
+		if !anyGlobMatch(war.Resources, rel) && !anyGlobMatch(war.Resources, "/"+rel) {
+			continue
+		}
+		if len(war.Matches) == 0 || (pageURL != nil && anyPatternMatch(war.Matches, pageURL)) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildBundle assembles a Bundle from a parsed manifest and its file view, compiling
 // every enabled static ruleset.
 func buildBundle(m *Manifest, fsys fs.FS) (*Bundle, error) {

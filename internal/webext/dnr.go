@@ -298,6 +298,45 @@ func (m *RuleMatcher) Count() int {
 	return len(m.static)
 }
 
+// UpdateDynamic applies a declarativeNetRequest.updateDynamicRules change: remove the
+// listed rule ids, then add the given rules. Safe for concurrent use with Match.
+func (m *RuleMatcher) UpdateDynamic(add []DNRRule, removeIDs []int) error {
+	return m.update(&m.dynamic, add, removeIDs)
+}
+
+// UpdateSession applies a declarativeNetRequest.updateSessionRules change.
+func (m *RuleMatcher) UpdateSession(add []DNRRule, removeIDs []int) error {
+	return m.update(&m.session, add, removeIDs)
+}
+
+func (m *RuleMatcher) update(set *[]*compiledRule, add []DNRRule, removeIDs []int) error {
+	compiled := make([]*compiledRule, 0, len(add))
+	for _, r := range add {
+		cr, err := compileRule(r)
+		if err != nil {
+			return err
+		}
+		compiled = append(compiled, cr)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(removeIDs) > 0 {
+		rm := make(map[int]bool, len(removeIDs))
+		for _, id := range removeIDs {
+			rm[id] = true
+		}
+		kept := (*set)[:0]
+		for _, c := range *set {
+			if !rm[c.id] {
+				kept = append(kept, c)
+			}
+		}
+		*set = kept
+	}
+	*set = append(*set, compiled...)
+	return nil
+}
+
 // Match returns the highest-priority verdict for req. Among matching rules, an
 // allow/allowAllRequests rule of priority ≥ the top blocking rule wins (Chrome's
 // action-precedence model, simplified for the block/allow/redirect subset).

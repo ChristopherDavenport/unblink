@@ -734,6 +734,19 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   `chrome-extension://` serving): storage disk persistence + onChanged, background→page messaging, real
   Port, external background fetch, and MV2 webRequest.
 
+- **WebExtensions — extension resources, storage persistence, dynamic DNR (Phase 4, ADR 0010).** ✅
+  Fills in what a stock MV3 build (uBlock Origin Lite) leans on. `chrome-extension://` resource
+  serving (`internal/js/extresource.go`): `fetch(chrome.runtime.getURL(...))` resolves to the packaged
+  file via an `extResourceTransport` decorator (inside counting, outside blocking — logged but never
+  DNR-blocked), gated by `Bundle.ResourceAccessible` (content-script self-access + web_accessible_resources).
+  Storage (`internal/js/extstore.go`): `chrome.storage.local`/`sync` persist to
+  `<UserCacheDir>/unblink/ext/<id>/<area>.json` (so uBlock's compiled lists survive restarts) and
+  `onChanged` fans real change records to per-loop listeners (with dead-loop pruning). Dynamic/session
+  `declarativeNetRequest` rules (`updateDynamicRules`/`updateSessionRules`) compile into the RWMutex-guarded
+  `RuleMatcher` and take effect immediately. Nets: `internal/js/{extdnr,extresource,extstore}_test.go`.
+  Deferred to Phase 5: MV2 webRequest, background→page messaging + real Port, external background fetch,
+  a validated module service worker, isolated content-script worlds, scriptlets, IndexedDB/cacheStorage shim.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

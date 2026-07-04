@@ -1,6 +1,8 @@
 package js
 
 import (
+	"encoding/json"
+
 	"github.com/christopherdavenport/unblink/internal/webext"
 	"github.com/dop251/goja"
 )
@@ -90,7 +92,7 @@ func (b *bridge) installExtensionAPI(win *goja.Object) {
 	for _, area := range []string{"local", "session", "sync", "managed"} {
 		_ = storage.Set(area, b.newStorageArea(active.ID, area))
 	}
-	_ = storage.Set("onChanged", b.newEventStub())
+	_ = storage.Set("onChanged", b.newStorageOnChanged(active.ID))
 	_ = chrome.Set("storage", storage)
 
 	// --- chrome.scripting (insertCSS feeds the cosmetic pass) ---
@@ -151,8 +153,16 @@ func (b *bridge) installExtensionAPI(win *goja.Object) {
 	// --- chrome.declarativeNetRequest (dynamic rules are Phase 4; static rules are
 	//     enforced host-side already) ---
 	dnr := vm.NewObject()
-	_ = dnr.Set("updateDynamicRules", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
-	_ = dnr.Set("updateSessionRules", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	applyRules := func(update func(add []webext.DNRRule, removeIDs []int) error) func(goja.FunctionCall) goja.Value {
+		return func(call goja.FunctionCall) goja.Value {
+			if o, ok := call.Argument(0).(*goja.Object); ok {
+				_ = update(parseDNRRulesArg(o.Get("addRules")), toIntSlice(o.Get("removeRuleIds")))
+			}
+			return b.apiReturn(call, goja.Undefined())
+		}
+	}
+	_ = dnr.Set("updateDynamicRules", applyRules(active.Net.UpdateDynamic))
+	_ = dnr.Set("updateSessionRules", applyRules(active.Net.UpdateSession))
 	_ = dnr.Set("getDynamicRules", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue([]any{})) })
 	_ = dnr.Set("getSessionRules", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue([]any{})) })
 	_ = dnr.Set("updateEnabledRulesets", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
@@ -238,12 +248,11 @@ func (b *bridge) newNamespaceStub() *goja.Object {
 // the host's shared in-memory store, scoped to this extension + area.
 func (b *bridge) newStorageArea(extID, area string) *goja.Object {
 	vm := b.vm
-	prefix := extID + "\x00" + area + "\x00"
 	st := b.extHost.storage
 	o := vm.NewObject()
 	_ = o.Set("get", func(call goja.FunctionCall) goja.Value {
 		keys, all, defaults := storageKeys(call.Argument(0))
-		res := st.get(prefix, keys, all)
+		res := st.get(extID, area, keys, all)
 		for k, v := range defaults { // fill declared defaults for missing keys
 			if _, ok := res[k]; !ok {
 				res[k] = v
@@ -257,20 +266,41 @@ func (b *bridge) newStorageArea(extID, area string) *goja.Object {
 			for _, k := range o.Keys() {
 				kv[k] = o.Get(k).Export()
 			}
-			st.set(prefix, kv)
+			st.set(extID, area, kv)
 		}
 		return b.apiReturn(call, goja.Undefined())
 	})
 	_ = o.Set("remove", func(call goja.FunctionCall) goja.Value {
-		st.remove(prefix, toStringSlice(call.Argument(0)))
+		st.remove(extID, area, toStringSlice(call.Argument(0)))
 		return b.apiReturn(call, goja.Undefined())
 	})
 	_ = o.Set("clear", func(call goja.FunctionCall) goja.Value {
-		st.clear(prefix)
+		st.clear(extID, area)
 		return b.apiReturn(call, goja.Undefined())
 	})
 	_ = o.Set("getBytesInUse", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue(0)) })
 	_ = o.Set("onChanged", b.newEventStub())
+	return o
+}
+
+// newStorageOnChanged is the top-level chrome.storage.onChanged: it registers a real
+// listener that the store fans changes out to, delivered on this bridge's loop.
+func (b *bridge) newStorageOnChanged(extID string) *goja.Object {
+	o := b.vm.NewObject()
+	_ = o.Set("addListener", func(call goja.FunctionCall) goja.Value {
+		fn, ok := goja.AssertFunction(call.Argument(0))
+		if !ok {
+			return goja.Undefined()
+		}
+		b.extHost.storage.subscribe(extID, func(changes map[string]any, area string) bool {
+			return b.loop.RunOnLoop(func(vm *goja.Runtime) {
+				_, _ = fn(goja.Undefined(), vm.ToValue(changes), vm.ToValue(area))
+			})
+		})
+		return goja.Undefined()
+	})
+	_ = o.Set("removeListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = o.Set("hasListener", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
 	return o
 }
 
@@ -341,6 +371,49 @@ func trimLeadingSlash(s string) string {
 		s = s[1:]
 	}
 	return s
+}
+
+// parseDNRRulesArg converts a JS array of declarativeNetRequest rule objects into
+// []webext.DNRRule by round-tripping through JSON — reusing the same parser the static
+// rulesets use, so dynamic and static rules behave identically.
+func parseDNRRulesArg(v goja.Value) []webext.DNRRule {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return nil
+	}
+	data, err := json.Marshal(v.Export())
+	if err != nil {
+		return nil
+	}
+	rules, err := webext.ParseRules(data)
+	if err != nil {
+		return nil
+	}
+	return rules
+}
+
+// toIntSlice normalizes a goja value (a number or array of numbers) into []int.
+func toIntSlice(v goja.Value) []int {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return nil
+	}
+	switch e := v.Export().(type) {
+	case int64:
+		return []int{int(e)}
+	case float64:
+		return []int{int(e)}
+	case []any:
+		out := make([]int, 0, len(e))
+		for _, x := range e {
+			switch n := x.(type) {
+			case int64:
+				out = append(out, int(n))
+			case float64:
+				out = append(out, int(n))
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // newOnMessageListener is the background context's chrome.runtime.onMessage: it appends

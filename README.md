@@ -333,11 +333,15 @@ target is **uBlock Origin Lite (MV3)**. unblink currently supports:
   event loop, and `chrome.runtime.sendMessage` round-trips between a content script and
   the background (uBlock's model: a content script asks the background which selectors to
   hide for the current host, then hides them).
+- **Extension resources & storage** — `fetch(chrome.runtime.getURL(...))` serves packaged
+  files (`web_accessible_resources`); `chrome.storage.local`/`sync` persist to disk and
+  fire `onChanged`; `declarativeNetRequest` dynamic/session rules added at runtime take
+  effect.
 
 Extensions require the JavaScript engine (they are rejected under `--disable-js`);
 extension JS runs in the same sandbox as page JS (heap/byte/SSRF guards apply). Still
-in progress: `chrome-extension://` resource serving + storage disk persistence and MV2
-`webRequest` (the last pieces a stock uBlock Origin build needs).
+in progress toward a stock uBlock Origin build: MV2 `webRequest`, isolated content-script
+worlds, and scriptlet injection.
 
 ## Configuration
 

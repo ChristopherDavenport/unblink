@@ -192,11 +192,13 @@ func (b *bridge) resetTransportBudget() {
 func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration, extHost *ExtensionHost) *bridge {
 	var nc *countingTransport
 	if transport != nil {
-		// Extension network rules (declarativeNetRequest) gate every page-JS subrequest,
-		// wrapped inside the counting transport so a blocked request still shows in the
-		// requests diagnostics. No-op when no extension is loaded.
 		if extHost != nil {
+			// declarativeNetRequest gates every subrequest (blockingTransport); a
+			// chrome-extension:// URL is served from the bundle before the gate
+			// (extResourceTransport) so extension resources aren't DNR-blocked. Both sit
+			// inside the counting transport so they still show in the requests diagnostics.
 			transport = &blockingTransport{inner: transport, host: extHost, initiator: initiatorHost(base)}
+			transport = &extResourceTransport{inner: transport, host: extHost, page: base}
 		}
 		nc = &countingTransport{inner: transport}
 		transport = nc

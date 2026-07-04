@@ -2,8 +2,6 @@ package js
 
 import (
 	"net/url"
-	"strings"
-	"sync"
 
 	"github.com/christopherdavenport/unblink/internal/webext"
 )
@@ -26,7 +24,7 @@ func newExtensionHost(bundles []*webext.Bundle) *ExtensionHost {
 	if len(bundles) == 0 {
 		return nil
 	}
-	h := &ExtensionHost{bundles: bundles, storage: newExtStore()}
+	h := &ExtensionHost{bundles: bundles, storage: newExtStore(extStorageDir())}
 	h.broker = &msgBroker{host: h}
 	for _, b := range bundles {
 		if b.Manifest != nil && (b.Manifest.Background.ServiceWorker != "" || len(b.Manifest.Background.Scripts) > 0) {
@@ -49,62 +47,6 @@ func (h *ExtensionHost) startBackground(memGuard *memGuard) {
 func (h *ExtensionHost) Close() {
 	if h != nil && h.bg != nil {
 		h.bg.close()
-	}
-}
-
-// extStore is the in-memory backing for chrome.storage (local/session/sync/managed),
-// engine-lifetime and shared across renders. Values are plain Go (JSON-compatible) so
-// they cross goja runtimes safely. Phase 3 adds disk persistence + onChanged fan-out.
-type extStore struct {
-	mu sync.Mutex
-	m  map[string]any // full key: "<extID>\x00<area>\x00<key>"
-}
-
-func newExtStore() *extStore { return &extStore{m: map[string]any{}} }
-
-func (s *extStore) get(prefix string, keys []string, all bool) map[string]any {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := map[string]any{}
-	if all {
-		for k, v := range s.m {
-			if rest, ok := strings.CutPrefix(k, prefix); ok {
-				out[rest] = v
-			}
-		}
-		return out
-	}
-	for _, k := range keys {
-		if v, ok := s.m[prefix+k]; ok {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-func (s *extStore) set(prefix string, kv map[string]any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for k, v := range kv {
-		s.m[prefix+k] = v
-	}
-}
-
-func (s *extStore) remove(prefix string, keys []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, k := range keys {
-		delete(s.m, prefix+k)
-	}
-}
-
-func (s *extStore) clear(prefix string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for k := range s.m {
-		if strings.HasPrefix(k, prefix) {
-			delete(s.m, k)
-		}
 	}
 }
 

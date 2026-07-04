@@ -162,3 +162,30 @@ build needs): storage **disk persistence** (so uBO's filter-list compile survive
 and **`onChanged`** fan-out, background→page / `tabs.sendMessage`, real `connect`/`Port`,
 external background fetch, and MV2 `webRequest`. Content scripts remain same-world
 (isolated worlds are Phase 5).
+
+## Amendment — Phase 4: extension resources, storage persistence, dynamic DNR
+
+Fills in the remaining pieces a stock MV3 build (uBlock Origin Lite) leans on:
+
+- **`chrome-extension://` resource serving** (`internal/js/extresource.go`): a content
+  script's `fetch(chrome.runtime.getURL(...))` now resolves to the packaged file instead
+  of the network. An `extResourceTransport` decorator sits *inside* the counting transport
+  but *outside* the blocking one, so extension resources are logged yet never
+  DNR-blocked or counted against the byte budget. Access is gated by
+  `Bundle.ResourceAccessible` — the extension's own content scripts may read its files,
+  and `web_accessible_resources` opens specific paths to matching page origins.
+- **Storage disk persistence** (`internal/js/extstore.go`): `chrome.storage.local`/`sync`
+  are written to `<UserCacheDir>/unblink/ext/<id>/<area>.json` and lazily reloaded, so an
+  extension's one-time setup (uBlock's compiled lists) survives process restarts;
+  `session`/`managed` stay memory-only. **`onChanged`** now fans real change records out to
+  registered listeners on their own event loops, pruning listeners whose loop has been torn
+  down.
+- **Dynamic / session declarativeNetRequest rules**: `updateDynamicRules` /
+  `updateSessionRules` actually compile and apply into the `RuleMatcher` (RWMutex-guarded,
+  read concurrently by `Match` off the loop), so a rule added at runtime blocks a later
+  request — verified end-to-end.
+
+Still deferred to **Phase 5**: MV2 `webRequest` (full uBlock Origin's own JS network engine),
+background→page / `tabs.sendMessage` and real `connect`/`Port`, external background fetch,
+validating a real module service worker, true isolated content-script worlds, scriptlet
+injection (`##+js`), and the IndexedDB/cacheStorage shim.
