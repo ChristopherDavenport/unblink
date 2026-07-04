@@ -72,11 +72,14 @@ func Extract(p *page.Page) error {
 		m.Canonical = resolveURL(base, attr(c, "href"))
 	}
 
+	res := newIDResolver(p.Doc)
+	minter := newIDMinter()
+
 	m.Links = extractLinks(p.Doc, base)
-	m.Forms = extractForms(p.Doc, base, p.FinalURL)
+	m.Forms = extractForms(p.Doc, base, p.FinalURL, res, minter)
 	m.Images = extractImages(p.Doc, base)
 	m.Headings = extractHeadings(p.Doc)
-	m.Controls = extractInteractive(p.Doc)
+	m.Controls = extractInteractive(p.Doc, base, res, minter)
 	return nil
 }
 
@@ -156,7 +159,7 @@ func extractLinks(doc *html.Node, base *url.URL) []page.Link {
 	return out
 }
 
-func extractForms(doc *html.Node, base, pageURL *url.URL) []page.Form {
+func extractForms(doc *html.Node, base, pageURL *url.URL, res *idResolver, minter *idMinter) []page.Form {
 	var out []page.Form
 	for _, f := range selForm.MatchAll(doc) {
 		action := resolveURL(base, attr(f, "action"))
@@ -175,18 +178,21 @@ func extractForms(doc *html.Node, base, pageURL *url.URL) []page.Form {
 			Enctype: strings.ToLower(strings.TrimSpace(attr(f, "enctype"))),
 		}
 		for _, fld := range selField.MatchAll(f) {
-			form.Fields = append(form.Fields, extractField(fld))
+			form.Fields = append(form.Fields, extractField(fld, res, minter))
 		}
 		out = append(out, form)
 	}
 	return out
 }
 
-func extractField(n *html.Node) page.Field {
+func extractField(n *html.Node, res *idResolver, minter *idMinter) page.Field {
 	f := page.Field{
-		Name:     attr(n, "name"),
-		Value:    attr(n, "value"),
-		Required: hasAttr(n, "required"),
+		Name:        attr(n, "name"),
+		Value:       attr(n, "value"),
+		Placeholder: attr(n, "placeholder"),
+		Required:    hasAttr(n, "required") || strings.EqualFold(attr(n, "aria-required"), "true"),
+		Disabled:    hasAttr(n, "disabled"),
+		Invalid:     ariaInvalid(n),
 	}
 	switch n.Data {
 	case "select":
@@ -208,8 +214,26 @@ func extractField(n *html.Node) page.Field {
 		if f.Type == "" {
 			f.Type = "text"
 		}
+		switch strings.ToLower(f.Type) {
+		case "checkbox", "radio":
+			f.Checked = boolStr(hasAttr(n, "checked") || strings.EqualFold(attr(n, "aria-checked"), "true"))
+		}
 	}
+	f.ID = minter.mint(fieldPrefix(f.Type), n, accessibleName(n, res), "")
 	return f
+}
+
+func fieldPrefix(fieldType string) string {
+	switch strings.ToLower(fieldType) {
+	case "select":
+		return "sel"
+	case "textarea":
+		return "txt"
+	case "checkbox", "radio":
+		return "chk"
+	default:
+		return "inp"
+	}
 }
 
 func extractImages(doc *html.Node, base *url.URL) []page.Image {
@@ -241,7 +265,7 @@ func extractHeadings(doc *html.Node) []page.Heading {
 // than one sub-selector (e.g. <button onclick>) appears once (dedup by node).
 // The uniqueness index is built once (one walk) on the first control, replacing
 // a full-document query per control on control-dense pages.
-func extractInteractive(doc *html.Node) []page.Control {
+func extractInteractive(doc *html.Node, base *url.URL, res *idResolver, minter *idMinter) []page.Control {
 	var out []page.Control
 	seen := map[*html.Node]bool{}
 	var ix *selIndex
@@ -253,27 +277,111 @@ func extractInteractive(doc *html.Node) []page.Control {
 		if ix == nil {
 			ix = buildSelIndex(doc)
 		}
-		out = append(out, page.Control{
-			Text:     controlLabel(n),
+		name := accessibleName(n, res)
+		role := attr(n, "role")
+		kind := controlKind(n)
+		c := page.Control{
+			Text:     name,
 			Selector: selectorFor(ix, doc, n),
-			Kind:     controlKind(n),
-			Role:     attr(n, "role"),
-			Disabled: hasAttr(n, "disabled"),
-		})
+			ID:       minter.mint(controlPrefix(kind), n, name, role),
+			Kind:     kind,
+			Role:     role,
+		}
+		applyControlState(&c, n, base)
+		out = append(out, c)
 	}
 	return out
 }
 
-func controlLabel(n *html.Node) string {
-	if l := strings.TrimSpace(attr(n, "aria-label")); l != "" {
-		return l
-	}
-	if n.Data == "input" {
-		if v := strings.TrimSpace(attr(n, "value")); v != "" {
-			return v
+// applyControlState fills a control's ARIA/DOM-derivable state in a single pass
+// over n.Attr (control-dense pages call this per control, so it avoids the ~15
+// separate linear attribute scans a call-per-field version would cost). Tri/bi-
+// state values are "" when not applicable, so omitempty drops them for plain
+// controls.
+func applyControlState(c *page.Control, n *html.Node, base *url.URL) {
+	var ariaChecked, ariaExpanded, ariaPressed, ariaSelected, value, placeholder, href, typ string
+	var hasChecked, hasRequired, ariaRequired, invalid, disabled bool
+	for _, a := range n.Attr {
+		switch a.Key {
+		case "aria-checked":
+			ariaChecked = a.Val
+		case "aria-expanded":
+			ariaExpanded = a.Val
+		case "aria-pressed":
+			ariaPressed = a.Val
+		case "aria-selected":
+			ariaSelected = a.Val
+		case "checked":
+			hasChecked = true
+		case "required":
+			hasRequired = true
+		case "aria-required":
+			ariaRequired = strings.EqualFold(a.Val, "true")
+		case "aria-invalid":
+			invalid = !strings.EqualFold(strings.TrimSpace(a.Val), "false")
+		case "disabled":
+			disabled = true
+		case "aria-disabled":
+			if strings.EqualFold(a.Val, "true") {
+				disabled = true
+			}
+		case "value":
+			value = a.Val
+		case "placeholder":
+			placeholder = a.Val
+		case "href":
+			href = a.Val
+		case "type":
+			typ = a.Val
 		}
 	}
-	return collapsedText(n)
+	nativeChecked := hasChecked && n.Data == "input" && isCheckableType(typ)
+	c.Checked = normTristate(ariaChecked, true, nativeChecked)
+	c.Expanded = normTristate(ariaExpanded, false, false)
+	c.Pressed = normTristate(ariaPressed, true, false)
+	c.Selected = normTristate(ariaSelected, false, false)
+	c.Required = hasRequired || ariaRequired
+	c.Invalid = invalid
+	c.Disabled = disabled
+	if v := strings.TrimSpace(value); v != "" {
+		c.Value = v
+	}
+	if pl := strings.TrimSpace(placeholder); pl != "" {
+		c.Placeholder = pl
+	}
+	if h := strings.TrimSpace(href); h != "" {
+		c.Href = resolveURL(base, h)
+	}
+}
+
+// isCheckableType reports whether an input type carries a native checked state.
+func isCheckableType(typ string) bool {
+	switch strings.ToLower(typ) {
+	case "checkbox", "radio":
+		return true
+	}
+	return false
+}
+
+// controlPrefix maps a control kind to a stable-id prefix (see ADR 0008).
+func controlPrefix(kind string) string {
+	switch kind {
+	case "tab":
+		return "tab"
+	case "summary":
+		return "sum"
+	case "interactive":
+		return "el"
+	default: // button|submit|reset|role-button
+		return "btn"
+	}
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 func controlKind(n *html.Node) string {

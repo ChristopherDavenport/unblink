@@ -137,22 +137,44 @@ type Form struct {
 
 // Field is a single form control.
 type Field struct {
-	Name     string   `json:"name"`
-	Type     string   `json:"type"`
-	Value    string   `json:"value,omitempty"`
-	Required bool     `json:"required,omitempty"`
-	Options  []string `json:"options,omitempty"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Value       string   `json:"value,omitempty"`
+	Placeholder string   `json:"placeholder,omitempty"`
+	Required    bool     `json:"required,omitempty"`
+	Disabled    bool     `json:"disabled,omitempty"`
+	Checked     string   `json:"checked,omitempty"` // "true"|"false" for checkbox/radio
+	Invalid     bool     `json:"invalid,omitempty"`
+	Options     []string `json:"options,omitempty"`
+	ID          string   `json:"id,omitempty"` // stable content-hash reference (ADR 0008)
 }
 
 // Control is a non-anchor interactive element an agent can drive via the interact
 // tool (a button, role=button, onclick/tabindex element, submit/reset input, tab,
-// or summary). Selector is a stable CSS selector that re-resolves the element.
+// or summary). Selector is a stable CSS selector that re-resolves the element; ID
+// is a mutation-resilient reference key (a cacheable handle), not an interact
+// target — the selector remains authoritative (ADR 0008).
+//
+// The state fields mirror the WAI-ARIA states an agent needs to reason about a
+// control. checked/expanded/pressed/selected are tri/bi-state string enums
+// ("true"/"false"/"mixed") because a "false" (a collapsed menu, an un-pressed
+// toggle) is semantically meaningful; binary-only states are bools.
 type Control struct {
-	Text     string `json:"text,omitempty"` // label: aria-label, else input value, else collapsed text
-	Selector string `json:"selector"`       // stable selector accepted by the interact tool
-	Kind     string `json:"kind"`           // button|submit|reset|tab|summary|role-button|interactive
-	Role     string `json:"role,omitempty"`
-	Disabled bool   `json:"disabled,omitempty"`
+	Text        string `json:"text,omitempty"` // accessible name (aria-label/labelledby, value, text…)
+	Selector    string `json:"selector"`       // stable selector accepted by the interact tool
+	ID          string `json:"id,omitempty"`   // stable content-hash reference key
+	Kind        string `json:"kind"`           // button|submit|reset|tab|summary|role-button|interactive
+	Role        string `json:"role,omitempty"`
+	Disabled    bool   `json:"disabled,omitempty"`
+	Checked     string `json:"checked,omitempty"`  // aria-checked / native checked
+	Expanded    string `json:"expanded,omitempty"` // aria-expanded
+	Pressed     string `json:"pressed,omitempty"`  // aria-pressed (toggle buttons)
+	Selected    string `json:"selected,omitempty"` // aria-selected
+	Required    bool   `json:"required,omitempty"`
+	Invalid     bool   `json:"invalid,omitempty"`
+	Value       string `json:"value,omitempty"`
+	Placeholder string `json:"placeholder,omitempty"`
+	Href        string `json:"href,omitempty"` // for anchor-as-control (role=button on <a>), absolute
 }
 
 // Heading is a section heading used to build a page outline.

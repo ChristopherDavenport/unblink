@@ -220,3 +220,57 @@ func TestExtractControls(t *testing.T) {
 		t.Errorf("role=button control = %+v", roleBtn)
 	}
 }
+
+func TestExtractControlState(t *testing.T) {
+	p := extractInline(t, `
+		<button aria-expanded="false">Menu</button>
+		<div role="tab" tabindex="0" aria-selected="true">Tab One</div>
+		<button aria-pressed="mixed">Bold</button>
+		<span role="button" aria-label="Toggle" aria-checked="true" tabindex="0">x</span>
+		<button aria-invalid="true" aria-required="true" disabled>Broken</button>`)
+
+	byText := map[string]page.Control{}
+	for _, c := range p.Meta.Controls {
+		byText[c.Text] = c
+		if c.ID == "" {
+			t.Errorf("control %q missing id", c.Text)
+		}
+	}
+	if c := byText["Menu"]; c.Expanded != "false" {
+		t.Errorf("Menu expanded = %q, want false", c.Expanded)
+	}
+	if c := byText["Tab One"]; c.Selected != "true" || c.Kind != "tab" {
+		t.Errorf("Tab One = %+v", c)
+	}
+	if c := byText["Bold"]; c.Pressed != "mixed" {
+		t.Errorf("Bold pressed = %q, want mixed", c.Pressed)
+	}
+	if c := byText["Toggle"]; c.Checked != "true" || c.Kind != "role-button" {
+		t.Errorf("Toggle = %+v", c)
+	}
+	if c := byText["Broken"]; !c.Invalid || !c.Required || !c.Disabled {
+		t.Errorf("Broken = %+v", c)
+	}
+}
+
+func TestExtractHashIDStability(t *testing.T) {
+	id := func(p *page.Page, text string) string {
+		for _, c := range p.Meta.Controls {
+			if c.Text == text {
+				return c.ID
+			}
+		}
+		return ""
+	}
+	// Sibling reorder + unrelated class churn must not change the base id.
+	a := extractInline(t, `<main><div class="x"><button>Alpha</button><button>Beta</button></div></main>`)
+	b := extractInline(t, `<main><div class="y"><button>Beta</button><button>Alpha</button></div></main>`)
+	if idA, idB := id(a, "Alpha"), id(b, "Alpha"); idA == "" || idA != idB {
+		t.Errorf("Alpha id not stable across reorder/class change: %q vs %q", idA, idB)
+	}
+	// Renaming the accessible name changes the id.
+	c := extractInline(t, `<main><div class="x"><button>Gamma</button><button>Beta</button></div></main>`)
+	if id(c, "Gamma") == id(a, "Alpha") {
+		t.Error("renamed control kept its id")
+	}
+}
