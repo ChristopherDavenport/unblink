@@ -174,3 +174,56 @@ func TestReadSurfacesJSErrors(t *testing.T) {
 		t.Errorf("js_errors = %q, want the thrown message", r.JSErrors)
 	}
 }
+
+func TestCookies(t *testing.T) {
+	b := newBrowser(t)
+	if _, err := b.NewSession("s", session.Config{}); err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	const origin = "https://example.com/"
+
+	// A fresh jar has no cookies for the origin.
+	res, err := b.Cookies("s", "list", origin, nil)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(res.Cookies) != 0 {
+		t.Errorf("fresh jar = %+v, want empty", res.Cookies)
+	}
+
+	// Set two, then list them back.
+	if _, err := b.Cookies("s", "set", origin, []browser.CookieInput{
+		{Name: "sid", Value: "abc"}, {Name: "theme", Value: "dark"},
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	res, _ = b.Cookies("s", "list", origin, nil)
+	got := map[string]string{}
+	for _, c := range res.Cookies {
+		got[c.Name] = c.Value
+	}
+	if got["sid"] != "abc" || got["theme"] != "dark" {
+		t.Errorf("cookies after set = %+v", res.Cookies)
+	}
+
+	// Clear expires them; the jar is then empty for the origin.
+	cr, err := b.Cookies("s", "clear", origin, nil)
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if cr.Cleared != 2 {
+		t.Errorf("cleared = %d, want 2", cr.Cleared)
+	}
+	res, _ = b.Cookies("s", "list", origin, nil)
+	if len(res.Cookies) != 0 {
+		t.Errorf("after clear = %+v, want empty", res.Cookies)
+	}
+
+	// An unknown session and a missing scope both error cleanly.
+	if _, err := b.Cookies("nope", "list", origin, nil); err == nil {
+		t.Error("expected error for unknown session")
+	}
+	if _, err := b.Cookies("s", "list", "", nil); err == nil {
+		t.Error("expected error when no url and no current page")
+	}
+}

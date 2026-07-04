@@ -24,6 +24,12 @@ func (b *bridge) installGlobals(win *goja.Object) {
 		b.recordError(fmt.Errorf("console.error: %s", msg))
 	})
 
+	// console.* capture sink for the console tool: the prelude formats each call's
+	// arguments and reports (level, text) here. Consumed and deleted by the prelude.
+	_ = vm.Set("__unblinkConsole", func(level, msg string) {
+		b.recordConsole(level, msg)
+	})
+
 	// The prelude's timer wrapper registers its live-timer audit here (consumed
 	// and deleted like __unblinkConsoleError); settlePoll reads it on close.
 	_ = vm.Set("__unblinkRegisterTimerAudit", func(call goja.FunctionCall) goja.Value {
@@ -370,23 +376,38 @@ const preludeJS = `
   // one here: page console.* calls stay silent instead of throwing ReferenceError
   // or leaking untrusted page text into the host logs.
   var noop = function () {};
-  // console.error feeds the render diagnostics (see __unblinkConsoleError in
-  // installGlobals); everything else stays silent.
+  // console.error feeds the render diagnostics (see __unblinkConsoleError); every
+  // level is also captured into a buffer for the console tool (see __unblinkConsole).
+  // Neither writes to the host's stdout/stderr, which stay reserved for MCP.
   var reportError = window.__unblinkConsoleError || noop;
   delete window.__unblinkConsoleError;
-  var consoleError = function () {
-    try {
-      var parts = [];
-      for (var i = 0; i < arguments.length; i++) {
-        var a = arguments[i];
-        parts.push(a && a.stack ? String(a.stack) : String(a));
-      }
-      reportError(parts.join(' '));
-    } catch (e) { /* diagnostics must never throw into page code */ }
+  var capture = window.__unblinkConsole || noop;
+  delete window.__unblinkConsole;
+  var fmtArgs = function (args) {
+    var parts = [];
+    for (var i = 0; i < args.length; i++) {
+      var a = args[i];
+      try {
+        if (a && a.stack) parts.push(String(a.stack));
+        else if (a !== null && typeof a === 'object') parts.push(JSON.stringify(a));
+        else parts.push(String(a));
+      } catch (e) { parts.push(String(a)); }
+    }
+    return parts.join(' ');
   };
-  window.console = { log: noop, info: noop, warn: noop, error: consoleError, debug: noop,
-    trace: noop, dir: noop, assert: noop, group: noop, groupCollapsed: noop,
-    groupEnd: noop, table: noop, count: noop, time: noop, timeEnd: noop };
+  var mk = function (level) {
+    return function () {
+      try {
+        var text = fmtArgs(arguments);
+        capture(level, text);
+        if (level === 'error') reportError(text);
+      } catch (e) { /* diagnostics must never throw into page code */ }
+    };
+  };
+  window.console = { log: mk('log'), info: mk('info'), warn: mk('warn'), error: mk('error'),
+    debug: mk('debug'), trace: mk('trace'), dir: mk('log'), table: mk('log'),
+    assert: noop, group: noop, groupCollapsed: noop, groupEnd: noop,
+    count: noop, time: noop, timeEnd: noop };
 
   function makeStorage() {
     var m = Object.create(null);

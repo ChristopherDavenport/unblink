@@ -28,6 +28,50 @@ func renderDiag(t *testing.T, pageHTML string) js.RenderResult {
 	return diag
 }
 
+func TestDiagnosticsCapturesConsole(t *testing.T) {
+	diag := renderDiag(t, `<html><body><script>
+		console.log('hello', 42);
+		console.warn('careful');
+		console.error('boom');
+		console.info({a:1});
+	</script></body></html>`)
+	byLevel := map[string]string{}
+	for _, m := range diag.Console {
+		byLevel[m.Level] = m.Text
+	}
+	if byLevel["log"] != "hello 42" {
+		t.Errorf("console.log = %q, want 'hello 42'", byLevel["log"])
+	}
+	if byLevel["warn"] != "careful" {
+		t.Errorf("console.warn = %q", byLevel["warn"])
+	}
+	if byLevel["error"] != "boom" {
+		t.Errorf("console.error = %q", byLevel["error"])
+	}
+	if byLevel["info"] != `{"a":1}` {
+		t.Errorf("console.info(object) = %q, want JSON", byLevel["info"])
+	}
+	// console.error still also feeds the error diagnostics.
+	if !strings.Contains(strings.Join(diag.Errors, "\n"), "boom") {
+		t.Errorf("console.error should also feed Errors, got %v", diag.Errors)
+	}
+}
+
+func TestDiagnosticsCapturesRequests(t *testing.T) {
+	_, diag := renderApp(t, `<html><body><script>
+		fetch('/api/data.json');
+	</script></body></html>`, map[string]string{"/api/data.json": `{"ok":true}`})
+	var found bool
+	for _, r := range diag.Requests {
+		if strings.Contains(r.URL, "/api/data.json") && r.Method == "GET" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected /api/data.json GET in requests, got %+v", diag.Requests)
+	}
+}
+
 func TestDiagnosticsDetectsReactAndCapturesError(t *testing.T) {
 	diag := renderDiag(t, `<html><body><div data-reactroot></div>
 		<script>window.React = {}; throw new Error('boom-from-script');</script>

@@ -83,13 +83,15 @@ func New(b *browser.Browser, cfg Config) *Server {
 // toolOrder is the full tool set in registration order; also the "full" preset.
 var toolOrder = []string{
 	"read", "browse", "links", "forms", "find", "click", "submit_form",
-	"controls", "interact", "data", "site", "map", "search", "session",
+	"controls", "interact", "data", "requests", "console", "site", "map",
+	"search", "session", "cookies",
 }
 
 // Capability requirements: a tool listed here is never registered without the
-// capability, regardless of the operator's selection.
+// capability, regardless of the operator's selection. requests/console read
+// data only the JavaScript engine captures during a render.
 var (
-	toolNeedsJS     = map[string]bool{"interact": true}
+	toolNeedsJS     = map[string]bool{"interact": true, "requests": true, "console": true}
 	toolNeedsSearch = map[string]bool{"search": true}
 )
 
@@ -97,9 +99,10 @@ var (
 // "read-only" mirrors the tools annotated ReadOnlyHint (no session/navigation/
 // state-changing tools); "core" is the minimal reading surface.
 var toolPresets = map[string][]string{
-	"full":      toolOrder,
-	"core":      {"read", "browse", "find"},
-	"read-only": {"read", "browse", "links", "forms", "find", "controls", "data", "site", "map", "search"},
+	"full": toolOrder,
+	"core": {"read", "browse", "find"},
+	"read-only": {"read", "browse", "links", "forms", "find", "controls", "data",
+		"requests", "console", "site", "map", "search"},
 }
 
 // resolveEnabledTools computes the tools to register: the operator allow-list
@@ -291,6 +294,23 @@ func (s *Server) registerTools() {
 			"the page's structured facts rather than its prose.",
 	}, s.handleData)
 
+	addTool(s, "requests", &mcp.Tool{
+		Annotations: readOnlyAnn,
+		Description: "List the network requests the page's JavaScript made while rendering (fetch/XHR, " +
+			"scripts, modules, dynamic imports), each with method, url, and status. The escape hatch " +
+			"for data-driven pages: render once, see the JSON/API endpoint the page fetched, then read " +
+			"that endpoint directly instead of scraping the hydrated DOM. Requires JavaScript " +
+			"(not exposed under --disable-js); asset-cache hits are not listed.",
+	}, s.handleRequests)
+
+	addTool(s, "console", &mcp.Tool{
+		Annotations: readOnlyAnn,
+		Description: "Return the page's captured console output (log/info/warn/error/debug) from its " +
+			"JavaScript render, in order — for debugging why a page rendered as it did (boot errors, " +
+			"failed data loads, framework warnings). Filter by level. Requires JavaScript " +
+			"(not exposed under --disable-js).",
+	}, s.handleConsole)
+
 	addTool(s, "site", &mcp.Tool{
 		Annotations: readOnlyAnn,
 		Description: "Inspect a host's agent-facing metadata: its robots.txt (allow/disallow rules " +
@@ -330,6 +350,14 @@ func (s *Server) registerTools() {
 			"of the transcript); they never leak cross-origin. Re-creating an existing session with " +
 			"new credentials errors: close it first.",
 	}, s.handleSession)
+
+	addTool(s, "cookies", &mcp.Tool{
+		Annotations: localAnn,
+		Description: "Inspect or change a session's cookies, scoped to an origin (the given url, else " +
+			"the session's current page). action=list (default) returns the jar's cookies for that " +
+			"origin as name/value; set adds/updates the cookies you pass; clear expires them. Requires " +
+			"a session. Cookies are per-origin — pass url to target one explicitly.",
+	}, s.handleCookies)
 }
 
 // Run serves the MCP server over stdio until the client disconnects or ctx is

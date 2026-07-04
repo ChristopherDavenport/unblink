@@ -46,6 +46,15 @@ type RenderResult struct {
 	// quiet-window heuristic (or the budget) closed it.
 	SettledIdle bool
 
+	// Requests is the ordered log of subrequests the page's JS made (fetch/XHR,
+	// scripts, modules, dynamic import), for the requests tool; Console is the
+	// page's captured console.* output. Both are capped — the *Truncated flag
+	// reports dropped entries. Filled by fillCaptureLogs after the settle.
+	Requests          []RequestLog
+	RequestsTruncated bool
+	Console           []ConsoleMsg
+	ConsoleTruncated  bool
+
 	// Timing: where the render's wall clock went, filled by the engine after the
 	// settle. SetupDur covers loop acquisition + bridge install + prelude; ExecDur
 	// covers script/module execution + lifecycle events; SettleDur covers the settle
@@ -57,8 +66,25 @@ type RenderResult struct {
 	TotalDur  time.Duration
 }
 
+// RequestLog is one subrequest the page's JavaScript made, for the requests tool.
+type RequestLog struct {
+	Method string
+	URL    string
+	Status int    // 0 when the request errored before a response
+	Failed bool   // network error or budget/rate/SSRF denial
+	Err    string // error text when Failed
+}
+
+// ConsoleMsg is one captured page console.* call.
+type ConsoleMsg struct {
+	Level string // log|info|warn|error|debug|trace
+	Text  string
+}
+
 // collectDiagnostics snapshots the bridge's diagnostics after a render. Runs on the
-// loop goroutine.
+// loop goroutine. The request/console logs are filled separately by fillCaptureLogs
+// *after* the settle completes (settlePoll only schedules the poll and returns), so
+// they include async activity — a fetch or a console.log from a callback.
 func (b *bridge) collectDiagnostics() RenderResult {
 	errs := append([]string(nil), b.diagErrors...)
 	for p := range b.rejections {
@@ -69,6 +95,54 @@ func (b *bridge) collectDiagnostics() RenderResult {
 		Errors:    errs,
 		Upgrades:  len(b.upgraded),
 	}
+}
+
+// fillCaptureLogs copies the accumulated request/console logs into diag. The engine
+// calls it after the settle completes and the loop is terminated, so the reads are
+// race-free (Terminate's join is the happens-before edge for the loop-written
+// console buffer; the request log is mutex-guarded).
+func (b *bridge) fillCaptureLogs(diag *RenderResult) {
+	if diag == nil {
+		return
+	}
+	diag.Console, diag.ConsoleTruncated = b.consoleSnapshot()
+	if b.netCount != nil {
+		recs, truncated := b.netCount.snapshotRecords()
+		diag.RequestsTruncated = truncated
+		diag.Requests = make([]RequestLog, len(recs))
+		for i, r := range recs {
+			diag.Requests[i] = RequestLog{
+				Method: r.method, URL: r.url, Status: r.status,
+				Failed: r.errMsg != "", Err: r.errMsg,
+			}
+		}
+	}
+}
+
+// maxConsoleMsgs / maxConsoleTextLen bound the console buffer so a log-spamming
+// page can't grow it (or any single message) unbounded.
+const (
+	maxConsoleMsgs    = 200
+	maxConsoleTextLen = 2000
+)
+
+// recordConsole appends a captured console.* message (loop goroutine, no lock —
+// like recordError). Text is length-capped.
+func (b *bridge) recordConsole(level, text string) {
+	if len(b.consoleLog) >= maxConsoleMsgs {
+		b.consoleDropped++
+		return
+	}
+	if len(text) > maxConsoleTextLen {
+		text = text[:maxConsoleTextLen] + "…"
+	}
+	b.consoleLog = append(b.consoleLog, ConsoleMsg{Level: level, Text: text})
+}
+
+// consoleSnapshot returns a copy of the captured console messages and whether any
+// were dropped past the cap.
+func (b *bridge) consoleSnapshot() ([]ConsoleMsg, bool) {
+	return append([]ConsoleMsg(nil), b.consoleLog...), b.consoleDropped > 0
 }
 
 func rejectionText(p *goja.Promise) string {

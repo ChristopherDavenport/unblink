@@ -685,10 +685,22 @@ func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 		DeadlineHit:       diag.DeadlineHit,
 		DOMBusy:           diag.DOMBusy,
 		TimersPending:     diag.TimersPending,
+		RequestsTruncated: diag.RequestsTruncated,
+		ConsoleTruncated:  diag.ConsoleTruncated,
 		SetupDur:          diag.SetupDur,
 		ExecDur:           diag.ExecDur,
 		SettleDur:         diag.SettleDur,
 		TotalDur:          diag.TotalDur,
+	}
+	p.RenderDiag.Requests = make([]page.NetRequest, len(diag.Requests))
+	for i, r := range diag.Requests {
+		p.RenderDiag.Requests[i] = page.NetRequest{
+			Method: r.Method, URL: r.URL, Status: r.Status, Failed: r.Failed, Err: r.Err,
+		}
+	}
+	p.RenderDiag.Console = make([]page.ConsoleMessage, len(diag.Console))
+	for i, m := range diag.Console {
+		p.RenderDiag.Console[i] = page.ConsoleMessage{Level: m.Level, Text: m.Text}
 	}
 	slog.Debug("js: render diagnostics",
 		"url", url, "framework", diag.Framework,
@@ -1217,6 +1229,33 @@ func (b *Browser) Controls(ctx context.Context, req Request) ([]page.Control, er
 	return p.Meta.Controls, nil
 }
 
+// Requests returns the subrequests the page's JavaScript made during its render —
+// the escape hatch for finding a page's underlying data API (render once, see what
+// it fetched, read that endpoint directly). Empty when the page ran no JS.
+func (b *Browser) Requests(ctx context.Context, req Request) ([]page.NetRequest, bool, error) {
+	p, _, err := b.resolve(ctx, req)
+	if err != nil {
+		return nil, false, fmt.Errorf("browser: requests: %w", err)
+	}
+	if p.RenderDiag == nil {
+		return nil, false, nil
+	}
+	return p.RenderDiag.Requests, p.RenderDiag.RequestsTruncated, nil
+}
+
+// Console returns the page's captured console.* output from its render (all
+// levels), for debugging why a page rendered as it did. Empty when no JS ran.
+func (b *Browser) Console(ctx context.Context, req Request) ([]page.ConsoleMessage, bool, error) {
+	p, _, err := b.resolve(ctx, req)
+	if err != nil {
+		return nil, false, fmt.Errorf("browser: console: %w", err)
+	}
+	if p.RenderDiag == nil {
+		return nil, false, nil
+	}
+	return p.RenderDiag.Console, p.RenderDiag.ConsoleTruncated, nil
+}
+
 // DataCounts reports how many items of each structured-data kind were found.
 type DataCounts struct {
 	JSONLD    int `json:"jsonld"`
@@ -1634,6 +1673,113 @@ func sessionStateOf(s *session.Session) SessionState {
 	}
 	st.LiveJS = s.Live() != nil
 	return st
+}
+
+// CookieInput is a cookie to set via the cookies tool. Only Name/Value are
+// required; the rest default (Path "/" applied by the jar as needed).
+type CookieInput struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	Domain   string `json:"domain,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Secure   bool   `json:"secure,omitempty"`
+	HTTPOnly bool   `json:"http_only,omitempty"`
+}
+
+// CookieOut is a cookie the session's jar holds for the scope URL. The stdlib jar
+// exposes only name/value on read (attributes aren't recoverable), so that's all
+// this carries.
+type CookieOut struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// CookiesResult is the cookies tool's output.
+type CookiesResult struct {
+	Action  string      `json:"action"`
+	Session string      `json:"session"`
+	URL     string      `json:"url"` // the origin the cookies are scoped to
+	Cookies []CookieOut `json:"cookies,omitempty"`
+	Cleared int         `json:"cleared,omitempty"`
+}
+
+// Cookies inspects or mutates a session's cookie jar, scoped to a URL (the given
+// url, else the session's current page). Cookies are inherently per-origin and the
+// jar exposes no cross-origin enumeration, so a scope URL is required. action is
+// list (default), set, or clear.
+func (b *Browser) Cookies(sessionID, action, rawURL string, set []CookieInput) (*CookiesResult, error) {
+	if sessionID == "" {
+		return nil, &Error{Code: ErrBadInput, Message: "cookies: session is required"}
+	}
+	sess, err := b.sessions.Get(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	u, err := cookieScopeURL(sess, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	jar := sess.Client().Jar()
+	res := &CookiesResult{Session: sessionID, URL: u.String()}
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", "list":
+		res.Action = "list"
+		res.Cookies = cookieOut(jar.Cookies(u))
+	case "set":
+		res.Action = "set"
+		jar.SetCookies(u, httpCookies(set))
+		res.Cookies = cookieOut(jar.Cookies(u))
+	case "clear":
+		res.Action = "clear"
+		cur := jar.Cookies(u)
+		expired := make([]*http.Cookie, len(cur))
+		for i, c := range cur {
+			expired[i] = &http.Cookie{Name: c.Name, Path: "/", MaxAge: -1}
+		}
+		jar.SetCookies(u, expired)
+		res.Cleared = len(expired)
+	default:
+		return nil, &Error{Code: ErrBadInput, Message: "cookies: unknown action " + action + "; valid: list, set, clear"}
+	}
+	return res, nil
+}
+
+// cookieScopeURL resolves the origin a cookies operation applies to: the provided
+// absolute URL, else the session's current page.
+func cookieScopeURL(sess *session.Session, rawURL string) (*url.URL, error) {
+	if raw := strings.TrimSpace(rawURL); raw != "" {
+		u, err := url.Parse(raw)
+		if err != nil || !u.IsAbs() {
+			return nil, &Error{Code: ErrBadInput, Message: "cookies: url must be an absolute URL"}
+		}
+		return u, nil
+	}
+	if cur := sess.Current(); cur != nil && cur.FinalURL != nil {
+		return cur.FinalURL, nil
+	}
+	return nil, &Error{Code: ErrBadInput, Message: "cookies: pass url to scope the cookies, or navigate the session first"}
+}
+
+func httpCookies(in []CookieInput) []*http.Cookie {
+	out := make([]*http.Cookie, 0, len(in))
+	for _, c := range in {
+		if c.Name == "" {
+			continue
+		}
+		out = append(out, &http.Cookie{
+			Name: c.Name, Value: c.Value, Domain: c.Domain,
+			Path: c.Path, Secure: c.Secure, HttpOnly: c.HTTPOnly,
+		})
+	}
+	return out
+}
+
+func cookieOut(cks []*http.Cookie) []CookieOut {
+	out := make([]CookieOut, len(cks))
+	for i, c := range cks {
+		out[i] = CookieOut{Name: c.Name, Value: c.Value}
+	}
+	return out
 }
 
 // SessionList returns the state of every live session, sorted by id.

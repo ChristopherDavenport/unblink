@@ -119,6 +119,10 @@ type bridge struct {
 	// diagErrors collects uncaught script/upgrade exceptions for render diagnostics.
 	diagErrors []string
 	rejections map[*goja.Promise]struct{} // promises rejected without a handler (yet)
+	// consoleLog captures page console.* output for the console tool (capped);
+	// consoleDropped counts messages past the cap. Written on the loop goroutine.
+	consoleLog     []ConsoleMsg
+	consoleDropped int
 
 	winListeners  map[string][]listenerEntry
 	docListeners  map[string][]listenerEntry

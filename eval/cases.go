@@ -640,7 +640,8 @@ const (
 // allToolNames is the full set of tools the server must register.
 var allToolNames = []string{
 	"read", "browse", "links", "forms", "find", "click", "submit_form",
-	"controls", "interact", "data", "site", "session", "map", "search",
+	"controls", "interact", "data", "requests", "console", "site", "session",
+	"map", "search", "cookies",
 }
 
 // cases is the seed eval corpus: ~12 cases spanning all the tools and every

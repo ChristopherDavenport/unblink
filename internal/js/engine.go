@@ -342,6 +342,9 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 			if b.pendingNav != nil {
 				env.Diag.PendingNavigation = b.pendingNav.String()
 			}
+			// Post-Terminate (settle complete + loop joined): the request/console
+			// logs now include everything the settle waited on.
+			b.fillCaptureLogs(env.Diag)
 		}
 	}
 	return rerr

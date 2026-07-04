@@ -58,8 +58,10 @@ func TestToolAnnotations(t *testing.T) {
 
 	wantReadOnly := map[string]bool{
 		"read": true, "browse": true, "links": true, "forms": true, "find": true,
-		"controls": true, "data": true, "site": true, "map": true, "search": true,
-		"click": false, "submit_form": false, "interact": false, "session": false,
+		"controls": true, "data": true, "requests": true, "console": true,
+		"site": true, "map": true, "search": true,
+		"click": false, "submit_form": false, "interact": false,
+		"session": false, "cookies": false,
 	}
 	seen := 0
 	for _, tl := range tools.Tools {
