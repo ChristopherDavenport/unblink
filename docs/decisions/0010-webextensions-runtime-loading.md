@@ -236,9 +236,21 @@ drove several gaps closed:
   `start()` is time-bounded so it can't hang construction.
 
 State: **Privacy Badger fully initializes** with no errors (it is learning-based, so it does
-not block on a cold profile). **uBlock Origin** loads, runs its background page, and — when its
-async init completes — **blocks real trackers** (google-analytics, doubleclick, …) through the
-MV2 `webRequest` path; its full init is non-deterministic (can hit an infinite loop deep in
-setup, now safely interrupted) and supplying `documentUrl`/`originUrl` triggers that loop, so
-page context is withheld for now (uBO then over-blocks context-lessly). Fully-correct uBO
-remains follow-up work (a real per-tab page store, IndexedDB, and the loop's root cause).
+not block on a cold profile). **uBlock Origin** loads, runs its background page, compiles its
+bundled filter lists (~15–20 s on a cold profile), and then **blocks real trackers**
+(google-analytics, googletagmanager, doubleclick) through the MV2 `webRequest` path, with the
+page's `documentUrl`/`originUrl` supplied so its first/third-party rules apply.
+
+**Root cause of the earlier "infinite loop" (found and fixed):** it was *corrupted persisted
+`chrome.storage` data*, not an inherent incompatibility and not `documentUrl`. uBO stores
+lz4-compressed blobs; stale/mismatched bytes left in the on-disk store by earlier
+iterations of unblink's storage code fed uBO's lz4 decompressor malformed input, and its
+`while`-loop spun (stack: `guard`←`decompress` in the cacheStorage read path). With a clean
+storage dir it does not recur; the `documentUrl`↔loop correlation was an artifact of the
+polluted cache. The background is `Interrupt`ed on close regardless, so even a wedged
+background can never hang shutdown.
+
+Remaining follow-up: uBO over-blocks an *unrelated third-party* request (it has no per-tab
+page store — unblink never feeds it `webNavigation`/`tabs` navigation events, so tab 1 has no
+committed document), and its cacheStorage relies on IndexedDB (stubbed). A real per-tab page
+store + an IndexedDB shim are the remaining pieces for fully-correct uBO.

@@ -91,6 +91,9 @@ func (h *ExtensionHost) webRequestVerdict(req webext.Request, documentURL string
 	case d := <-result:
 		return d
 	case <-time.After(webReqTimeout):
+		// A verdict should take microseconds; exceeding the budget means the listener is
+		// wedged (a real extension can spin on corrupt state). Allow this request; the
+		// background is torn down with an Interrupt on close so it can't hang shutdown.
 		return webext.Decision{}
 	}
 }
@@ -110,11 +113,17 @@ func (b *bridge) runWebRequest(vm *goja.Runtime, req webext.Request, documentURL
 		_ = details.Set("frameId", 0)
 		_ = details.Set("parentFrameId", -1)
 		_ = details.Set("requestId", "0")
-		// NOTE: documentUrl/originUrl are intentionally NOT set. Supplying them sends
-		// uBlock Origin's context-aware matching into an apparent infinite loop against
-		// our stubbed per-tab page store (needs a real pageStore/tabs model — Phase 5+).
-		// Without them uBO over-blocks (treats requests as context-less), but does not hang.
-		_ = documentURL
+		// Page context: uBlock Origin/AdGuard need documentUrl/originUrl to apply
+		// domain-anchored and first/third-party rules. (An earlier apparent "hang" when
+		// setting these was actually corrupt persisted storage sending uBO's lz4
+		// decompressor into a loop — unrelated to page context.)
+		if documentURL != "" {
+			_ = details.Set("documentUrl", documentURL)
+			_ = details.Set("originUrl", documentURL)
+			if pu, err := url.Parse(documentURL); err == nil {
+				_ = details.Set("initiator", pu.Scheme+"://"+pu.Host)
+			}
+		}
 		ret, err := l.fn(goja.Undefined(), details)
 		if err != nil {
 			b.recordError(err)

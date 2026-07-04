@@ -59,11 +59,19 @@ func TestRealExtensionSmoke(t *testing.T) {
 		m.Name, m.Version, m.ManifestVersion, m.Background.Page, m.Background.ServiceWorker,
 		len(m.Background.Scripts), len(m.ContentScripts), bundle.Net.Count(), bundle.ID)
 
-	eng := js.New(js.WithTimeout(10*time.Second), js.WithExtensions([]*webext.Bundle{bundle}))
+	eng := js.New(js.WithTimeout(15*time.Second), js.WithExtensions([]*webext.Bundle{bundle}))
 	defer eng.Close()
 
-	// Let the background's async init (filter-list compile, etc.) progress.
-	time.Sleep(3 * time.Second)
+	// Let the background's async init (filter-list compile, etc.) progress. uBO's
+	// first-run compile of its bundled lists takes several seconds; UNBLINK_TEST_WAIT
+	// tunes it.
+	wait := 3 * time.Second
+	if s := os.Getenv("UNBLINK_TEST_WAIT"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil {
+			wait = d
+		}
+	}
+	time.Sleep(wait)
 
 	trackers := []string{
 		"https://www.google-analytics.com/analytics.js",
