@@ -22,6 +22,7 @@ var (
 	selHTML     = cascadia.MustCompile("html")
 	selBase     = cascadia.MustCompile("base[href]")
 	selCanon    = cascadia.MustCompile("link[rel=canonical]")
+	selIcon     = cascadia.MustCompile("link[rel~=icon]")
 	selAnchor   = cascadia.MustCompile("a[href]")
 	selImg      = cascadia.MustCompile("img[src]")
 	selForm     = cascadia.MustCompile("form")
@@ -70,6 +71,16 @@ func Extract(p *page.Page) error {
 	}
 	if c := selCanon.MatchFirst(p.Doc); c != nil {
 		m.Canonical = resolveURL(base, attr(c, "href"))
+	}
+	m.Image = resolveURL(base, firstNonEmpty(metas["og:image"], metas["twitter:image"]))
+	m.Author = firstNonEmpty(metas["author"], metas["article:author"])
+	m.Published = metas["article:published_time"]
+	m.Modified = metas["article:modified_time"]
+	m.ThemeColor = metas["theme-color"]
+	m.TwitterCard = metas["twitter:card"]
+	m.TwitterSite = metas["twitter:site"]
+	if ic := selIcon.MatchFirst(p.Doc); ic != nil {
+		m.Favicon = resolveURL(base, attr(ic, "href"))
 	}
 
 	res := newIDResolver(p.Doc)

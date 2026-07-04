@@ -274,3 +274,34 @@ func TestExtractHashIDStability(t *testing.T) {
 		t.Error("renamed control kept its id")
 	}
 }
+
+func TestExtractMetadata(t *testing.T) {
+	m := loadStructured(t).Meta
+	for name, got := range map[string]string{
+		"canonical":    m.Canonical,
+		"image":        m.Image,
+		"author":       m.Author,
+		"published":    m.Published,
+		"modified":     m.Modified,
+		"twitter_card": m.TwitterCard,
+		"twitter_site": m.TwitterSite,
+		"theme_color":  m.ThemeColor,
+		"favicon":      m.Favicon,
+	} {
+		if got == "" {
+			t.Errorf("%s empty", name)
+		}
+	}
+	if m.Canonical != "https://example.com/blog/post" {
+		t.Errorf("canonical = %q", m.Canonical)
+	}
+	if m.Image != "https://example.com/images/cover.png" {
+		t.Errorf("image not absolutized: %q", m.Image)
+	}
+	if m.Author != "Ada Lovelace" {
+		t.Errorf("author = %q", m.Author)
+	}
+	if m.Favicon != "https://example.com/favicon.ico" {
+		t.Errorf("favicon = %q", m.Favicon)
+	}
+}

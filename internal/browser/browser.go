@@ -1020,20 +1020,36 @@ type Counts struct {
 	Controls int `json:"controls"`
 }
 
+// PageMetadata groups a page's head metadata into a token-compact object for the
+// browse result. Every field is best-effort and omitted when absent; the whole
+// object is omitted when the page carries none.
+type PageMetadata struct {
+	Canonical   string `json:"canonical,omitempty"`
+	Image       string `json:"image,omitempty"`
+	Author      string `json:"author,omitempty"`
+	Published   string `json:"published,omitempty"`
+	Modified    string `json:"modified,omitempty"`
+	Favicon     string `json:"favicon,omitempty"`
+	ThemeColor  string `json:"theme_color,omitempty"`
+	TwitterCard string `json:"twitter_card,omitempty"`
+	TwitterSite string `json:"twitter_site,omitempty"`
+}
+
 // BrowseResult is a cheap orientation summary of a page.
 type BrowseResult struct {
-	FinalURL    string `json:"final_url"`
-	Status      int    `json:"status"`
-	Title       string `json:"title,omitempty"`
-	Description string `json:"description,omitempty"`
-	SiteName    string `json:"site_name,omitempty"`
-	Lang        string `json:"lang,omitempty"`
-	Counts      Counts `json:"counts"`
-	Excerpt     string `json:"excerpt,omitempty"`
-	Outline     string `json:"outline,omitempty"`
-	ContentType string `json:"content_type,omitempty"`
-	Kind        string `json:"kind,omitempty"`
-	Bytes       int    `json:"bytes,omitempty"`
+	FinalURL    string        `json:"final_url"`
+	Status      int           `json:"status"`
+	Title       string        `json:"title,omitempty"`
+	Description string        `json:"description,omitempty"`
+	SiteName    string        `json:"site_name,omitempty"`
+	Lang        string        `json:"lang,omitempty"`
+	Metadata    *PageMetadata `json:"metadata,omitempty"`
+	Counts      Counts        `json:"counts"`
+	Excerpt     string        `json:"excerpt,omitempty"`
+	Outline     string        `json:"outline,omitempty"`
+	ContentType string        `json:"content_type,omitempty"`
+	Kind        string        `json:"kind,omitempty"`
+	Bytes       int           `json:"bytes,omitempty"`
 
 	// Agent-facing site hints (populated by Browse when site hints are enabled).
 	LLMsTxt bool        `json:"llms_txt,omitempty"`
@@ -1075,11 +1091,32 @@ func summarize(p *page.Page) *BrowseResult {
 		Kind:        kindString(p.Kind),
 		Bytes:       len(p.Raw),
 	}
+	res.Metadata = pageMetadata(p)
 	if d := p.RenderDiag; d != nil {
 		res.Framework = d.Framework
 		res.JSErrors = capErrors(d.Errors)
 	}
 	return res
+}
+
+// pageMetadata groups the page's head metadata, returning nil when the page
+// carries none (so the whole object is omitted from browse output).
+func pageMetadata(p *page.Page) *PageMetadata {
+	m := &PageMetadata{
+		Canonical:   p.Meta.Canonical,
+		Image:       p.Meta.Image,
+		Author:      p.Meta.Author,
+		Published:   p.Meta.Published,
+		Modified:    p.Meta.Modified,
+		Favicon:     p.Meta.Favicon,
+		ThemeColor:  p.Meta.ThemeColor,
+		TwitterCard: p.Meta.TwitterCard,
+		TwitterSite: p.Meta.TwitterSite,
+	}
+	if *m == (PageMetadata{}) {
+		return nil
+	}
+	return m
 }
 
 // maxOutlineBytes bounds a browse outline — a pathological page with thousands

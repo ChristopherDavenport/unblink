@@ -95,7 +95,8 @@ type RenderDiag struct {
 }
 
 // PageMeta holds page-level metadata and extracted structure, populated by the
-// dom.Extract pass.
+// dom.Extract pass. It is never marshaled directly — the browser layer groups
+// the scalar metadata into a token-compact struct for tool output.
 type PageMeta struct {
 	Title       string
 	Byline      string
@@ -103,6 +104,16 @@ type PageMeta struct {
 	SiteName    string
 	Lang        string
 	Canonical   string
+
+	// Extended head metadata (surfaced grouped, all best-effort).
+	Image       string // og:image / twitter:image, resolved absolute
+	Author      string // author / article:author
+	Published   string // article:published_time (verbatim ISO)
+	Modified    string // article:modified_time (verbatim ISO)
+	Favicon     string // link[rel~=icon], resolved absolute
+	ThemeColor  string // theme-color
+	TwitterCard string // twitter:card
+	TwitterSite string // twitter:site
 
 	Links    []Link
 	Forms    []Form

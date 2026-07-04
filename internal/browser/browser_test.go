@@ -231,6 +231,11 @@ func TestBrowse(t *testing.T) {
 	if !strings.Contains(r.Outline, "Installation") {
 		t.Errorf("outline missing Installation:\n%s", r.Outline)
 	}
+	// Metadata is grouped and finally surfaces the long-extracted canonical.
+	// canonical resolves against the (local test-server) base, so match the path.
+	if r.Metadata == nil || !strings.HasSuffix(r.Metadata.Canonical, "/blog/post") || r.Metadata.Author != "Ada Lovelace" {
+		t.Errorf("metadata = %+v", r.Metadata)
+	}
 }
 
 func TestLinksAndForms(t *testing.T) {
