@@ -3,6 +3,39 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## v0.20.0 — 2026-07-04
+
+### Added
+
+- **A semantic structured representation of the page, computed from the parsed node
+  tree with no browser ([ADR 0007](docs/decisions/0007-semantic-structured-representation.md),
+  [ADR 0008](docs/decisions/0008-stable-element-ids.md)).** `browse` now returns a
+  landmark/region map (banner/navigation/main/… with per-region link/form/control/
+  heading counts), a structured heading outline (level/text/id, deep-linkable), and a
+  unified `metadata` object (canonical — finally surfaced — plus og:image, author,
+  published/modified time, favicon, twitter). `controls`/`forms`/`interact` controls
+  gain rich ARIA state (checked/expanded/pressed/selected/required/invalid, plus
+  value/placeholder/href), and every control/region/heading carries a stable
+  content-hash `id` — a mutation-resilient reference key alongside the CSS selector.
+  Ports charlotte's accessibility-tree decomposition to unblink's no-layout model;
+  geometry/bounds/CSSOM remain permanent non-goals.
+- **`requests`, `console`, and `cookies` tools.** `requests` lists the network
+  requests a page's JavaScript made while rendering (method/url/status) — render once,
+  see the JSON endpoint the page fetched, then `read` it directly instead of scraping
+  the hydrated DOM. `console` returns the page's captured console output
+  (log/info/warn/error/debug), filterable by level, for debugging a render. `cookies`
+  inspects, sets, or clears a session's cookies, scoped to an origin.
+  `requests`/`console` require JavaScript.
+
+### Changed
+
+- **Configurable tool exposure.** The server now advertises only tools that can do
+  something: `search` is hidden without `--search-provider`, and `interact`/
+  `requests`/`console` are hidden under `--disable-js` — a tool that could only return
+  an error is context cost with no value. Operators can narrow the surface further with
+  `--tools` (comma-separated tool names and/or the presets `core`/`read-only`/`full`)
+  and `--disable-tools`.
+
 ## v0.19.0 — 2026-07-03
 
 ### Added
