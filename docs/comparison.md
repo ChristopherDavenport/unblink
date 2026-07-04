@@ -467,7 +467,9 @@ This is the crux of the differentiation. Obscura and Lightpanda are lean
 real-browser *automation* engines — richer interaction surfaces than unblink
 (multi-tab, storage-state replay, stealth) and real V8. (Caller-directed
 CSS-schema extraction, once one of their differentiators, is now covered by
-unblink's `extract` tool.)
+unblink's `extract` tool — and schema *discovery* is self-serve: `browse`
+auto-detects a page's repeating record-sets and hands the agent a ready-to-use
+`{root, fields}` schema, so it never has to fetch raw HTML to find selectors.)
 They compete with Playwright MCP, a lighter CDP drop-in. unblink competes on
 the content boundary itself: reduce the page to meaning, treat what crosses into
 the model as untrusted, and cover the non-HTML web — the things a faithful DOM,
