@@ -236,6 +236,10 @@ func TestBrowse(t *testing.T) {
 	if r.Metadata == nil || !strings.HasSuffix(r.Metadata.Canonical, "/blog/post") || r.Metadata.Author != "Ada Lovelace" {
 		t.Errorf("metadata = %+v", r.Metadata)
 	}
+	// Structured heading TOC carries level/text/id (deep-linkable).
+	if len(r.Headings) != 4 || r.Headings[0].ID == "" {
+		t.Errorf("structured headings = %+v", r.Headings)
+	}
 }
 
 func TestLinksAndForms(t *testing.T) {

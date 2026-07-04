@@ -1037,19 +1037,20 @@ type PageMetadata struct {
 
 // BrowseResult is a cheap orientation summary of a page.
 type BrowseResult struct {
-	FinalURL    string        `json:"final_url"`
-	Status      int           `json:"status"`
-	Title       string        `json:"title,omitempty"`
-	Description string        `json:"description,omitempty"`
-	SiteName    string        `json:"site_name,omitempty"`
-	Lang        string        `json:"lang,omitempty"`
-	Metadata    *PageMetadata `json:"metadata,omitempty"`
-	Counts      Counts        `json:"counts"`
-	Excerpt     string        `json:"excerpt,omitempty"`
-	Outline     string        `json:"outline,omitempty"`
-	ContentType string        `json:"content_type,omitempty"`
-	Kind        string        `json:"kind,omitempty"`
-	Bytes       int           `json:"bytes,omitempty"`
+	FinalURL    string         `json:"final_url"`
+	Status      int            `json:"status"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	SiteName    string         `json:"site_name,omitempty"`
+	Lang        string         `json:"lang,omitempty"`
+	Metadata    *PageMetadata  `json:"metadata,omitempty"`
+	Counts      Counts         `json:"counts"`
+	Excerpt     string         `json:"excerpt,omitempty"`
+	Outline     string         `json:"outline,omitempty"`  // indented-text TOC (back-compat)
+	Headings    []page.Heading `json:"headings,omitempty"` // structured TOC: level/text/id (deep-linkable)
+	ContentType string         `json:"content_type,omitempty"`
+	Kind        string         `json:"kind,omitempty"`
+	Bytes       int            `json:"bytes,omitempty"`
 
 	// Agent-facing site hints (populated by Browse when site hints are enabled).
 	LLMsTxt bool        `json:"llms_txt,omitempty"`
@@ -1092,11 +1093,23 @@ func summarize(p *page.Page) *BrowseResult {
 		Bytes:       len(p.Raw),
 	}
 	res.Metadata = pageMetadata(p)
+	res.Headings = capHeadings(p.Meta.Headings)
 	if d := p.RenderDiag; d != nil {
 		res.Framework = d.Framework
 		res.JSErrors = capErrors(d.Errors)
 	}
 	return res
+}
+
+// maxHeadingsOut bounds the structured heading list so a pathological page can't
+// turn the cheap browse tool into a token bomb.
+const maxHeadingsOut = 200
+
+func capHeadings(h []page.Heading) []page.Heading {
+	if len(h) > maxHeadingsOut {
+		return h[:maxHeadingsOut]
+	}
+	return h
 }
 
 // pageMetadata groups the page's head metadata, returning nil when the page

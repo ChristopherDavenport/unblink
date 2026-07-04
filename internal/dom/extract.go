@@ -89,7 +89,7 @@ func Extract(p *page.Page) error {
 	m.Links = extractLinks(p.Doc, base)
 	m.Forms = extractForms(p.Doc, base, p.FinalURL, res, minter)
 	m.Images = extractImages(p.Doc, base)
-	m.Headings = extractHeadings(p.Doc)
+	m.Headings = extractHeadings(p.Doc, minter)
 	m.Controls = extractInteractive(p.Doc, base, res, minter)
 	return nil
 }
@@ -259,14 +259,19 @@ func extractImages(doc *html.Node, base *url.URL) []page.Image {
 	return out
 }
 
-func extractHeadings(doc *html.Node) []page.Heading {
+func extractHeadings(doc *html.Node, minter *idMinter) []page.Heading {
 	var out []page.Heading
 	for _, h := range selHeadings.MatchAll(doc) {
 		lvl := headingLevel(h.Data)
 		if lvl == 0 {
 			continue
 		}
-		out = append(out, page.Heading{Level: lvl, Text: collapsedText(h), ID: attr(h, "id")})
+		text := collapsedText(h)
+		id := attr(h, "id")
+		if id == "" {
+			id = minter.mint("h", h, text, "heading")
+		}
+		out = append(out, page.Heading{Level: lvl, Text: text, ID: id})
 	}
 	return out
 }
