@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/christopherdavenport/unblink/internal/webext"
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/eventloop"
 	"github.com/dop251/goja_nodejs/require"
@@ -46,9 +47,10 @@ type Engine struct {
 	pool      chan *eventloop.EventLoop // pre-warmed, fresh, single-use loops; nil when disabled
 	stop      chan struct{}
 	closeOnce sync.Once
-	assets    *assetCache // TTL'd script/module/bundle cache; nil when disabled
-	webdriver bool        // navigator.webdriver; true unless the operator opted into --tls-mimic parity
-	memGuard  *memGuard   // heap watchdog over all live/one-shot runtimes; nil when disabled
+	assets    *assetCache    // TTL'd script/module/bundle cache; nil when disabled
+	webdriver bool           // navigator.webdriver; true unless the operator opted into --tls-mimic parity
+	memGuard  *memGuard      // heap watchdog over all live/one-shot runtimes; nil when disabled
+	extHost   *ExtensionHost // loaded WebExtensions (network rules); nil when none configured
 }
 
 // Option configures an Engine.
@@ -61,6 +63,7 @@ type config struct {
 	assetTTL   time.Duration
 	webdriver  bool
 	memLimit   uint64
+	extensions []*webext.Bundle
 }
 
 // WithTimeout sets the wall-clock budget for a single render.
@@ -89,6 +92,14 @@ func WithWebdriver(v bool) Option { return func(c *config) { c.webdriver = v } }
 // live runtime is interrupted (see memGuard / ADR-0003). 0 disables the guard.
 func WithMemoryLimit(bytes uint64) Option { return func(c *config) { c.memLimit = bytes } }
 
+// WithExtensions loads WebExtensions into the engine. Their state (Phase 1: the
+// declarativeNetRequest network rules) is engine-lifetime and shared read-only across
+// every render and live session, so a page-JS subrequest matching a block rule is
+// cancelled before it leaves the process.
+func WithExtensions(bundles []*webext.Bundle) Option {
+	return func(c *config) { c.extensions = bundles }
+}
+
 // New returns an Engine. If a pre-warm pool is configured, call Close to stop its
 // background refiller.
 func New(opts ...Option) *Engine {
@@ -102,7 +113,7 @@ func New(opts ...Option) *Engine {
 	if c.concurrent <= 0 {
 		c.concurrent = DefaultMaxConcurrent
 	}
-	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent), assets: newAssetCache(c.assetTTL), webdriver: c.webdriver, memGuard: newMemGuard(c.memLimit)}
+	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent), assets: newAssetCache(c.assetTTL), webdriver: c.webdriver, memGuard: newMemGuard(c.memLimit), extHost: newExtensionHost(c.extensions)}
 	if c.prewarm > 0 {
 		e.pool = make(chan *eventloop.EventLoop, c.prewarm)
 		e.stop = make(chan struct{})
@@ -231,7 +242,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		e.memGuard.register(vm)
 		// reqTimeout is the render budget so a wait_timeout override also gives the
 		// page's own fetches longer to complete (else the awaited content never lands).
-		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget)
+		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget, e.extHost)
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()

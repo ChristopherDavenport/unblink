@@ -303,6 +303,29 @@ a fetch on them. `browse` folds in lightweight presence hints (host-cached, so
 repeat browses are free); `--no-site-hints` disables that probe while the `site`
 tool stays available.
 
+### Extensions (ad-blocking)
+
+unblink can load **WebExtensions** at runtime to extend what it does with
+best-in-class third-party tooling — most usefully, ad/tracker blocking. Point
+`--extension` at an unpacked extension directory or a `.xpi`/`.crx`/`.zip` archive
+(repeatable), or `--extensions-dir` at a folder of them:
+
+```sh
+./bin/unblink --extension ./ublock-origin-lite
+```
+
+unblink ships **no** extension code — you supply it — which keeps GPL-licensed
+extensions (uBlock Origin is GPL-3) fully separate from unblink's MIT source, the
+same way a browser loads a user-installed add-on (see
+[ADR 0010](docs/decisions/0010-webextensions-runtime-loading.md)). The recommended
+target is **uBlock Origin Lite (MV3)**. Today unblink honors an extension's
+`declarativeNetRequest` static rules: page-JavaScript requests to blocked ad/tracker
+hosts are cancelled before they leave the process (visible in the `requests` tool as
+blocked). Extensions require the JavaScript engine (they are rejected under
+`--disable-js`); extension JS runs in the same sandbox as page JS (heap/byte/SSRF
+guards apply). Cosmetic filtering and the fuller `chrome`/`browser` API surface are
+planned follow-ups.
+
 ## Configuration
 
 All configuration is via CLI flags (pass them in your MCP client's `args`).
@@ -335,6 +358,8 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 | `--search-endpoint` | none | Search endpoint URL (SearXNG base URL; optional Brave override). API key comes from `UNBLINK_SEARCH_API_KEY`. |
 | `--tools` | all | Limit the exposed tools to a comma-separated list of tool names and/or presets (`core`, `read-only`, `full`). Empty exposes every usable tool. |
 | `--disable-tools` | none | Remove tools from the exposed set (comma-separated names/presets), applied after `--tools`. |
+| `--extension` | none | Load a WebExtension (unpacked dir or `.xpi`/`.crx`/`.zip`) — e.g. uBlock Origin Lite for ad-blocking; repeatable. Requires JS. |
+| `--extensions-dir` | none | Load every WebExtension in a directory (each subdir with `manifest.json` or each archive); repeatable. |
 
 ## License
 

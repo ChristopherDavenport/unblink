@@ -252,7 +252,7 @@ func (b *bridge) modulePlugin(importMap map[string]string) esbuild.Plugin {
 					contents := string(body)
 					return esbuild.OnLoadResult{Contents: &contents, Loader: loader}, nil
 				}
-				ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
+				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
 				defer cancel()
 				res, err := b.transport.Do(ctx, "GET", a.Path, nil, nil)
 				if err != nil {

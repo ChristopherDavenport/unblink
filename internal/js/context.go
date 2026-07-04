@@ -111,7 +111,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 	err := c.run(ctx, true, nil, nil, func(vm *goja.Runtime) {
 		c.vm.Store(vm)
 		c.memGuard.register(vm)
-		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, c.ctx, e.timeout)
+		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, c.ctx, e.timeout, e.extHost)
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()

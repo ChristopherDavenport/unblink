@@ -157,6 +157,11 @@ type bridge struct {
 	// bypass the transport, so they never count toward NetRequests or the budget.
 	assets *assetCache
 
+	// extHost is the engine-lifetime WebExtension state (declarativeNetRequest network
+	// rules in Phase 1), shared read-only across renders. nil when no extension is
+	// loaded. The subrequest network gate (blockingTransport) is wired from it.
+	extHost *ExtensionHost
+
 	// dynSem bounds how many runtime dynamic import() chunks fetch+bundle off-loop
 	// at once, so a page firing hundreds of concurrent import()s can't spawn an
 	// unbounded number of esbuild builds. Buffered to dynImportConcurrency.
@@ -172,9 +177,15 @@ func (b *bridge) resetTransportBudget() {
 	}
 }
 
-func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration) *bridge {
+func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration, extHost *ExtensionHost) *bridge {
 	var nc *countingTransport
 	if transport != nil {
+		// Extension network rules (declarativeNetRequest) gate every page-JS subrequest,
+		// wrapped inside the counting transport so a blocked request still shows in the
+		// requests diagnostics. No-op when no extension is loaded.
+		if extHost != nil {
+			transport = &blockingTransport{inner: transport, host: extHost, initiator: initiatorHost(base)}
+		}
 		nc = &countingTransport{inner: transport}
 		transport = nc
 	}
@@ -186,6 +197,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		explicitBase:         findExplicitBase(doc, base),
 		transport:            transport,
 		netCount:             nc,
+		extHost:              extHost,
 		cookies:              cookies,
 		storage:              storage,
 		sessStorage:          sessStorage,

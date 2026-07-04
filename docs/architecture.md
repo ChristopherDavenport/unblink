@@ -680,6 +680,27 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   `dom.Records` round-trip, so a surfaced collection is always valid `extract` input. Schema-only (no
   sample values) to keep `browse` cheap; `extract` executes it.
 
+- **WebExtensions runtime loading — network filtering (Phase 1, ADR 0010).** ✅ unblink can load
+  user-supplied browser extensions at runtime (`--extension <dir|.xpi|.crx|.zip>`, `--extensions-dir`)
+  so best-in-class GPL tooling (uBlock Origin Lite, AdGuard MV3) extends what unblink does without
+  entering its MIT tree — the extension is a separate artifact, like a browser add-on. A new pure-Go
+  `internal/webext` package (manifest MV2/MV3, match patterns, a tokenized Adblock-Plus `urlFilter`
+  matcher — no regexp, no ReDoS — and dir/archive loaders with traversal + zip-bomb guards) owns the
+  model; the dependency direction stays `browser → js → webext`. This phase honors an extension's
+  static `declarativeNetRequest` rules: an engine-lifetime `ExtensionHost` (shared read-only across
+  every render/session, like one browser process' extensions across tabs) is consulted by a
+  `blockingTransport` decorator wrapped *inside* `countingTransport` at the one choke point every
+  page-JS subrequest shares (`internal/js/bridge.go` `newBridge`), so a request matching a block rule
+  is cancelled before the socket — faithfully, as a request failure (`net::ERR_BLOCKED_BY_CLIENT`) —
+  and still shows in the `requests` tool. Resource type (`$script`/`$xmlhttprequest`) is threaded via
+  a request-context value at each origin site. Because unblink never fetches passive subresources,
+  this targets JS-initiated ad/tracker scripts + beacons; cosmetic DOM removal, the `chrome`/`browser`
+  API, the background worker + messaging (respecting the ADR-0004 settle via the `pending` bracket),
+  and full uBlock Origin are the phases that follow. Regression nets: `internal/webext/*_test.go` (unit
+  + `FuzzParseManifest`/`FuzzParseRules`/`FuzzMatchPattern`), `internal/js/extension_test.go` (an
+  end-to-end blocked fetch), `internal/browser/extensions_test.go` (wiring + the `--disable-js`
+  rejection).
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

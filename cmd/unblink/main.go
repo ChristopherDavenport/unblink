@@ -13,11 +13,21 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 
 	"github.com/christopherdavenport/unblink/internal/browser"
 	"github.com/christopherdavenport/unblink/internal/mcpserver"
 	"github.com/christopherdavenport/unblink/internal/search"
 )
+
+// stringSliceFlag collects a repeatable string flag (e.g. --extension a --extension b).
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
+func (s *stringSliceFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -50,6 +60,10 @@ func main() {
 	searchEndpoint := flag.String("search-endpoint", "", "search endpoint URL (SearXNG base URL; optional Brave override). The API key comes from UNBLINK_SEARCH_API_KEY")
 	toolsFlag := flag.String("tools", "", "limit exposed MCP tools to a comma-separated list of tool names and/or presets (core|read-only|full); empty exposes every usable tool")
 	disableToolsFlag := flag.String("disable-tools", "", "remove tools from the exposed set: comma-separated tool names and/or presets (applied after --tools)")
+	var extensions stringSliceFlag
+	flag.Var(&extensions, "extension", "load a WebExtension (unpacked dir or .xpi/.crx/.zip) — e.g. uBlock Origin Lite for ad-blocking; repeatable. Requires JS (on by default).")
+	var extensionsDirs stringSliceFlag
+	flag.Var(&extensionsDirs, "extensions-dir", "load every WebExtension in a directory (each subdir with manifest.json or each .xpi/.crx/.zip); repeatable")
 	flag.Parse()
 
 	if *showVersion {
@@ -71,6 +85,14 @@ func main() {
 		browser.WithSiteHints(!*noSiteHints),
 		browser.WithSafeOutput(!*noSafeOutput),
 		browser.WithSessionLimits(*sessionTTL, *sessionCap),
+	}
+	// Appended unconditionally: if extensions are configured with --disable-js,
+	// browser.New rejects it clearly rather than silently ignoring them.
+	for _, p := range extensions {
+		opts = append(opts, browser.WithExtension(p))
+	}
+	for _, d := range extensionsDirs {
+		opts = append(opts, browser.WithExtensionsDir(d))
 	}
 	if !*disableJS {
 		var memLimit uint64
