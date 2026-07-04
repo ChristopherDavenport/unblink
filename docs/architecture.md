@@ -680,6 +680,86 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   `dom.Records` round-trip, so a surfaced collection is always valid `extract` input. Schema-only (no
   sample values) to keep `browse` cheap; `extract` executes it.
 
+- **WebExtensions runtime loading — network filtering (Phase 1, ADR 0010).** ✅ unblink can load
+  user-supplied browser extensions at runtime (`--extension <dir|.xpi|.crx|.zip>`, `--extensions-dir`)
+  so best-in-class GPL tooling (uBlock Origin Lite, AdGuard MV3) extends what unblink does without
+  entering its MIT tree — the extension is a separate artifact, like a browser add-on. A new pure-Go
+  `internal/webext` package (manifest MV2/MV3, match patterns, a tokenized Adblock-Plus `urlFilter`
+  matcher — no regexp, no ReDoS — and dir/archive loaders with traversal + zip-bomb guards) owns the
+  model; the dependency direction stays `browser → js → webext`. This phase honors an extension's
+  static `declarativeNetRequest` rules: an engine-lifetime `ExtensionHost` (shared read-only across
+  every render/session, like one browser process' extensions across tabs) is consulted by a
+  `blockingTransport` decorator wrapped *inside* `countingTransport` at the one choke point every
+  page-JS subrequest shares (`internal/js/bridge.go` `newBridge`), so a request matching a block rule
+  is cancelled before the socket — faithfully, as a request failure (`net::ERR_BLOCKED_BY_CLIENT`) —
+  and still shows in the `requests` tool. Resource type (`$script`/`$xmlhttprequest`) is threaded via
+  a request-context value at each origin site. Because unblink never fetches passive subresources,
+  this targets JS-initiated ad/tracker scripts + beacons; cosmetic DOM removal, the `chrome`/`browser`
+  API, the background worker + messaging (respecting the ADR-0004 settle via the `pending` bracket),
+  and full uBlock Origin are the phases that follow. Regression nets: `internal/webext/*_test.go` (unit
+  + `FuzzParseManifest`/`FuzzParseRules`/`FuzzMatchPattern`), `internal/js/extension_test.go` (an
+  end-to-end blocked fetch), `internal/browser/extensions_test.go` (wiring + the `--disable-js`
+  rejection).
+
+- **WebExtensions — content scripts, `chrome` API, cosmetic filtering (Phase 2, ADR 0010).** ✅
+  Adds the surface that lets an extension *modify the page*. `content_scripts` JS/CSS matching the
+  page are injected at their `run_at` (document_start/end/idle) around the page's own scripts, in
+  one-shot renders and live sessions (`internal/js/contentscript.go`, wired in `engine.go`/`context.go`).
+  The `chrome`/`browser` namespace (`internal/js/extapi.go`) is installed as Go closures — `runtime`
+  (getURL/id/getManifest + message/port stubs), `i18n.getMessage` from `_locales`, in-memory
+  `storage`, `scripting.insertCSS`, a synthetic `tabs`, and accept-and-ignore UI/eventing stubs —
+  supporting both the MV2-callback and MV3-promise forms (synchronous resolve keeps the ADR-0004
+  settle audit intact). **Cosmetic filtering** (`internal/js/cosmetic.go`) is the key lever: with no
+  CSSOM, element-hiding CSS is translated into *physical node removal* — matched ad markup is
+  detached from the frozen tree post-Terminate (one-shot) / on the snapshot clone (live), invisible
+  to page JS. Content scripts run **same-world** (one JS global + `chrome`; true isolated worlds are
+  Phase 5), and a script-less page now still renders when an extension is loaded. Nets:
+  `internal/webext/i18n_test.go`, `internal/js/cosmetic_internal_test.go` (+ `FuzzHidingSelectors`),
+  `internal/js/contentscript_test.go` (end-to-end cosmetic strip + content-script i18n/DOM edit).
+  Deferred to Phase 3+ (what uBlock Origin's *dynamic* cosmetics need): the background service worker
+  + messaging, storage persistence + onChanged, and MV2 webRequest.
+
+- **WebExtensions — background worker + runtime messaging (Phase 3, ADR 0010).** ✅ Adds the
+  persistent background context and the message path uBlock's *dynamic* cosmetic filtering uses.
+  The extension's background scripts run on a dedicated engine-lifetime eventloop — a separate goja
+  runtime from every page render, started once and kept warm (`internal/js/bgworker.go`), reusing the
+  page bridge with a minimal empty document (a SW has no DOM — pragmatic simplification) and a
+  `bundleTransport` that serves the extension's own files. `chrome.runtime.sendMessage`
+  (`internal/js/broker.go`) round-trips a content script ↔ background, carrying plain Go values across
+  the two runtimes via each loop's RunOnLoop (sync + async `sendResponse`). **The ADR-0004 crux is
+  resolved**: the background's own eventloop means its timers can't hold a page open, and each
+  cross-runtime round-trip is bracketed on the page's `pending` counter (like a network request), so a
+  content-script reply's DOM effect lands before settle — proven by `TestBackgroundMessaging`. Storage
+  (`chrome.storage.*`) is a shared in-memory store across contexts. Deferred to Phase 4 (needs
+  `chrome-extension://` serving): storage disk persistence + onChanged, background→page messaging, real
+  Port, external background fetch, and MV2 webRequest.
+
+- **WebExtensions — extension resources, storage persistence, dynamic DNR (Phase 4, ADR 0010).** ✅
+  Fills in what a stock MV3 build (uBlock Origin Lite) leans on. `chrome-extension://` resource
+  serving (`internal/js/extresource.go`): `fetch(chrome.runtime.getURL(...))` resolves to the packaged
+  file via an `extResourceTransport` decorator (inside counting, outside blocking — logged but never
+  DNR-blocked), gated by `Bundle.ResourceAccessible` (content-script self-access + web_accessible_resources).
+  Storage (`internal/js/extstore.go`): `chrome.storage.local`/`sync` persist to
+  `<UserCacheDir>/unblink/ext/<id>/<area>.json` (so uBlock's compiled lists survive restarts) and
+  `onChanged` fans real change records to per-loop listeners (with dead-loop pruning). Dynamic/session
+  `declarativeNetRequest` rules (`updateDynamicRules`/`updateSessionRules`) compile into the RWMutex-guarded
+  `RuleMatcher` and take effect immediately. Nets: `internal/js/{extdnr,extresource,extstore}_test.go`.
+  Deferred to Phase 5: MV2 webRequest, background→page messaging + real Port, external background fetch,
+  a validated module service worker, isolated content-script worlds, scriptlets, IndexedDB/cacheStorage shim.
+
+- **WebExtensions — MV2 webRequest blocking (Phase 5, ADR 0010).** ✅ A Manifest-V2 extension's
+  background can cancel/redirect requests from a blocking `webRequest.onBeforeRequest` listener — full
+  uBlock Origin's model (its own JS network engine returns `{cancel:true}`). unblink delivers each
+  subrequest to the background's listeners and honors the verdict (`internal/js/extwebrequest.go`).
+  Since a request is decided on the page's off-loop fetch goroutine but the listeners live in the
+  background runtime, the verdict is a **timeout-guarded round-trip onto the background loop** (2s cap →
+  degrades to allow, never hangs); `blockingTransport` checks DNR first, then webRequest only when the
+  background has listeners (atomic count read off-loop). Background `start()` now blocks until the
+  background's synchronous setup finishes, so the first request sees the listeners (fixed a startup
+  race). Net: `internal/js/extwebrequest_test.go`. Remaining Phase-5 hardening (background→page
+  messaging, real Port, external background fetch, validated module SW, isolated worlds, scriptlets,
+  IndexedDB shim) is still open.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

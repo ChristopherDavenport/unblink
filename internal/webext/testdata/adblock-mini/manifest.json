@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Adblock Mini",
+  "version": "1.0",
+  "description": "Tiny fixture extension: blocks a couple of tracker URLs via declarativeNetRequest.",
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "ruleset_1", "enabled": true, "path": "rules.json" }
+    ]
+  }
+}

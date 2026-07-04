@@ -117,7 +117,7 @@ func (b *bridge) loadExternalScript(n *html.Node, src string) {
 			if cached, hit := b.assets.get(assetKey(abs)); hit {
 				body, ok = cached, true
 			} else {
-				ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
+				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
 				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
 				cancel()
 				if ferr == nil && res != nil && res.Status < 400 {
@@ -192,7 +192,7 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 				}
 				src = string(body)
 			} else {
-				ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
+				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
 				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
 				cancel()
 				if ferr != nil || res == nil || res.Status >= 400 {

@@ -55,7 +55,7 @@ func (b *bridge) fetchPromise(method, rawURL string, headers map[string]string, 
 	b.pending.Add(1) // off-loop request in flight; bracketed by the keepalive window
 	keep := b.acquireKeepalive()
 	go func() {
-		ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
+		ctx, cancel := context.WithTimeout(xhrCtx(b.ctx), b.reqTimeout)
 		defer cancel()
 		res, ferr := b.transport.Do(ctx, method, abs, headers, body)
 		_ = b.loop.RunOnLoop(func(vm *goja.Runtime) {

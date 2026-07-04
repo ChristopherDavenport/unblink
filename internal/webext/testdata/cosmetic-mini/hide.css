@@ -1,0 +1,10 @@
+/* Cosmetic hiding rules: unblink translates display:none / visibility:hidden into
+   physical removal of the matched nodes (there is no CSSOM). */
+.ad-banner,
+#sponsored {
+  display: none !important;
+}
+
+.promo {
+  visibility: hidden;
+}

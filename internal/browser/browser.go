@@ -145,6 +145,8 @@ type options struct {
 	search         search.Provider
 	sessionTTL     time.Duration
 	sessionCap     int
+	extensionPaths []string
+	extensionDirs  []string
 }
 
 // WithFetchOptions forwards options to the underlying fetch clients (default and
@@ -159,6 +161,20 @@ func WithRenderer(r Renderer) Option { return func(o *options) { o.renderer = r 
 // WithSearchProvider enables the search tool with the given provider. Off by
 // default (nil provider): the search tool then errors cleanly until configured.
 func WithSearchProvider(p search.Provider) Option { return func(o *options) { o.search = p } }
+
+// WithExtension loads a WebExtension from an unpacked directory or a .xpi/.crx/.zip
+// archive. Repeatable. Extensions require the built-in JavaScript engine (they are
+// ignored under --disable-js, which New rejects as a misconfiguration). See ADR 0010:
+// unblink ships no extension code; the operator supplies it.
+func WithExtension(path string) Option {
+	return func(o *options) { o.extensionPaths = append(o.extensionPaths, path) }
+}
+
+// WithExtensionsDir loads every WebExtension found in dir (each subdirectory with a
+// manifest.json and each .zip/.xpi/.crx archive). Repeatable.
+func WithExtensionsDir(dir string) Option {
+	return func(o *options) { o.extensionDirs = append(o.extensionDirs, dir) }
+}
 
 // WithJS enables JavaScript rendering using the built-in engine with the given
 // per-render wall-clock timeout (0 = default). The engine is constructed in New
@@ -279,6 +295,16 @@ func New(opts ...Option) (*Browser, error) {
 	for _, opt := range opts {
 		opt(&o)
 	}
+	// Load any configured WebExtensions up front so a misconfigured one fails startup
+	// loudly rather than silently doing nothing. They attach only to the built-in JS
+	// engine (see ADR 0010).
+	bundles, err := loadExtensions(o.extensionPaths, o.extensionDirs)
+	if err != nil {
+		return nil, err
+	}
+	if len(bundles) > 0 && (!o.js || o.renderer != nil) {
+		return nil, fmt.Errorf("browser: extensions require the built-in JavaScript engine (enable JS, no custom renderer)")
+	}
 	if o.renderer == nil && o.js {
 		// navigator.webdriver is true (honest) by default; --tls-mimic is the
 		// operator's opt-in to fingerprint parity, so it extends to the JS env.
@@ -289,6 +315,9 @@ func New(opts ...Option) (*Browser, error) {
 		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithConcurrency(conc), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic), js.WithMemoryLimit(o.jsMemLimit)}
 		if o.jsAssetCache {
 			jsOpts = append(jsOpts, js.WithAssetCache(DefaultCacheTTL))
+		}
+		if len(bundles) > 0 {
+			jsOpts = append(jsOpts, js.WithExtensions(bundles))
 		}
 		o.renderer = js.New(jsOpts...)
 	}
