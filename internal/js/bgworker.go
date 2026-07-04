@@ -89,6 +89,11 @@ func (w *bgWorker) start(memGuard *memGuard) {
 		b.install()
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
+		// The background has no real IndexedDB/Cache API — the in-memory stubs are
+		// incomplete for the complex transactional use a real extension makes (uBlock
+		// Origin's cacheStorage hangs on them). Removing them makes such code fall back to
+		// chrome.storage.local, which we back for real.
+		_, _ = vm.RunString(`try{delete globalThis.indexedDB;delete globalThis.caches;}catch(e){}`)
 		w.bridge = b
 		w.runBackgroundScripts(b)
 	})
@@ -230,7 +235,9 @@ func (t *bundleTransport) Do(_ context.Context, _ string, rawURL string, _ map[s
 		return nil, err
 	}
 	if u.Scheme != "" && u.Scheme != "chrome-extension" {
-		return nil, fmt.Errorf("bundle transport: external fetch %q not supported", rawURL)
+		// The background can't reach the network; return a clean 404 (not an error) so an
+		// extension falls back to its bundled copy instead of hanging on a rejected fetch.
+		return &Response{Status: 404, FinalURL: rawURL}, nil
 	}
 	data, err := t.bundle.ReadResource(u.Path)
 	if err != nil {

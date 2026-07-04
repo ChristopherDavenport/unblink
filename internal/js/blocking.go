@@ -46,6 +46,7 @@ type blockingTransport struct {
 	host      *ExtensionHost
 	initiator string       // page origin host, for initiatorDomains + first/third-party
 	pageURL   string       // full page URL, for webRequest documentUrl/originUrl
+	tabID     int          // synthetic tab id, matching the fired navigation's tab
 	blocked   atomic.Int32 // count of cancelled requests (render diagnostic)
 }
 
@@ -56,7 +57,7 @@ func (t *blockingTransport) Do(ctx context.Context, method, rawURL string, heade
 		// A redirect target degrades to a block (cancelling the tracker is the safe subset).
 		d := t.host.matchNetwork(req)
 		if !d.Block && d.RedirectTo == "" {
-			d = t.host.webRequestVerdict(req, t.pageURL)
+			d = t.host.webRequestVerdict(req, t.pageURL, t.tabID)
 		}
 		if d.Block || d.RedirectTo != "" {
 			t.blocked.Add(1)

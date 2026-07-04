@@ -120,6 +120,8 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.startModulePreload(doc) // warm the modulepreload chunk graph concurrently
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
+		// Tell the extension background this tab navigated to the page before any request.
+		e.extHost.notifyNavigation(b.tabID, baseURLString(base))
 		// Extension content scripts share the page world (ADR 0010): gather hiding CSS
 		// once, then inject JS at each run_at around the page's own scripts.
 		b.injectContentScriptCSS()
@@ -225,6 +227,9 @@ func (c *Context) PendingNavigation(ctx context.Context) (string, error) {
 func (c *Context) Close() {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
+		if b := c.bridge; b != nil {
+			b.extHost.notifyTabRemoved(b.tabID) // drop the extension's page store for this session
+		}
 		if c.cancel != nil {
 			c.cancel()
 		}

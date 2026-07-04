@@ -2,6 +2,7 @@ package js
 
 import (
 	"net/url"
+	"sync/atomic"
 
 	"github.com/christopherdavenport/unblink/internal/webext"
 )
@@ -15,7 +16,8 @@ type ExtensionHost struct {
 	bundles []*webext.Bundle
 	storage *extStore
 	broker  *msgBroker
-	bg      *bgWorker // background worker for the first extension declaring one; nil otherwise
+	bg      *bgWorker    // background worker for the first extension declaring one; nil otherwise
+	tabSeq  atomic.Int32 // allocates unique synthetic tab ids per render/session
 }
 
 // newExtensionHost builds a host from the loaded bundles, or returns nil when none are

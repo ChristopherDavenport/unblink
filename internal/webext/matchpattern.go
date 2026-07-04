@@ -33,7 +33,7 @@ func ParseMatchPattern(s string) (MatchPattern, error) {
 		return MatchPattern{}, fmt.Errorf("webext: match pattern %q: missing scheme separator", s)
 	}
 	switch scheme {
-	case "*", "http", "https", "ws", "wss", "file", "ftp":
+	case "*", "http", "https", "ws", "wss", "file", "ftp", "data", "chrome-extension", "moz-extension":
 	default:
 		return MatchPattern{}, fmt.Errorf("webext: match pattern %q: unsupported scheme %q", s, scheme)
 	}

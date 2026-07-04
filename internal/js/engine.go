@@ -274,6 +274,9 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
 		setupDone = time.Now()
+		// Tell the extension background this tab navigated to the page, before any
+		// request, so it builds a per-tab page store and filters with the right context.
+		e.extHost.notifyNavigation(b.tabID, baseURLString(base))
 		// Extension content scripts share the page world (ADR 0010). Gather their
 		// hiding CSS once, then inject JS at each run_at around the page's own scripts.
 		b.injectContentScriptCSS()
@@ -336,6 +339,8 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// it never reaches the Markdown. Post-Terminate (like shadow composition) means
 		// page JS never observes the removal — mirroring CSS hiding's lack of events.
 		b.applyCosmeticFilters(doc)
+		// The render's tab is gone; let the extension drop its per-tab page store.
+		e.extHost.notifyTabRemoved(b.tabID)
 	}
 	if env.Diag != nil {
 		// Timing: a wedged script can leave setupDone/execDone unset; attribute the

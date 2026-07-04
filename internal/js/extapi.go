@@ -139,9 +139,21 @@ func (b *bridge) installExtensionAPI(win *goja.Object) {
 		}
 		return b.apiReturn(call, goja.Undefined())
 	})
-	_ = tabs.Set("onUpdated", b.newEventStub())
-	_ = tabs.Set("onRemoved", b.newEventStub())
+	_ = tabs.Set("onUpdated", b.hostOrStubEvent("tabs.onUpdated"))
+	_ = tabs.Set("onRemoved", b.hostOrStubEvent("tabs.onRemoved"))
+	_ = tabs.Set("onActivated", b.hostOrStubEvent("tabs.onActivated"))
+	_ = tabs.Set("onCreated", b.hostOrStubEvent("tabs.onCreated"))
 	_ = chrome.Set("tabs", tabs)
+
+	// --- chrome.webNavigation: real events in the background so the extension can
+	//     build a per-tab page store from the navigations unblink fires ---
+	webNav := vm.NewObject()
+	for _, ev := range []string{"onBeforeNavigate", "onCommitted", "onDOMContentLoaded", "onCompleted", "onCreatedNavigationTarget", "onErrorOccurred", "onReferenceFragmentUpdated", "onHistoryStateUpdated"} {
+		_ = webNav.Set(ev, b.hostOrStubEvent("webNavigation."+ev))
+	}
+	_ = webNav.Set("getFrame", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Null()) })
+	_ = webNav.Set("getAllFrames", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue([]any{})) })
+	_ = chrome.Set("webNavigation", webNav)
 
 	// --- chrome.action / browserAction (accept-and-ignore) ---
 	action := b.newActionStub()
@@ -210,6 +222,15 @@ func (b *bridge) apiReturn(call goja.FunctionCall, result goja.Value) goja.Value
 	promise, resolve, _ := b.vm.NewPromise()
 	_ = resolve(result)
 	return b.vm.ToValue(promise)
+}
+
+// hostOrStubEvent returns a real host-fired event in the background context, and an
+// inert stub elsewhere (a page can't observe tab/navigation events).
+func (b *bridge) hostOrStubEvent(name string) *goja.Object {
+	if b.bgMode {
+		return b.newHostEvent(name)
+	}
+	return b.newEventStub()
 }
 
 // newEventStub returns an addListener/removeListener/hasListener event object whose

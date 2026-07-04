@@ -235,22 +235,32 @@ drove several gaps closed:
   runtime is now `Interrupt`ed on close so a loaded extension can never hang shutdown, and
   `start()` is time-bounded so it can't hang construction.
 
-State: **Privacy Badger fully initializes** with no errors (it is learning-based, so it does
-not block on a cold profile). **uBlock Origin** loads, runs its background page, compiles its
-bundled filter lists (~15–20 s on a cold profile), and then **blocks real trackers**
-(google-analytics, googletagmanager, doubleclick) through the MV2 `webRequest` path, with the
-page's `documentUrl`/`originUrl` supplied so its first/third-party rules apply.
+Additional fixes from the deeper bring-up (all correct improvements to the MV2 `webRequest`
+path, independent of any one extension):
 
-**Root cause of the earlier "infinite loop" (found and fixed):** it was *corrupted persisted
-`chrome.storage` data*, not an inherent incompatibility and not `documentUrl`. uBO stores
-lz4-compressed blobs; stale/mismatched bytes left in the on-disk store by earlier
-iterations of unblink's storage code fed uBO's lz4 decompressor malformed input, and its
-`while`-loop spun (stack: `guard`←`decompress` in the cacheStorage read path). With a clean
-storage dir it does not recur; the `documentUrl`↔loop correlation was an artifact of the
-polluted cache. The background is `Interrupt`ed on close regardless, so even a wedged
-background can never hang shutdown.
+- **Per-tab page context.** Each render gets a unique synthetic tab id; unblink fires a
+  `webNavigation.onCommitted` / `tabs.onUpdated` sequence into the background before the page's
+  requests (`exttabs.go`), so an extension builds the right per-tab page store. `webRequest`
+  details now carry a **unique `requestId`** (a shared id makes an extension inherit the first
+  request's verdict) and the page `documentUrl`/`originUrl`.
+- **The `chrome-extension` (and `moz-extension`/`data`) URL scheme** is accepted by
+  `ParseMatchPattern`, and a `webRequest` listener whose URL filter was specified but parsed to
+  nothing now matches **nothing** (not everything). This fixed a real bug: uBO's
+  web_accessible_resources *guard* listener filters on `chrome-extension://…/…*`; with that
+  scheme rejected, the guard matched every request and cancelled it — the actual reason an
+  earlier build appeared to "block trackers" (it was blocking *everything*, including
+  first-party).
+- The background has no real IndexedDB/Cache API (the in-memory stubs are incomplete for
+  transactional use), so they are removed in the background context — code falls back to
+  `chrome.storage.local`, which is backed for real. External background fetches return a clean
+  404 (not a rejection) so an extension falls back to its bundled copy.
 
-Remaining follow-up: uBO over-blocks an *unrelated third-party* request (it has no per-tab
-page store — unblink never feeds it `webNavigation`/`tabs` navigation events, so tab 1 has no
-committed document), and its cacheStorage relies on IndexedDB (stubbed). A real per-tab page
-store + an IndexedDB shim are the remaining pieces for fully-correct uBO.
+State: **Privacy Badger fully initializes** (learning-based, so it does not block on a cold
+profile). **uBlock Origin** loads, runs its background page, and reaches its asset/public-suffix
+loading — but its **static filter engine never becomes ready** (`µb.readyToFilter` stays false):
+compiling EasyList + EasyPrivacy + uBO's lists (~3.6 MB) in goja is impractical, and its init
+stalls in the list-loading pipeline. Running the *full* MV2 uBO in-process is therefore not
+viable; the **practical ad-block target is uBlock Origin Lite (MV3)** — declarative
+`declarativeNetRequest` rulesets the host evaluates directly (Phase 1), with no in-engine filter
+compilation. The full-uBO gaps (an IndexedDB/cacheStorage shim, an external list transport, and
+filter-compile performance) are recorded but not pursued.

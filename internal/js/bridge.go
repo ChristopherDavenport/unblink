@@ -171,10 +171,13 @@ type bridge struct {
 	// bgMode marks the background-service-worker bridge (Phase 3): chrome.runtime.onMessage
 	// registers real listeners here (in msgListeners) instead of the page's stub.
 	bgMode          bool
-	msgListeners    []goja.Callable  // background onMessage listeners
-	webReqListeners []webReqListener // background MV2 webRequest.onBeforeRequest listeners
-	extActiveID     string           // active extension id, for message sender identity
-	inert           goja.Value       // cached self-propagating inert stub for unimplemented chrome.* APIs
+	msgListeners    []goja.Callable            // background onMessage listeners
+	webReqListeners []webReqListener           // background MV2 webRequest.onBeforeRequest listeners
+	hostEvents      map[string][]goja.Callable // background webNavigation/tabs listeners the host fires
+	extActiveID     string                     // active extension id, for message sender identity
+	reqSeq          int
+	tabID           int        // synthetic tab id for this page render/session (0 = none)
+	inert           goja.Value // cached self-propagating inert stub for unimplemented chrome.* APIs
 
 	// dynSem bounds how many runtime dynamic import() chunks fetch+bundle off-loop
 	// at once, so a page firing hundreds of concurrent import()s can't spawn an
@@ -192,6 +195,10 @@ func (b *bridge) resetTransportBudget() {
 }
 
 func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration, extHost *ExtensionHost) *bridge {
+	tabID := 0
+	if extHost != nil {
+		tabID = extHost.nextTabID()
+	}
 	var nc *countingTransport
 	if transport != nil {
 		if extHost != nil {
@@ -199,7 +206,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 			// chrome-extension:// URL is served from the bundle before the gate
 			// (extResourceTransport) so extension resources aren't DNR-blocked. Both sit
 			// inside the counting transport so they still show in the requests diagnostics.
-			transport = &blockingTransport{inner: transport, host: extHost, initiator: initiatorHost(base), pageURL: baseURLString(base)}
+			transport = &blockingTransport{inner: transport, host: extHost, initiator: initiatorHost(base), pageURL: baseURLString(base), tabID: tabID}
 			transport = &extResourceTransport{inner: transport, host: extHost, page: base}
 		}
 		nc = &countingTransport{inner: transport}
@@ -214,6 +221,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		transport:            transport,
 		netCount:             nc,
 		extHost:              extHost,
+		tabID:                tabID,
 		cookies:              cookies,
 		storage:              storage,
 		sessStorage:          sessStorage,

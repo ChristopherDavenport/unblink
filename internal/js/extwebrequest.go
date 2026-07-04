@@ -2,6 +2,7 @@ package js
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,12 +27,16 @@ const webReqTimeout = 2 * time.Second
 // webReqListener is one registered onBeforeRequest listener with its URL filter.
 type webReqListener struct {
 	fn       goja.Callable
-	patterns []webext.MatchPattern // filter.urls; empty means all URLs
+	patterns []webext.MatchPattern // parsed filter.urls
+	scoped   bool                  // filter.urls was specified (so an empty patterns set matches nothing, not everything)
 }
 
 func (l webReqListener) matches(u *url.URL) bool {
 	if len(l.patterns) == 0 {
-		return true
+		// A scoped listener whose patterns all failed to parse must match nothing — not
+		// everything. (uBO's web_accessible_resources guard uses a chrome-extension://
+		// filter; treating it as match-all made it cancel every request.)
+		return !l.scoped
 	}
 	for _, p := range l.patterns {
 		if p.Matches(u) {
@@ -54,14 +59,17 @@ func (b *bridge) newWebRequestEvent() *goja.Object {
 			return goja.Undefined()
 		}
 		var patterns []webext.MatchPattern
+		scoped := false
 		if filter, ok := call.Argument(1).(*goja.Object); ok {
-			for _, u := range toStringSlice(filter.Get("urls")) {
+			urls := toStringSlice(filter.Get("urls"))
+			scoped = len(urls) > 0
+			for _, u := range urls {
 				if mp, err := webext.ParseMatchPattern(u); err == nil {
 					patterns = append(patterns, mp)
 				}
 			}
 		}
-		b.webReqListeners = append(b.webReqListeners, webReqListener{fn: fn, patterns: patterns})
+		b.webReqListeners = append(b.webReqListeners, webReqListener{fn: fn, patterns: patterns, scoped: scoped})
 		if b.extHost != nil && b.extHost.bg != nil {
 			b.extHost.bg.webReqCount.Add(1)
 		}
@@ -75,14 +83,14 @@ func (b *bridge) newWebRequestEvent() *goja.Object {
 // webRequestVerdict asks the background's onBeforeRequest listeners whether to cancel or
 // redirect req. Returns an empty decision when there are no listeners, the background is
 // absent, or the round-trip times out.
-func (h *ExtensionHost) webRequestVerdict(req webext.Request, documentURL string) webext.Decision {
+func (h *ExtensionHost) webRequestVerdict(req webext.Request, documentURL string, tabID int) webext.Decision {
 	w := h.bg
 	if w == nil || w.webReqCount.Load() == 0 {
 		return webext.Decision{}
 	}
 	result := make(chan webext.Decision, 1)
 	scheduled := w.loop.RunOnLoop(func(vm *goja.Runtime) {
-		result <- w.bridge.runWebRequest(vm, req, documentURL)
+		result <- w.bridge.runWebRequest(vm, req, documentURL, tabID)
 	})
 	if !scheduled {
 		return webext.Decision{}
@@ -100,7 +108,7 @@ func (h *ExtensionHost) webRequestVerdict(req webext.Request, documentURL string
 
 // runWebRequest invokes the matching onBeforeRequest listeners and returns the first
 // blocking/redirecting verdict. Runs on the background loop.
-func (b *bridge) runWebRequest(vm *goja.Runtime, req webext.Request, documentURL string) webext.Decision {
+func (b *bridge) runWebRequest(vm *goja.Runtime, req webext.Request, documentURL string, tabID int) webext.Decision {
 	for _, l := range b.webReqListeners {
 		if !l.matches(req.URL) {
 			continue
@@ -109,10 +117,14 @@ func (b *bridge) runWebRequest(vm *goja.Runtime, req webext.Request, documentURL
 		_ = details.Set("url", req.URL.String())
 		_ = details.Set("method", strings.ToUpper(req.Method))
 		_ = details.Set("type", string(req.Type))
-		_ = details.Set("tabId", 1)
+		_ = details.Set("tabId", tabID)
 		_ = details.Set("frameId", 0)
 		_ = details.Set("parentFrameId", -1)
-		_ = details.Set("requestId", "0")
+		// Each request needs a unique requestId: an extension keys its per-request state
+		// (verdict cache, redirect tracking) on it, so a shared id makes every request
+		// inherit the first one's verdict. Runs on the single bg loop, so no atomic.
+		b.reqSeq++
+		_ = details.Set("requestId", strconv.Itoa(b.reqSeq))
 		// Page context: uBlock Origin/AdGuard need documentUrl/originUrl to apply
 		// domain-anchored and first/third-party rules. (An earlier apparent "hang" when
 		// setting these was actually corrupt persisted storage sending uBO's lz4
