@@ -33,7 +33,7 @@ explicit about both directions.
 |---|---|---|---|---|---|
 | Engine | Pure Go, hand-rolled DOM (no browser engine) | Real Chrome / Firefox / WebKit / Edge | Real headless Chromium (Puppeteer/CDP) | From-scratch engine in Rust | From-scratch engine in Zig |
 | JavaScript | goja (Go interpreter), on by default (`--disable-js` opts out); renders React/Vue/Preact/Svelte/Lit via a flat-DOM model + a broad Web API surface (real `fetch`/Streams/`FileReader`/`crypto.subtle`; inert-but-non-throwing canvas-2D/Web Audio/WebRTC/`indexedDB`/media stubs) so pages rarely crash at boot | Full (real browser) | Full (real Chromium) | Embedded V8 (our React/Vue fixtures render; the Lit one came back empty) | Embedded V8; beta — "hundreds of Web APIs" unimplemented (though it rendered all four of our fixtures) |
-| Agent protocol | MCP (stdio), 14 tools | MCP (Node), 50+ tools | MCP (Node ≥ 20), 43 tools in profiles (7/23/43) | CDP (Puppeteer/Playwright drop-in) + MCP (11 tools) | CDP (WebSocket) + MCP (stdio) + CLI agent mode |
+| Agent protocol | MCP (stdio), 18 tools | MCP (Node), 50+ tools | MCP (Node ≥ 20), 43 tools in profiles (7/23/43) | CDP (Puppeteer/Playwright drop-in) + MCP (11 tools) | CDP (WebSocket) + MCP (stdio) + CLI agent mode |
 | Page representation | Reduced Markdown (article or full page) + structured tools (outline, links, forms, JSON-LD/tables, CSS-schema extraction) | Accessibility-tree snapshots | Typed page decomposition, 3 detail levels, targeted `find` queries | DOM automation primitives (navigate/click/fill/evaluate) | DOM automation primitives; some semantic extraction |
 | Screenshots / pixels | No — permanent non-goal | Yes, plus video, tracing, PDF export | Yes (real Chromium) | Not a focus | No — no graphical rendering |
 | Install footprint | One static binary (linux/darwin/windows), nothing else; ~36 MB, ~26 MB idle RSS ([measured](#measured-footprint)) | Node + full browser install | Node + Chromium (npm or Docker) | ~147 MB of binaries; [measured](#measured-footprint): 8 MB idle RSS, 2 ms cold start — leaner than its own claims | ~138 MB single binary; [measured](#measured-footprint): 15 MB idle RSS, 5 ms cold start; no native Windows, glibc-only Linux |
@@ -41,7 +41,7 @@ explicit about both directions.
 | Sessions | Cookies + history + persistent live JS runtime per session | Real browser profile, tabs, storage | Persistent Chromium session, stable hashed element IDs, structural diffs | Fast-boot ephemeral sessions | CDP sessions |
 | Agent-safety defaults | SSRF dial guard + untrusted-content fence + origin-scoped credentials, all on by default; [measured](#content-boundary-what-reaches-the-model): only tool that strips all hidden-instruction text, fences content as untrusted, and defangs image-beacon exfiltration to inert text | — | Chromium sandbox on by default | Stealth / anti-fingerprinting, tracker blocking (secures the browser, not the content boundary; [measured](#content-boundary-what-reaches-the-model): no untrusted-content fence) | robots.txt respect, proxy support ([measured](#content-boundary-what-reaches-the-model): leaks all hidden text + a live image-beacon, no fence) |
 | License | MIT | Apache-2.0 | MIT | Apache-2.0 | AGPL-3.0 |
-| Maturity (07/2026) | v0.17.1 | Mature incumbent (in GitHub Copilot's coding agent) | v0.6.3 (npm) | v0.1.9 | Beta |
+| Maturity (07/2026) | v0.22.0 | Mature incumbent (in GitHub Copilot's coding agent) | v0.6.3 (npm) | v0.1.9 | Beta |
 
 ## The tools
 
@@ -186,6 +186,15 @@ decision drives everything distinctive about it, good and bad.
 - **Discovery built in.** `map` (sitemap harvest + bounded same-origin
   crawl), `site` (robots.txt/llms.txt surfaced as context, never enforced),
   and opt-in `search` make it a research tool, not only a page loader.
+- **Optional real ad-blocking (ADR 0010).** unblink can runtime-load a
+  WebExtension — uBlock Origin Lite is verified working: its 18,249
+  `declarativeNetRequest` rules compile into unblink's own host matcher and block
+  real ad/tracker requests (network filtering), while cosmetic rules strip ad
+  markup from the reduced Markdown (no CSSOM, so `display:none` becomes node
+  removal). No extension bytes are vendored — GPL tooling stays out of the MIT
+  tree. That puts unblink in the same tracker-blocking territory as Obscura's
+  `--stealth` and Lightpanda's tracker respect, but as a real extension the
+  operator supplies rather than a built-in list.
 
 **What it forfeits:**
 
@@ -244,10 +253,18 @@ masquerade as efficiency. Reproduce with `make crossbench` (see
 [`scripts/membench`](../scripts/membench), a separate module so its
 dependencies never touch the published binary).
 
-Measured 2026-07-03 · WSL2 (Linux 6.6, 4 vCPU / 5.8 GiB) · unblink v0.17.1
-(+ the Phase 22 throughput work) · Chromium 140.0.7339.16 · @playwright/mcp
-0.0.77 (Playwright 1.62.0-alpha) · charlotte 0.6.3 · obscura 0.1.9 ·
-lightpanda nightly 1.0.0-7742 · median of 3 runs.
+Full head-to-head measured 2026-07-03 · WSL2 (Linux 6.6, 4 vCPU / 5.8 GiB) ·
+Chromium 140.0.7339.16 · @playwright/mcp 0.0.77 (Playwright 1.62.0-alpha) ·
+charlotte 0.6.3 · obscura 0.1.9 · lightpanda nightly 1.0.0-7742 · median of 3
+runs. **unblink's own column was re-measured 2026-07-04 at v0.22.0** (HEAD — the
+WebExtensions + resource-based-JS-budget release candidate); the competitor
+columns are carried from the 2026-07-03 run, since this environment has no
+Chromium/obscura/lightpanda install to re-drive them. Their fixtures and the
+offline tokenizer are deterministic, so those columns reproduce as constants —
+only unblink's engine changed. unblink's footprint and latency are materially
+unchanged; the one shift is that its `browse`/`orient` token cost rose as
+`browse` gained the structured region/heading/metadata/collections output of
+v0.20.0–v0.21.0 (see the [token table](#token-cost-per-page) footnote).
 
 Every tool runs at its defaults, and as of this date that is clean
 like-for-like: unblink's per-host politeness limiter is now opt-in
@@ -263,12 +280,12 @@ engine.
 
 | Metric | unblink | Chromium (headless) | Playwright MCP | Charlotte | Obscura | Lightpanda |
 |---|---|---|---|---|---|---|
-| Binary on disk | 36 MB | 439 MB | npx pkg + Chromium | npx pkg + Chromium | 147 MB | 138 MB |
-| Cold start → MCP ready | 14 ms | 153 ms¹ | 497 ms | 545 ms | 6 ms | 6 ms |
-| First page ready | ~1 ms | 194 ms | 227 ms | 192 ms | 26 ms | 4 ms |
-| Idle RSS (post-init) | 26 MB | 132 MB | 130 MB | 113 MB | 8 MB | 15 MB |
-| Peak RSS (sequential renders) | 43 MB | 157 MB | 295 MB | 281 MB | 28 MB | 16 MB |
-| Peak RSS (8 concurrent) | 44 MB | 246 MB | n/a² | n/a² | n/a² | n/a² |
+| Binary on disk | 37 MB | 439 MB | npx pkg + Chromium | npx pkg + Chromium | 147 MB | 138 MB |
+| Cold start → MCP ready | 20 ms | 153 ms¹ | 497 ms | 545 ms | 6 ms | 6 ms |
+| First page ready | ~3 ms | 194 ms | 227 ms | 192 ms | 26 ms | 4 ms |
+| Idle RSS (post-init) | 29 MB | 132 MB | 130 MB | 113 MB | 8 MB | 15 MB |
+| Peak RSS (sequential renders) | 42 MB | 157 MB | 295 MB | 281 MB | 28 MB | 16 MB |
+| Peak RSS (8 concurrent) | 46 MB | 246 MB | n/a² | n/a² | n/a² | n/a² |
 | Fixtures fully rendered (of 4) | 4 | 4 | 4 | 4 | 3³ | 4 |
 
 ¹ the raw baseline's "ready" is a blank CDP target, not an MCP handshake.
@@ -279,19 +296,19 @@ a single stdio connection, the raw baseline opens tabs.
 Shadow-DOM gap); React and Vue rendered.
 
 Three readings. **Against the browser-backed tools**, unblink's pitch holds:
-it answers its first read in ~15 ms total while they pay ~0.5 s of Node+MCP
+it answers its first read in ~23 ms total while they pay ~0.5 s of Node+MCP
 start plus ~200 ms of browser/tab work (npx cache warm; package download
-excluded), idles at ~a fifth of their footprint, and peaks at 43 MB against
+excluded), idles at ~a fifth of their footprint, and peaks at ~42 MB against
 their ~280–295 MB — serializing a11y trees or typed decompositions on top of
 the browser costs real memory above even the raw baseline's 157 MB.
 **Against the from-scratch engines, unblink no longer holds the footprint
 floor** — an idle Obscura is 8 MB and Lightpanda 15 MB, both under unblink's
-26 MB, and both cold-start faster. Their bet (rebuild the browser smaller)
+29 MB, and both cold-start faster. Their bet (rebuild the browser smaller)
 and unblink's (don't ship a browser at all) land in the same weight class;
 what separates them is what the model receives — see the
 [token table](#token-cost-per-page) — and unblink's content-boundary
 hardening. **Under load**, all three lightweight engines stay flat (13–42 MB
-peaks), and unblink holds its 43 MB even at 8-way concurrency because each
+peaks), and unblink holds its ~46 MB even at 8-way concurrency because each
 render's goja heap is bounded and torn down after the snapshot.
 
 ### Render speed
@@ -311,11 +328,11 @@ presence on these fixtures is sentinel-verified).
 | Page | unblink | Chromium (headless) | Playwright MCP | Charlotte | Obscura | Lightpanda |
 |---|---|---|---|---|---|---|
 | Static / server-rendered article | ~1 ms | ~97 ms | ~16 ms | ~13 ms | ~4 ms | ~1 ms |
-| React SPA render | ~10 ms | ~106 ms | ~20 ms | ~16 ms | ~12 ms | ~8 ms |
-| Vue SPA render | ~3 ms | ~104 ms | ~22 ms | ~16 ms | ~13 ms | ~11 ms |
-| Lit SPA render | ~2 ms | ~99 ms | ~19 ms | ~15 ms | (~5 ms)¹ | ~3 ms |
-| Throughput (mixed corpus, sequential) | ~249 pages/s | ~10 pages/s | ~52 pages/s | ~67 pages/s | ~120 pages/s | ~165 pages/s |
-| Throughput (mixed corpus, 8 concurrent) | ~827 pages/s | ~38 pages/s | n/a² | n/a² | n/a² | n/a² |
+| React SPA render | ~11 ms | ~106 ms | ~20 ms | ~16 ms | ~12 ms | ~8 ms |
+| Vue SPA render | ~4 ms | ~104 ms | ~22 ms | ~16 ms | ~13 ms | ~11 ms |
+| Lit SPA render | ~3 ms | ~99 ms | ~19 ms | ~15 ms | (~5 ms)¹ | ~3 ms |
+| Throughput (mixed corpus, sequential) | ~236 pages/s | ~10 pages/s | ~52 pages/s | ~67 pages/s | ~120 pages/s | ~165 pages/s |
+| Throughput (mixed corpus, 8 concurrent) | ~820 pages/s | ~38 pages/s | n/a² | n/a² | n/a² | n/a² |
 
 ¹ call timing only — Obscura's Lit output carried no content (see footprint
 table), so this is not a comparable render.
@@ -331,15 +348,15 @@ gone: the settle now *proves* idleness (nothing in flight, nothing armed —
 every async source is instrumented, ADR 0004) instead of always waiting out a
 60 ms quiet window, initial script bodies prefetch concurrently, and compiled
 bundles are cached by content. The result: unblink turns these SPA fixtures
-around in ~2–10 ms — ahead of the warm browsers (~15–22 ms) and level with
+around in ~3–11 ms — ahead of the warm browsers (~15–22 ms) and level with
 the embedded-V8 engines (~3–13 ms) — while remaining the only column that
 builds and tears down an isolated runtime per render. The honest caveat is
-that goja is still a tree-walking interpreter: the ~10 ms React number is
+that goja is still a tree-walking interpreter: the ~11 ms React number is
 dominated by executing react-dom, and a much heavier bundle widens that gap
 against real V8 — the fixtures here are moderate SPAs, not sprawling ones.
-Throughput compounds the per-call story with concurrency: ~249 pages/s
-sequential and ~827 pages/s at 8-way on the mixed corpus, with peak RSS held
-at 44 MB (previous table) because each render's heap is bounded and torn down
+Throughput compounds the per-call story with concurrency: ~236 pages/s
+sequential and ~820 pages/s at 8-way on the mixed corpus, with peak RSS held
+at 46 MB (previous table) because each render's heap is bounded and torn down
 after the snapshot. The full picture still pairs this table with the next
 one: a page an agent reads costs latency *once* but tokens *every time the
 model re-reads its context*.
@@ -364,20 +381,30 @@ can't distort the metric.
 | Task · fixture | unblink | Playwright MCP | Charlotte | Obscura | Lightpanda |
 |---|---|---|---|---|---|
 | read-article · junky article | 374 (1.8 KB) | 952 (3.5 KB) ×2.5 | 1,048 (3.8 KB) ×2.8 | 534 (2.4 KB) ×1.4 | 455 (2.1 KB) ×1.2 |
-| read-article · long read | 1,557 (7.6 KB) | 2,080 (9.0 KB) ×1.3 | 1,952 (8.7 KB) ×1.3 | 907 (4.1 KB) ×0.6¹ | 1,503 (7.4 KB) ×1.0 |
+| read-article · long read | 1,560 (7.6 KB) | 2,080 (9.0 KB) ×1.3 | 1,952 (8.7 KB) ×1.3 | 907 (4.1 KB) ×0.6¹ | 1,503 (7.4 KB) ×1.0 |
 | read-article · nav-heavy portal | **297 (1.4 KB)** | 26,182 (92.0 KB) ×88 | 27,164 (89.8 KB) ×91 | fail¹ | 20,328 (63.4 KB) ×68 |
 | read-full · junky article | 538 (2.4 KB) | 952 ×1.8 | 1,048 ×1.9 | 497 ×0.9 | 455 ×0.8 |
-| read-full · long read | 1,577 (7.7 KB) | 2,080 ×1.3 | 1,952 ×1.2 | 1,710 ×1.1 | 1,503 ×1.0 |
-| read-full · nav-heavy portal | 15,294 (48.9 KB, 3 calls) | 26,182 ×1.7 | 27,164 ×1.8 | 11,865 ×0.8 | 20,328 ×1.3 |
-| orient · junky article | 270 (882 B) | n/a | 379 ×1.4 | n/a | n/a |
-| orient · long read | 339 (1.2 KB) | n/a | 436 ×1.3 | n/a | n/a |
-| orient · nav-heavy portal | 369 (1.2 KB) | n/a | 745 ×2.0 | n/a | n/a |
+| read-full · long read | 1,583 (7.7 KB) | 2,080 ×1.3 | 1,952 ×1.2 | 1,710 ×1.1 | 1,503 ×1.0 |
+| read-full · nav-heavy portal | 15,296 (48.9 KB, 3 calls) | 26,182 ×1.7 | 27,164 ×1.8 | 11,865 ×0.8 | 20,328 ×1.3 |
+| orient · junky article | 525 (1.6 KB) | n/a | 379 ×0.7 | n/a | n/a |
+| orient · long read | 783 (2.4 KB) | n/a | 436 ×0.6 | n/a | n/a |
+| orient · nav-heavy portal | 1,429 (4.3 KB) | n/a | 745 ×0.5 | n/a | n/a |
 
 ¹ Obscura's `browser_snapshot` hard-truncates at ~4 KB. On the long read the
 cut lands mid-article, so its ×0.6 one-shot buys roughly the *first half* of
 the text — the read-full row is its complete-document cost. On the nav-heavy
 portal the first 4 KB is all navigation junk and the article never appears,
 so the read fails outright.
+
+**On the `orient` rows:** unblink's `browse` now costs 525 / 783 / 1,429 tokens
+(was ~270 / 339 / 369 at v0.17.1) because it no longer returns a bare excerpt — it
+returns a structured decomposition: a landmark/region map, ARIA-annotated controls,
+a unified `metadata` object, a deep-linkable heading outline, and ready-to-use
+`extract` schemas (all added v0.20.0–v0.21.0). That is a few hundred tokens for a far
+more actionable orientation, still one to two orders of magnitude under any full-page
+read. Charlotte's orientation is leaner (×0.5–0.7 of unblink's here), the trade being
+it carries less structure per call. (Charlotte's column is its 2026-07-03 measurement;
+only unblink's was re-measured — see the [provenance note](#measured-head-to-head).)
 
 The shape of the result: on a **clean long-form page** everyone lands within
 ~1.3× of everyone — there is little junk to strip, and every representation

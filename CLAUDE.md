@@ -91,14 +91,19 @@ Three load-bearing decisions hold the design together:
 
 - `internal/page` — core data model (`Page`, `Article`, `Link`, `Form`…). Pure types.
 - `internal/fetch` — HTTP-client-as-browser: cookies, redirects, brotli/gzip/deflate, charset→UTF-8, opt-in per-host rate limit (`--rate-limit`, default off), retries, optional utls TLS mimic.
-- `internal/dom` — **the only importer of `x/net/html`/`cascadia`**: parse, extraction, find.
+- `internal/ratelimit` — process-global, per-host token-bucket limiter behind `--rate-limit` (off by default); `fetch` clients share it.
+- `internal/dom` — **the only importer of `x/net/html`/`cascadia`**: parse; extraction (regions/landmarks, interactive ARIA state, stable content-hash ids, heading outline); caller-directed schema extraction (`dom.Records`); repeating-collection discovery (`dom.detectCollections`); find.
+- `internal/content` — converts non-HTML bodies to Markdown: JSON and plain text inline, plus the `feed`/`image`/`pdf` subpackages (RSS/Atom/JSON feeds, image manifests, PDF text via `third_party/pdf`).
 - `internal/reduce` — readability extraction + bluemonday sanitize (`Article` vs `Full`); `Full` also suppresses repeated link-dense blocks (desktop nav + mobile-drawer twin) via `dom.StripDuplicateBlocks`.
 - `internal/emit` — serialize reduced content to Markdown + heading outline.
 - `internal/tokens` — token estimation + Markdown cursor pagination.
 - `internal/session` — per-session cookie jar + navigation history + a live `js.LiveContext` (persistent JS runtime) bound to the current page; navigation/eviction/close tears it down (manager `onEvict` hook).
 - `internal/js` — quarantined goja + eventloop DOM bridge (scripts, ESM, fetch/XHR, events, cookies). One-shot `Render` *and* persistent `Context`/`LiveContext` (true sessions). Opt-in. Defines its own `Transport`/`CookieJar` interfaces and **never imports `internal/fetch`**; the browser supplies adapters (`internal/browser/transport.go`).
 - `internal/robots` — exposure-grade robots.txt (REP) parser: groups, `*`, Allow/Disallow (`*`/`$`), Crawl-delay, Sitemaps. Pure stdlib, **no enforcement** — unblink surfaces rules as context, never gates a fetch.
-- `internal/browser` — the orchestrator that wires the pipeline + sessions. **The only package `mcpserver` calls.** Owns the host-scoped robots.txt/llms.txt cache (`sitecache.go`, `site.go`).
+- `internal/sitemap` — pure-stdlib sitemaps.org XML decoder (`<urlset>`/`<sitemapindex>`, gzip-aware) behind the `map` tool. No fetch, no `x/net/html`.
+- `internal/search` — optional web search behind a `Provider` interface (SearXNG + Brave adapters); off unless `--search-provider` is set, injected into `browser`.
+- `internal/webext` — models MV2/MV3 WebExtensions (manifest, match patterns, a tokenized no-ReDoS Adblock `urlFilter` matcher, dir/archive loaders with traversal + zip-bomb guards) so unblink can runtime-load one (e.g. uBlock Origin Lite). Pure Go; imports neither `js` nor `browser` — the direction is `browser → js → webext`. The JS-side surface lives in `internal/js/ext*.go`.
+- `internal/browser` — the orchestrator that wires the pipeline + sessions. **The only package `mcpserver` calls.** Owns the host-scoped robots.txt/llms.txt cache (`sitecache.go`, `site.go`), the `map`/`search` discovery surface, and the engine-lifetime `ExtensionHost` (shared read-only across renders/sessions).
 - `internal/mcpserver` — thin MCP adapter: tool registration + handlers + transport.
 
 **No MCP types appear below `internal/mcpserver`**, and no browser logic lives in
@@ -114,6 +119,16 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   are never mutated — see `Browser.Read`.
 - New capability code goes in the relevant `internal/<pkg>`; route everything to
   the MCP layer through `internal/browser`, not directly.
+- **Tool surface** (all routed through `internal/browser`, registered in
+  `internal/mcpserver`): **18 tools**. Beyond `read`/`browse`/`links`/`forms`/
+  `find`/`site`/`click`/`submit_form`/`controls`/`interact`/`data`/`session`/
+  `map`/`search`, the recent additions are `extract` (caller-directed CSS-schema
+  extraction, `dom.Records`), `browse`'s `collections` (auto-proposed `extract`
+  schemas, `dom.detectCollections`), and the inspection tools `requests`/
+  `console`/`cookies`. Operators narrow the advertised set with `--tools`/
+  `--disable-tools` (presets `core`/`read-only`/`full`), and capability-unusable
+  tools auto-hide (`search` without a provider; `interact`/`requests`/`console`
+  under `--disable-js`).
 - **SSRF guard**: every page fetch — the primary, per-session, and one-shot
   clients *and* page-JS subrequests — is blocked from reaching
   private/loopback/metadata IPs (checked against the *resolved* IP). On by default
@@ -139,16 +154,38 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   contain — sync upstream manually, re-fuzz before adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
   pseudo-version pins are deliberate — bumping goja is its own reviewed
   change); 0003 is the JS memory guard (process-level heap watchdog +
-  `debug.SetMemoryLimit`, because goja has no per-runtime accounting); 0009 is the
+  `debug.SetMemoryLimit`, because goja has no per-runtime accounting); 0004 is the
+  provable-idle settle invariant (every new async primitive must route through the
+  timer audit / `pending` bracket); 0005 is the composed Shadow DOM (flattened tree
+  + cross-boundary events); 0006 is the broad Go-backed `crypto.subtle` (reversing
+  the earlier "leave undefined", since real pages call it on first paint); 0007 is
+  the semantic-only structured representation (computed from the node tree, never a
+  layout — spatial/bounding-box geometry is a permanent non-goal); 0008 is the stable
+  content-hash element ids (a reference/cache key, not an `interact` target — interact
+  still uses CSS selectors); 0009 is the
   move to resource-based JS budgets — a per-render/per-dispatch **byte** budget
   (`--js-max-bytes`, default 64 MiB) replaces the fixed request-count cap (now an
   off-by-default backstop) and the removed 60s live-session rate window, plus
   concurrent `<link rel=modulepreload>` warming so code-split SPAs' serial
   `import()` graph loads as cache hits (adds no async primitive, so ADR 0004
-  holds). Add a new ADR when a decision would otherwise live only in a PR
-  description.
+  holds); 0010 is WebExtensions runtime loading (the operator supplies the
+  extension; MIT/GPL separation, no vendored extension bytes — see the
+  WebExtensions gotcha above). Add a new ADR when a decision would otherwise live
+  only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
+- **WebExtensions (opt-in, ADR 0010)**: `--extension <dir|.xpi|.crx|.zip>` /
+  `--extensions-dir` runtime-load a real, unmodified extension — unblink ships
+  **no** extension bytes, keeping GPL tooling (uBlock Origin is GPL-3) out of the
+  MIT tree the way a browser loads a user add-on. The model lives in
+  `internal/webext`; the engine surface (the `chrome`/`browser` API, content
+  scripts, cosmetic filtering as physical node removal, background worker +
+  runtime messaging, static/dynamic `declarativeNetRequest`, and MV2
+  `webRequest` blocking) in `internal/js/ext*.go`. Extensions are **rejected
+  under `--disable-js`** and run in the same heap/byte/SSRF sandbox as page JS.
+  **uBlock Origin Lite (MV3/DNR) is verified working** (18,249 host-evaluated
+  rules, blocks real trackers, ~0.1s, no service worker); *full* uBO (MV2) is
+  not viable in-process (compiling its filter lists in goja is too slow).
 - **Framework rendering (flat-DOM model)**: with its JavaScript engine (on by
   default; `--disable-js` opts out) the engine renders
   mainstream SPA frameworks (React/Vue/Preact/Svelte/Lit) — a real Node/Element

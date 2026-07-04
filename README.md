@@ -19,14 +19,15 @@ fetch(url) → parse HTML5 → [optionally execute JS] → semantic reduction �
 
 ## Status
 
-**v0.18.0.** The full pipeline works end to end: MCP tools covering reading,
-navigation, sessions, forms, structured data, schema extraction, site discovery,
-and search. The
+**v0.22.0.** The full pipeline works end to end: 18 MCP tools covering reading,
+navigation, sessions, forms, structured data, schema extraction, page inspection,
+site discovery, and search. The
 static read path turns most server-rendered pages into clean Markdown with zero
 JavaScript; the JavaScript engine — **on by default** (opt out with `--disable-js`)
 — renders mainstream SPA frameworks and powers live interactive sessions
-(`interact`). It ships as one
-static binary (~36 MB) with a ~26 MB idle footprint — measured head-to-head on
+(`interact`), and can **runtime-load a WebExtension** (e.g. uBlock Origin Lite) for
+ad/tracker blocking. It ships as one
+static binary (~37 MB) with a ~29 MB idle footprint — measured head-to-head on
 identical pages, roughly **5× lighter idle and 10× faster to start than a
 headless Chromium**, turning SPA fixtures around in **~2–10 ms per render**
 (ahead of the warm-browser MCP tools on the same corpus — the settle proves
@@ -34,8 +35,9 @@ idleness instead of waiting out a quiet window, ADR 0004), and it reads a
 nav-heavy page for **~1% of the tokens** of a browser-tool accessibility
 snapshot ([measured](docs/comparison.md#measured-head-to-head), against all
 four alternatives). See
-[docs/architecture.md](docs/architecture.md) for the full design (phases 0–23)
-and its non-goals, and [docs/comparison.md](docs/comparison.md) for how unblink
+[docs/architecture.md](docs/architecture.md) for the full design (phases 0–26,
+plus the extract/collections and WebExtensions work) and its non-goals, and
+[docs/comparison.md](docs/comparison.md) for how unblink
 compares to other AI web-browsing tools (Playwright MCP, Charlotte, Obscura,
 Lightpanda).
 
@@ -319,14 +321,17 @@ extensions (uBlock Origin is GPL-3) fully separate from unblink's MIT source, th
 same way a browser loads a user-installed add-on (see
 [ADR 0010](docs/decisions/0010-webextensions-runtime-loading.md)).
 
-**Recommended: uBlock Origin Lite (MV3).** Download `uBOLite_*.chromium.zip` from
+**Recommended: uBlock Origin Lite (MV3) — verified working.** Download
+`uBOLite_*.chromium.zip` from
 [uBlockOrigin/uBOL-home releases](https://github.com/uBlockOrigin/uBOL-home/releases)
-and point `--extension` at it. Its `declarativeNetRequest` rulesets (EasyList,
-EasyPrivacy, uBlock filters — ~18k rules) are evaluated by unblink directly, so it
-blocks real ad/tracker requests immediately with no in-extension filter compilation.
-(*Full* uBlock Origin — the `.xpi`/`.zip` on gorhill/uBlock — is MV2 and compiles its
-filter lists in JS, which is impractical in a pure-Go engine; Lite is the answer.)
-unblink currently supports:
+and point `--extension` at it. unblink compiles its `declarativeNetRequest` rulesets
+(EasyList, EasyPrivacy, uBlock filters — **18,249 rules**) into its own host matcher
+and evaluates them directly, so it **blocks real ad/tracker requests** (`adscore.com`,
+…) while passing first-party/benign traffic — a full render in ~0.1 s, with no
+service worker or in-extension filter compilation. (*Full* uBlock Origin — the
+`.xpi`/`.zip` on gorhill/uBlock — is MV2 and never gets its filter engine ready in a
+pure-Go interpreter, so it is not viable in-process; Lite is the answer. Privacy
+Badger loads and fully initializes too.) unblink currently supports:
 
 - **Network filtering** — an extension's `declarativeNetRequest` static rules cancel
   page-JavaScript requests to blocked ad/tracker hosts before they leave the process

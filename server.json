@@ -6,11 +6,11 @@
     "url": "https://github.com/ChristopherDavenport/unblink",
     "source": "github"
   },
-  "version": "0.17.0",
+  "version": "0.22.0",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/christopherdavenport/unblink:0.17.0",
+      "identifier": "ghcr.io/christopherdavenport/unblink:0.22.0",
       "runtimeHint": "docker",
       "transport": {
         "type": "stdio"
@@ -18,8 +18,8 @@
       "packageArguments": [
         {
           "type": "named",
-          "name": "--js",
-          "description": "Enable opt-in JavaScript rendering (SPA frameworks, live interact sessions)",
+          "name": "--disable-js",
+          "description": "Disable JavaScript rendering (static read path only; JS is on by default)",
           "isRequired": false
         }
       ]

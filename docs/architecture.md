@@ -27,12 +27,12 @@ human eyes.
 ## Pipeline
 
 ```
-fetch ──▶ dom.Parse ──▶ reduce ──▶ emit ──▶ (mcpserver)
-  │           │            │          │
-  ▼           ▼            ▼          ▼
-transport   Doc         Article    Markdown      (all fields of one *page.Page)
-fields +   (*html.Node)
-Raw (UTF-8)
+fetch ──▶ dom.Parse ──▶ [js render] ──▶ dom.Extract ──▶ reduce ──▶ emit ──▶ (mcpserver)
+  │           │              │               │             │          │
+  ▼           ▼              ▼               ▼             ▼          ▼
+transport   Doc          same tree,     Links/Forms/    Article    Markdown   (all fields of
+fields +   (*html.Node)  mutated in     Controls/                             one *page.Page)
+Raw (UTF-8)              place          Regions…
 ```
 
 One `page.Page` flows through and is progressively enriched; stages never
@@ -44,20 +44,23 @@ re-fetch or re-parse. See `internal/page/page.go`.
 | -------------------- | --------------------------------------------------------------------- |
 | `internal/page`      | Core data model (`Page`, `Article`, `Link`, `Form`, …). Pure types.   |
 | `internal/fetch`     | HTTP client-as-browser: cookies, redirects, gzip, charset → UTF-8, UA.|
-| `internal/dom`       | The only importer of `x/net/html`/`cascadia`: parse + extraction + find.|
+| `internal/ratelimit` | Process-global, per-host token-bucket limiter behind `--rate-limit` (off by default).|
+| `internal/dom`       | The only importer of `x/net/html`/`cascadia`: parse; extraction (regions/ARIA state/stable ids/outline); caller-directed schema extraction (`dom.Records`) + collection discovery (`dom.detectCollections`); find.|
+| `internal/content`   | Non-HTML bodies → Markdown: JSON/plain text inline + `feed`/`image`/`pdf` subpackages (RSS/Atom/JSON feeds, image manifests, PDF text via `third_party/pdf`).|
 | `internal/reduce`    | Semantic reduction: readability extraction + bluemonday sanitize. Full mode also drops repeated link-dense blocks (`dom.StripDuplicateBlocks` — desktop nav + its mobile-drawer twin emit once). |
 | `internal/emit`      | Serialize reduced content to Markdown + heading outline.              |
 | `internal/session`   | Per-session cookie jar (own `fetch.Client`) + navigation history + per-page interaction replay log (imports `js` for `js.Action`). |
 | `internal/robots`    | Exposure-grade robots.txt (REP) parser: groups, `*`, Allow/Disallow (`*`/`$`), Crawl-delay, Sitemaps. No external deps; **never enforces**. |
 | `internal/sitemap`   | Pure-stdlib sitemaps.org XML decoder (`<urlset>`/`<sitemapindex>`, gzip-aware). No fetch, no `x/net/html`. |
 | `internal/search`    | Optional web-search behind a `Provider` interface (SearXNG + Brave JSON adapters). Off by default; injected into `browser`. |
-| `internal/browser`   | Orchestrator. Wires the pipeline + sessions; the only thing `mcpserver` calls. Holds a host-scoped robots.txt/llms.txt cache (`sitecache.go`) and the sitemap/crawl `map` + `search` surface (`discover.go`).|
+| `internal/webext`    | Models MV2/MV3 WebExtensions (manifest, match patterns, tokenized no-ReDoS Adblock `urlFilter`, dir/archive loaders) so one can be runtime-loaded (uBO Lite). Pure Go; the JS-side surface is `internal/js/ext*.go`. Direction: `browser → js → webext`.|
+| `internal/browser`   | Orchestrator. Wires the pipeline + sessions; the only thing `mcpserver` calls. Holds a host-scoped robots.txt/llms.txt cache (`sitecache.go`), the sitemap/crawl `map` + `search` surface (`discover.go`), and the engine-lifetime `ExtensionHost` (shared read-only across renders/sessions).|
 | `internal/mcpserver` | Thin MCP adapter: tool registration + handlers + transport.           |
 | `internal/js`        | goja + eventloop DOM bridge over the `*html.Node` tree: scripts/ESM, fetch/XHR, events, a real prototype chain + MutationObserver + custom elements / composed Shadow DOM (slots + cross-boundary events) so React/Vue/Lit render (Phases 8, 23). Quarantined. |
 | `internal/tokens`    | Token estimation + Markdown cursor pagination.                        |
 
-Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`emit`/`tokens`/`session`/
-`js`/`robots`/`sitemap`/`search`) → `browser` → `mcpserver`. No MCP type leaks below `mcpserver`. The `js` engine sits behind a
+Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/`content`/`reduce`/`emit`/`tokens`/`session`/
+`js`/`webext`/`robots`/`sitemap`/`search`) → `browser` → `mcpserver`, with `js → webext` the one edge inside the capability layer. No MCP type leaks below `mcpserver`. The `js` engine sits behind a
 `browser.Renderer` interface, so it stays optional and swappable (e.g. for `gost-dom` later).
 
 ## Key dependencies (all pure Go)
@@ -653,6 +656,35 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   `internal/js/webapi_tier3_test.go` + `js-api-smoke` markers `api-26`/`api-27`. **Still not
   stubbed** (reactive): EME, Web NFC, File System Access, and the Privacy Sandbox proposals.
 
+- **Structured page representation — regions, ARIA state, stable ids, outline (ADR 0007, ADR 0008).** ✅
+  `browse` returns a semantic decomposition computed from the node tree with no browser: a landmark/region
+  map (banner/nav/main/… with per-region link/form/control/heading counts), interactive ARIA state on
+  controls (checked/expanded/pressed/selected/required/invalid + value/placeholder/href), a unified
+  `metadata` object (canonical — finally surfaced — plus og:image, author, published/modified, favicon,
+  twitter), and a structured, deep-linkable heading outline. Every control/region/heading carries a stable
+  **content-hash id** (`btn-…`/`rgn-…`/`h-…`). Two decisions bound it: the representation is **semantic-only**
+  — no geometry/CSSOM, because a spatial tree needs the layout engine unblink deliberately lacks (ADR 0007) —
+  and the ids are a **reference/cache key, not an `interact` target** (interact still addresses controls by CSS
+  selector, so a hash is free to change when the DOM does; ADR 0008). All in `internal/dom/aria.go` +
+  `extract.go`, surfaced via `Browser` `summarize`. Ports charlotte's accessibility decomposition to a
+  no-layout model.
+
+- **Configurable tool exposure — `--tools`/`--disable-tools` + capability auto-gating.** ✅ Every advertised
+  tool costs the model context each turn, so the server exposes only tools that can do something. Unusable
+  tools auto-hide: `search` without a `--search-provider`, and `interact`/`requests`/`console` under
+  `--disable-js`. Operators narrow further with `--tools` (names and/or the presets `core`/`read-only`/`full`)
+  and `--disable-tools` (subtracts, applied after). A single gated `addTool` choke point
+  (`internal/mcpserver/server.go`) applies the capability gate last; an explicitly-named-but-unusable tool is
+  dropped with a `slog.Warn`.
+
+- **Inspection tools — `requests`, `console`, `cookies`.** ✅ Surface what the JS render did, so an agent can
+  debug it or skip scraping. `requests` lists the network requests the page's JS made while rendering
+  (method/url/status, including DNR/`webRequest`-blocked ones) — render once, spot the JSON endpoint, then
+  `read` it directly instead of scraping the hydrated DOM. `console` returns captured `console.*` output
+  (log/info/warn/error/debug, level-filterable). `cookies` lists/sets/clears a session's jar scoped to an
+  origin. `requests`/`console` need JS and are captured **post-Terminate** (the settle poll is non-blocking,
+  so diagnostics are collected after the render closes, not before).
+
 - **`extract` tool — caller-directed CSS-schema extraction.** ✅ Complements the auto-discovery
   `data` tool (JSON-LD/tables/microdata) with a schema the *agent* supplies: `fields` maps each
   output name to a CSS selector (a string takes the first match's collapsed text; `{selector, attr}`
@@ -759,6 +791,34 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   race). Net: `internal/js/extwebrequest_test.go`. Remaining Phase-5 hardening (background→page
   messaging, real Port, external background fetch, validated module SW, isolated worlds, scriptlets,
   IndexedDB shim) is still open.
+
+- **WebExtensions — real-extension bring-up (uBlock Origin, Privacy Badger; ADR 0010 amendment).** ✅
+  Validated against unmodified real extensions (loaded via `--extension`, never vendored; env-gated
+  `internal/js/realext_smoke_test.go`). Both uBO and Privacy Badger are MV2 with a background *page*, which
+  drove several gaps closed: `background.page` HTML is now run (classic then esbuild-bundled module scripts,
+  `chrome-extension://` recognized as an absolute specifier); `chrome.runtime.getManifest()` returns the full
+  manifest; and the `chrome` object is **permissive** — any unimplemented namespace/event falls through to an
+  inert, self-propagating value (`extapi_permissive.go`), which alone took Privacy Badger from an early crash
+  to a clean init. Per-tab page context landed too: each render gets a unique synthetic tab id and a
+  `webNavigation.onCommitted`/`tabs.onUpdated` sequence before the page's requests, and each `webRequest`
+  detail carries a **unique `requestId`** (a shared id makes an extension inherit the first request's verdict).
+  The load-bearing fix: the `chrome-extension`/`moz-extension`/`data` scheme is now accepted by
+  `ParseMatchPattern`, and a `webRequest` filter that parsed to nothing now matches **nothing** (not
+  everything) — the real bug behind an earlier build appearing to "block trackers": uBO's
+  web_accessible_resources *guard* listener filters on `chrome-extension://…*`, and with that scheme rejected
+  the guard matched every request and cancelled it (it was blocking *everything*, including first-party).
+  **Verified:** uBO Lite (MV3) compiles **18,249 `declarativeNetRequest` rules** and blocks real trackers
+  (`adscore.com`, …) while passing benign/first-party — a full render in ~0.1 s, no service worker
+  (host-evaluated DNR); Privacy Badger fully initializes. **Full uBO (MV2) is not viable in-process** — its
+  static filter engine never becomes ready (`µb.readyToFilter` stays false; compiling ~3.6 MB of lists in
+  goja is impractical). uBO Lite is the recommended ad-block configuration.
+
+The tool inventory now stands at **18 tools** (the per-phase counts in the roadmap
+above are historical milestones): `read`, `browse`, `links`, `forms`, `find`,
+`site`, `click`, `submit_form`, `controls`, `interact`, `data`, `extract`,
+`requests`, `console`, `cookies`, `session`, `map`, `search` — with `--tools`/
+`--disable-tools` selecting a subset and capability-gating hiding any that can't
+run (see the tool-exposure entry above).
 
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
