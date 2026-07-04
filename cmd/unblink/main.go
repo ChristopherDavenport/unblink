@@ -47,6 +47,8 @@ func main() {
 	sessionCap := flag.Int("session-cap", 0, "maximum concurrent sessions, oldest evicted on overflow (default 256)")
 	searchProvider := flag.String("search-provider", "", "web search provider for the search tool: searxng|brave (empty disables it)")
 	searchEndpoint := flag.String("search-endpoint", "", "search endpoint URL (SearXNG base URL; optional Brave override). The API key comes from UNBLINK_SEARCH_API_KEY")
+	toolsFlag := flag.String("tools", "", "limit exposed MCP tools to a comma-separated list of tool names and/or presets (core|read-only|full); empty exposes every usable tool")
+	disableToolsFlag := flag.String("disable-tools", "", "remove tools from the exposed set: comma-separated tool names and/or presets (applied after --tools)")
 	flag.Parse()
 
 	if *showVersion {
@@ -111,7 +113,14 @@ func main() {
 	}
 	defer b.Close()
 
-	if err := mcpserver.New(b, !*noSafeOutput).Run(ctx); err != nil && ctx.Err() == nil {
+	srv := mcpserver.New(b, mcpserver.Config{
+		SafeOutput:    !*noSafeOutput,
+		JSEnabled:     !*disableJS,
+		SearchEnabled: *searchProvider != "",
+		Tools:         *toolsFlag,
+		DisableTools:  *disableToolsFlag,
+	})
+	if err := srv.Run(ctx); err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, "unblink:", err)
 		os.Exit(1)
 	}

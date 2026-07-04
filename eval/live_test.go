@@ -30,7 +30,9 @@ func TestLiveSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	s := mcpserver.New(b, true) // production posture: safe output on
+	// Safe output on (production posture); this smoke test's browser has no JS/
+	// search configured, so those tools gate off — it only drives read anyway.
+	s := mcpserver.New(b, mcpserver.Config{SafeOutput: true})
 
 	st, ct := mcp.NewInMemoryTransports()
 	ss, err := s.Connect(ctx, st)
