@@ -139,8 +139,14 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   contain — sync upstream manually, re-fuzz before adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
   pseudo-version pins are deliberate — bumping goja is its own reviewed
   change); 0003 is the JS memory guard (process-level heap watchdog +
-  `debug.SetMemoryLimit`, because goja has no per-runtime accounting). Add a new
-  ADR when a decision would otherwise live only in a PR description.
+  `debug.SetMemoryLimit`, because goja has no per-runtime accounting); 0009 is the
+  move to resource-based JS budgets — a per-render/per-dispatch **byte** budget
+  (`--js-max-bytes`, default 64 MiB) replaces the fixed request-count cap (now an
+  off-by-default backstop) and the removed 60s live-session rate window, plus
+  concurrent `<link rel=modulepreload>` warming so code-split SPAs' serial
+  `import()` graph loads as cache hits (adds no async primitive, so ADR 0004
+  holds). Add a new ADR when a decision would otherwise live only in a PR
+  description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
 - **Framework rendering (flat-DOM model)**: with its JavaScript engine (on by
@@ -160,5 +166,6 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   environment** is the one exception (Phase 21): `innerWidth`/`screen`/
   `devicePixelRatio` are a truthful constant 1280×720@1x and `matchMedia`
   evaluates against it, so responsive code takes its real branch. Untrusted page
-  JS is also bounded on heap (`--js-memory-limit`, ADR 0003), time, network, and
-  live-runtime count. See `docs/architecture.md` (Phases 8, 21, and 23).
+  JS is also bounded on heap (`--js-memory-limit`, ADR 0003), time, network bytes
+  (`--js-max-bytes`, ADR 0009), and live-runtime count. See `docs/architecture.md`
+  (Phases 8, 21, and 23).

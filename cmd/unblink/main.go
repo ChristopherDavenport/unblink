@@ -37,7 +37,8 @@ func main() {
 	jsTimeout := flag.Duration("js-timeout", browser.DefaultJSTimeout, "per-render wall-clock budget for JavaScript")
 	jsNoNetwork := flag.Bool("js-no-network", false, "disable page-JS network requests (DOM-only render)")
 	jsAllowPrivate := flag.Bool("js-allow-private", false, "permit page-JS requests to private/loopback IPs (internal/dev use)")
-	jsMaxRequests := flag.Int("js-max-requests", browser.DefaultJSMaxRequests, "max page-JS network requests per render")
+	jsMaxBytes := flag.Int64("js-max-bytes", browser.DefaultJSMaxBytes/(1024*1024), "MiB of page-JS downloads allowed per render / per live-session action (0 disables the download budget)")
+	jsMaxRequests := flag.Int("js-max-requests", browser.DefaultJSMaxRequests, "optional hard cap on page-JS request count (runaway backstop; 0 disables — the real per-render bound is --js-max-bytes)")
 	jsPrewarm := flag.Int("js-prewarm", browser.DefaultJSPrewarm, "number of pre-warmed JS runtimes kept ready (0 disables)")
 	jsConcurrency := flag.Int("js-concurrency", 0, "max concurrent JS renders (0 = auto: CPU count clamped to 4..16); same-host fetch pacing is --rate-limit's job")
 	jsMaxLive := flag.Int("js-max-live", browser.DefaultJSMaxLive, "max concurrent live per-session JS runtimes (LRU torn down over the cap)")
@@ -84,6 +85,7 @@ func main() {
 			browser.WithJS(*jsTimeout),
 			browser.WithJSNetwork(!*jsNoNetwork),
 			browser.WithJSAllowPrivate(*jsAllowPrivate),
+			browser.WithJSMaxBytes(*jsMaxBytes*1024*1024),
 			browser.WithJSMaxRequests(*jsMaxRequests),
 			browser.WithJSPrewarm(*jsPrewarm),
 			browser.WithJSConcurrency(*jsConcurrency),

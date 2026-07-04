@@ -115,7 +115,8 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()
-		b.startPrefetch(scripts) // overlap script-body fetches with the prelude
+		b.startPrefetch(scripts)  // overlap script-body fetches with the prelude
+		b.startModulePreload(doc) // warm the modulepreload chunk graph concurrently
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
 		b.runScripts(scripts)
@@ -147,6 +148,10 @@ func (c *Context) Dispatch(ctx context.Context, action Action) (DispatchResult, 
 	var st settleStats
 	var before int
 	err := c.run(ctx, true, cond, &st, func(*goja.Runtime) {
+		// Each dispatch is one agent action; give it a fresh download budget so a
+		// long-lived live session isn't starved by a cumulative cap (the one-shot
+		// render path gets a new transport per call, so this only matters here).
+		c.bridge.resetTransportBudget()
 		before = len(c.bridge.diagErrors)
 		c.bridge.runActions(acts)
 	})

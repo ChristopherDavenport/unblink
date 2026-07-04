@@ -78,6 +78,8 @@ func TestCookieAdapterHidesHttpOnly(t *testing.T) {
 	}
 }
 
+// TestGuardedTransportBudget covers the optional monotonic request-count backstop
+// (max), which is off by default but still enforced when an operator sets it.
 func TestGuardedTransportBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -95,33 +97,69 @@ func TestGuardedTransportBudget(t *testing.T) {
 		t.Fatalf("request 2: %v", err)
 	}
 	if _, err := g.Do(ctx, "GET", srv.URL, nil, nil); err == nil {
-		t.Error("request 3 should exceed the budget")
+		t.Error("request 3 should exceed the count backstop")
 	}
 	if got := g.Denied(); got != 1 {
 		t.Errorf("Denied() = %d, want 1", got)
 	}
 }
 
-func TestGuardedTransportWindow(t *testing.T) {
+// TestGuardedTransportByteBudget covers the primary per-render download budget:
+// once cumulative response bytes reach maxBytes, the next request is denied.
+func TestGuardedTransportByteBudget(t *testing.T) {
+	const body = "0123456789" // 10 bytes per response
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("ok"))
+		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
-	client, _ := fetch.New() // no dial guard → can reach the loopback server
-	// Live-session style: no monotonic cap, but a rolling window of 2 per long window.
-	g := &guardedTransport{client: client, windowMax: 2, window: time.Hour}
+	client, _ := fetch.New()
+	g := &guardedTransport{client: client, maxBytes: 15} // two 10-byte bodies overshoots
 	ctx := context.Background()
 
-	for i := 1; i <= 2; i++ {
-		if _, err := g.Do(ctx, "GET", srv.URL, nil, nil); err != nil {
-			t.Fatalf("request %d within window: %v", i, err)
-		}
+	// Request 1: budget empty → allowed, accumulates to 10.
+	if _, err := g.Do(ctx, "GET", srv.URL, nil, nil); err != nil {
+		t.Fatalf("request 1: %v", err)
 	}
+	// Request 2: 10 < 15 → allowed (soft cap), accumulates to 20.
+	if _, err := g.Do(ctx, "GET", srv.URL, nil, nil); err != nil {
+		t.Fatalf("request 2: %v", err)
+	}
+	// Request 3: 20 >= 15 → denied.
 	if _, err := g.Do(ctx, "GET", srv.URL, nil, nil); err == nil {
-		t.Error("request 3 should exceed the rolling window cap")
+		t.Error("request 3 should exceed the download budget")
 	}
 	if got := g.Denied(); got != 1 {
 		t.Errorf("Denied() = %d, want 1", got)
+	}
+}
+
+// TestGuardedTransportResetBudget proves a long live session isn't starved: after
+// the byte budget is exhausted, ResetBudget() (called per dispatch) frees it again.
+func TestGuardedTransportResetBudget(t *testing.T) {
+	const body = "0123456789"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	client, _ := fetch.New()
+	g := &guardedTransport{client: client, maxBytes: 15}
+	ctx := context.Background()
+
+	// Burn through the budget.
+	_, _ = g.Do(ctx, "GET", srv.URL, nil, nil)
+	_, _ = g.Do(ctx, "GET", srv.URL, nil, nil)
+	if _, err := g.Do(ctx, "GET", srv.URL, nil, nil); err == nil {
+		t.Fatal("precondition: budget should be exhausted")
+	}
+
+	g.ResetBudget()
+
+	if _, err := g.Do(ctx, "GET", srv.URL, nil, nil); err != nil {
+		t.Errorf("after ResetBudget the next request should succeed: %v", err)
+	}
+	if got := g.Denied(); got != 0 {
+		t.Errorf("ResetBudget should clear denied count, got %d", got)
 	}
 }

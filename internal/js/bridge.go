@@ -156,6 +156,20 @@ type bridge struct {
 	// when disabled). Set by the engine right after newBridge. Asset-cache hits
 	// bypass the transport, so they never count toward NetRequests or the budget.
 	assets *assetCache
+
+	// dynSem bounds how many runtime dynamic import() chunks fetch+bundle off-loop
+	// at once, so a page firing hundreds of concurrent import()s can't spawn an
+	// unbounded number of esbuild builds. Buffered to dynImportConcurrency.
+	dynSem chan struct{}
+}
+
+// resetTransportBudget clears the per-dispatch download budget on the counting
+// transport (which forwards to the guarded transport underneath). No-op when JS
+// networking is disabled.
+func (b *bridge) resetTransportBudget() {
+	if b.netCount != nil {
+		b.netCount.ResetBudget()
+	}
 }
 
 func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration) *bridge {
@@ -177,6 +191,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		sessStorage:          sessStorage,
 		ctx:                  ctx,
 		reqTimeout:           reqTimeout,
+		dynSem:               make(chan struct{}, dynImportConcurrency),
 		cache:                make(map[*html.Node]*goja.Object),
 		objNode:              make(map[*goja.Object]*html.Node),
 		classListCache:       make(map[*html.Node]*goja.Object),

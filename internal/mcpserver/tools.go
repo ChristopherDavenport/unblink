@@ -101,7 +101,7 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 			strings.Join(busy, " and "))
 	}
 	if r.NetDenied > 0 {
-		text += fmt.Sprintf("\n\n---\n_%d page request(s) were blocked by the per-render request budget, so JS-loaded data may be missing (server flag --js-max-requests)._\n", r.NetDenied)
+		text += fmt.Sprintf("\n\n---\n_%d page request(s) were blocked because the per-render download budget was exhausted, so JS-loaded data may be missing (server flag --js-max-bytes)._\n", r.NetDenied)
 	}
 	// A timer still pending at snapshot only warrants a hint when the render was
 	// otherwise quiet (an active render already carries the saturation notice above).

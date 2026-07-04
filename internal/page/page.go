@@ -78,13 +78,14 @@ type RenderDiag struct {
 	// mid-hydration and the content may be incomplete. NetDenied is filled by the
 	// browser from its per-render request-budget guard (the js layer only sees a
 	// generic error); the rest mirror js.RenderResult.
-	NetRequests   int  // subrequests the page attempted
-	NetFailed     int  // subrequests that errored (incl. budget/rate denials)
-	NetPending    int  // subrequests still in flight at snapshot
-	NetDenied     int  // subrequests blocked by the per-render request budget
-	DeadlineHit   bool // the JS budget elapsed before the page went quiet
-	DOMBusy       bool // the DOM was still mutating when the snapshot was taken
-	TimersPending int  // one-shot timers still scheduled at snapshot (content may be behind one)
+	NetRequests   int   // subrequests the page attempted
+	NetFailed     int   // subrequests that errored (incl. budget/rate denials)
+	NetBytes      int64 // response-body bytes downloaded (against the --js-max-bytes budget)
+	NetPending    int   // subrequests still in flight at snapshot
+	NetDenied     int   // subrequests blocked by the per-render download budget
+	DeadlineHit   bool  // the JS budget elapsed before the page went quiet
+	DOMBusy       bool  // the DOM was still mutating when the snapshot was taken
+	TimersPending int   // one-shot timers still scheduled at snapshot (content may be behind one)
 
 	// Requests/Console are the page-JS network log and console output captured
 	// during the render, surfaced by the requests/console tools (not dumped on

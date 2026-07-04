@@ -30,9 +30,10 @@ type Response struct {
 // browser's budget/rate denials alike. Counters are atomics because fetch/XHR and
 // script loads call Do off the loop goroutine.
 type countingTransport struct {
-	inner  Transport
-	total  atomic.Int32 // requests attempted
-	failed atomic.Int32 // requests that returned an error
+	inner     Transport
+	total     atomic.Int32 // requests attempted
+	failed    atomic.Int32 // requests that returned an error
+	bytesDown atomic.Int64 // response-body bytes downloaded (diagnostic; independent of the budget)
 
 	// records is a capped, ordered log of each subrequest for the requests tool.
 	// fetch/XHR/script loads call Do off the loop goroutine, so it's mutex-guarded.
@@ -63,6 +64,7 @@ func (t *countingTransport) Do(ctx context.Context, method, url string, headers 
 	}
 	if res != nil {
 		rec.status = res.Status
+		t.bytesDown.Add(int64(len(res.Body)))
 	}
 	t.mu.Lock()
 	if len(t.records) < maxReqRecords {
@@ -72,6 +74,16 @@ func (t *countingTransport) Do(ctx context.Context, method, url string, headers 
 	}
 	t.mu.Unlock()
 	return res, err
+}
+
+// ResetBudget clears the underlying transport's per-render/per-dispatch download
+// budget, if it implements one. Called at the start of each live-session dispatch
+// so a long session gets a fresh budget per agent action. The diagnostic totals
+// (total/failed/records) are cumulative and intentionally left untouched.
+func (t *countingTransport) ResetBudget() {
+	if r, ok := t.inner.(interface{ ResetBudget() }); ok {
+		r.ResetBudget()
+	}
 }
 
 // snapshotRecords returns a copy of the request log and whether any were dropped.
