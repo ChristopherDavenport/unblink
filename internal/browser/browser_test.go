@@ -617,6 +617,72 @@ fetch('/api').then(function(r){ return r.json(); }).then(function(j){
 	}
 }
 
+// TestRenderJSCrossOriginCORS drives the whole real pipeline (doFetch →
+// guardedTransport → fetch.Client, with real ACAO response headers) to prove CORS
+// enforcement over page JS: a cross-origin fetch lacking Access-Control-Allow-Origin
+// is unreadable by the page (yet still reaches the server — history preservation),
+// while one whose server sends ACAO renders. Two loopback servers = distinct origins.
+func TestRenderJSCrossOriginCORS(t *testing.T) {
+	var apiHits int64
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&apiHits, 1)
+		if r.URL.Query().Get("cors") == "1" {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"msg":"cross-origin-payload"}`)
+	}))
+	defer api.Close()
+
+	page := func(apiURL string) string {
+		return `<!doctype html><html><body><div id="out">loading</div>
+<script>
+fetch('` + apiURL + `').then(function(r){ return r.json(); }).then(function(j){
+  document.getElementById('out').innerHTML = '<article><h1>' + j.msg + '</h1><p>' + j.msg +
+    ' was rendered via a cross-origin fetch, with enough prose for the reducer to keep it.</p></article>';
+}).catch(function(){ document.getElementById('out').textContent = 'the cross-origin read was blocked as this scenario expects, with prose'; });
+</script></body></html>`
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/blocked", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, page(api.URL+"/data")) // no ACAO → CORS-blocked read
+	})
+	mux.HandleFunc("/allowed", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, page(api.URL+"/data?cors=1")) // ACAO:* → readable
+	})
+	pageSrv := httptest.NewServer(mux)
+	defer pageSrv.Close()
+	ctx := context.Background()
+
+	b, err := browser.New(browser.WithJS(3*time.Second), browser.WithJSAllowPrivate(true), browser.WithAllowPrivate(true))
+	if err != nil {
+		t.Fatalf("new browser: %v", err)
+	}
+
+	// Cross-origin WITHOUT ACAO: the page's read is CORS-blocked.
+	rb, err := b.Read(ctx, browser.Request{URL: pageSrv.URL + "/blocked", Render: true}, "full", 6000, "")
+	if err != nil {
+		t.Fatalf("read blocked: %v", err)
+	}
+	if strings.Contains(rb.Markdown, "cross-origin-payload") {
+		t.Errorf("cross-origin read without ACAO should be CORS-blocked:\n%s", rb.Markdown)
+	}
+	if atomic.LoadInt64(&apiHits) == 0 {
+		t.Error("blocked cross-origin request never reached the API (it should still be sent + logged)")
+	}
+
+	// Cross-origin WITH ACAO: the page reads and renders it.
+	ra, err := b.Read(ctx, browser.Request{URL: pageSrv.URL + "/allowed", Render: true}, "full", 6000, "")
+	if err != nil {
+		t.Fatalf("read allowed: %v", err)
+	}
+	if !strings.Contains(ra.Markdown, "cross-origin-payload") {
+		t.Errorf("cross-origin read WITH ACAO should render:\n%s", ra.Markdown)
+	}
+}
+
 // TestReadWaitForExtendsAndReportsMet proves the read wait_for/wait_timeout path
 // end-to-end: content that lands via a fetch after the engine's (short) default budget
 // is still awaited because wait_timeout extends it, and wait_met reports success.

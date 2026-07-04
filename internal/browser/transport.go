@@ -63,7 +63,7 @@ func (g *guardedTransport) Do(ctx context.Context, method, url string, headers m
 	for k := range res.Header {
 		hdr[strings.ToLower(k)] = res.Header.Get(k)
 	}
-	return &js.Response{Status: res.Status, Headers: hdr, Body: res.Body, FinalURL: res.FinalURL}, nil
+	return &js.Response{Status: res.Status, Headers: hdr, Body: res.Body, Raw: res.Raw, FinalURL: res.FinalURL}, nil
 }
 
 // Denied reports how many requests the budget caps rejected, for render
@@ -133,6 +133,22 @@ func (b *Browser) newLiveTransport(client *fetch.Client) js.Transport {
 	// The byte budget is per-dispatch (reset in Context.Dispatch), so it bounds each
 	// agent action without capping a long legitimate session.
 	return &guardedTransport{client: gc, maxBytes: b.jsMaxBytes, max: int32(b.jsMaxRequests)}
+}
+
+// cookieStripper wraps the shared JS RoundTripper to drop the Cookie header on
+// requests marked by js.WithOmitCredentials — a non-credentialed cross-origin
+// fetch/XHR must not carry the session's cookies (the CORS credentials-mode
+// default; see internal/js/cors.go). net/http materializes jar cookies into the
+// Cookie header before calling RoundTrip, so stripping here removes them just
+// before the wire while leaving same-origin (and credentialed) requests untouched.
+type cookieStripper struct{ inner http.RoundTripper }
+
+func (c cookieStripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if js.OmitCredentials(req.Context()) && req.Header.Get("Cookie") != "" {
+		req = req.Clone(req.Context()) // don't mutate the caller's request
+		req.Header.Del("Cookie")
+	}
+	return c.inner.RoundTrip(req)
 }
 
 // errBlockedAddr is the SSRF guard's sentinel, wrapped into every dial rejection

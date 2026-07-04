@@ -170,8 +170,13 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   `import()` graph loads as cache hits (adds no async primitive, so ADR 0004
   holds); 0010 is WebExtensions runtime loading (the operator supplies the
   extension; MIT/GPL separation, no vendored extension bytes — see the
-  WebExtensions gotcha above). Add a new ADR when a decision would otherwise live
-  only in a PR description.
+  WebExtensions gotcha above); 0011 is CORS enforcement over untrusted page JS
+  (default on, enforced in `internal/js/cors.go` `doFetch`; the request is still
+  sent + logged in `requests`, only the page-JS *read* is gated — history
+  preservation; `--js-allow-cross-origin` opts out); 0012 is Subresource Integrity
+  (default on, `internal/js/sri.go`; hashes the raw pre-transcode bytes — hence the
+  `Raw` field on `fetch.Result`/`js.Response`; `--no-sri` opts out). Add a new ADR
+  when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
 - **WebExtensions (opt-in, ADR 0010)**: `--extension <dir|.xpi|.crx|.zip>` /

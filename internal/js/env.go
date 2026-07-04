@@ -15,6 +15,12 @@ type Env struct {
 	Diag           *RenderResult  // if non-nil, the engine fills it with render diagnostics
 	Wait           *WaitCondition // if set, keep the render alive until it holds or the budget elapses
 	Timeout        time.Duration  // per-render budget override; 0 = engine default (hard-capped by the engine)
+	// AllowCrossOrigin disables CORS enforcement over page-JS fetch/XHR (default
+	// false = enforce like a browser). DisableSRI turns off Subresource Integrity
+	// checking (default false = verify). Both are operator escape hatches. See
+	// cors.go / sri.go and ADRs 0011/0012.
+	AllowCrossOrigin bool
+	DisableSRI       bool
 }
 
 // CookieJar exposes the page's cookies to JavaScript (document.cookie), backed by

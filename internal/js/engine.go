@@ -249,6 +249,8 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// reqTimeout is the render budget so a wait_timeout override also gives the
 		// page's own fetches longer to complete (else the awaited content never lands).
 		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget, e.extHost)
+		b.allowCrossOrigin = env.AllowCrossOrigin
+		b.sriEnabled = !env.DisableSRI
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()

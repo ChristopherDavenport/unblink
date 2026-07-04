@@ -37,6 +37,15 @@ type bridge struct {
 	ctx          context.Context
 	reqTimeout   time.Duration
 
+	// allowCrossOrigin disables the same-origin/CORS enforcement applied to
+	// page-JS fetch/XHR (escape hatch; default false = enforce). The extension
+	// background worker sets it true, since extensions legitimately fetch
+	// cross-origin. See cors.go and ADR 0011.
+	allowCrossOrigin bool
+	// sriEnabled turns on Subresource Integrity verification of the subresources
+	// the engine executes (default true for page renders). See sri.go and ADR 0012.
+	sriEnabled bool
+
 	cache   map[*html.Node]*goja.Object
 	objNode map[*goja.Object]*html.Node
 

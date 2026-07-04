@@ -108,9 +108,14 @@ type Browser struct {
 	jsMaxBytes     int64        // per-render/per-dispatch JS download budget (bytes; 0 = off)
 	jsMaxRequests  int          // optional JS request-count backstop (0 = off)
 	jsAllowPrivate bool         // permit JS requests to private/loopback IPs
-	jsReqTimeout   time.Duration
-	jsMaxLive      int               // cap on concurrent live JS runtimes (LRU torn down)
-	jsRT           http.RoundTripper // shared conn pool for all JS subrequest clients (SSRF guard baked in)
+	// jsAllowCrossOrigin disables page-JS CORS enforcement; jsDisableSRI disables
+	// Subresource Integrity checks. Both default false (secure): CORS enforced, SRI
+	// verified. See internal/js/cors.go, sri.go and ADRs 0011/0012.
+	jsAllowCrossOrigin bool
+	jsDisableSRI       bool
+	jsReqTimeout       time.Duration
+	jsMaxLive          int               // cap on concurrent live JS runtimes (LRU torn down)
+	jsRT               http.RoundTripper // shared conn pool for all JS subrequest clients (SSRF guard baked in)
 
 	limiter *ratelimit.Limiter // shared per-host rate limiter (nil = disabled)
 	retries int                // fetch retries, threaded into JS subrequest clients
@@ -122,31 +127,33 @@ type Browser struct {
 type Option func(*options)
 
 type options struct {
-	fetchOpts      []fetch.Option
-	renderer       Renderer
-	js             bool
-	jsNetwork      bool
-	jsMaxBytes     int64
-	jsMaxRequests  int
-	jsAllowPrivate bool
-	jsTimeout      time.Duration
-	jsPrewarm      int
-	jsConcurrency  int
-	jsMaxLive      int
-	jsMemLimit     uint64
-	jsAssetCache   bool
-	rateRPS        float64
-	rateBurst      int
-	retries        int
-	tlsMimic       bool
-	siteHints      bool
-	safeOutput     bool
-	allowPrivate   bool
-	search         search.Provider
-	sessionTTL     time.Duration
-	sessionCap     int
-	extensionPaths []string
-	extensionDirs  []string
+	fetchOpts          []fetch.Option
+	renderer           Renderer
+	js                 bool
+	jsNetwork          bool
+	jsMaxBytes         int64
+	jsMaxRequests      int
+	jsAllowPrivate     bool
+	jsAllowCrossOrigin bool
+	jsDisableSRI       bool
+	jsTimeout          time.Duration
+	jsPrewarm          int
+	jsConcurrency      int
+	jsMaxLive          int
+	jsMemLimit         uint64
+	jsAssetCache       bool
+	rateRPS            float64
+	rateBurst          int
+	retries            int
+	tlsMimic           bool
+	siteHints          bool
+	safeOutput         bool
+	allowPrivate       bool
+	search             search.Provider
+	sessionTTL         time.Duration
+	sessionCap         int
+	extensionPaths     []string
+	extensionDirs      []string
 }
 
 // WithFetchOptions forwards options to the underlying fetch clients (default and
@@ -231,6 +238,18 @@ func WithJSMaxRequests(n int) Option { return func(o *options) { o.jsMaxRequests
 // WithJSAllowPrivate permits JS requests to private/loopback addresses (off by
 // default; for internal/dev targets and testing).
 func WithJSAllowPrivate(allow bool) Option { return func(o *options) { o.jsAllowPrivate = allow } }
+
+// WithJSAllowCrossOrigin disables the browser-parity CORS enforcement over page
+// JS (off by default = enforce). An escape hatch for extraction flows that need
+// the page's cross-origin fetch/XHR reads to succeed regardless. See ADR 0011.
+func WithJSAllowCrossOrigin(allow bool) Option {
+	return func(o *options) { o.jsAllowCrossOrigin = allow }
+}
+
+// WithoutSRI disables Subresource Integrity verification (off by default =
+// verify). An escape hatch; leaving it on blocks integrity-mismatched scripts as
+// a browser does. See ADR 0012.
+func WithoutSRI(disable bool) Option { return func(o *options) { o.jsDisableSRI = disable } }
 
 // WithJSMaxLive caps how many live (persistent, per-session) JS runtimes may
 // exist at once; the least-recently-used runtime is torn down to make room (its
@@ -362,24 +381,27 @@ func New(opts ...Option) (*Browser, error) {
 		func(s *session.Session) { s.Close() })
 
 	b := &Browser{
-		client:         client,
-		newPageClient:  newPageClient,
-		cache:          newCache(DefaultCacheTTL, DefaultCacheCap),
-		siteCache:      newSiteCache(DefaultSiteCacheTTL, DefaultSiteCacheCap),
-		sessions:       mgr,
-		siteHints:      o.siteHints,
-		safeOutput:     o.safeOutput,
-		renderer:       o.renderer,
-		jsNetwork:      o.jsNetwork,
-		jsMaxBytes:     o.jsMaxBytes,
-		jsMaxRequests:  o.jsMaxRequests,
-		jsAllowPrivate: o.jsAllowPrivate,
-		jsReqTimeout:   o.jsTimeout,
-		jsMaxLive:      o.jsMaxLive,
+		client:             client,
+		newPageClient:      newPageClient,
+		cache:              newCache(DefaultCacheTTL, DefaultCacheCap),
+		siteCache:          newSiteCache(DefaultSiteCacheTTL, DefaultSiteCacheCap),
+		sessions:           mgr,
+		siteHints:          o.siteHints,
+		safeOutput:         o.safeOutput,
+		renderer:           o.renderer,
+		jsNetwork:          o.jsNetwork,
+		jsMaxBytes:         o.jsMaxBytes,
+		jsMaxRequests:      o.jsMaxRequests,
+		jsAllowPrivate:     o.jsAllowPrivate,
+		jsAllowCrossOrigin: o.jsAllowCrossOrigin,
+		jsDisableSRI:       o.jsDisableSRI,
+		jsReqTimeout:       o.jsTimeout,
+		jsMaxLive:          o.jsMaxLive,
 		// One pool for every render's and live session's subrequest client:
 		// repeat renders reuse keep-alive connections instead of re-dialing.
 		// The SSRF posture is global config, so a single guarded pool is safe.
-		jsRT:    fetch.NewSharedTransport(ssrfControl(o.jsAllowPrivate)),
+		// The cookieStripper honors CORS cookie suppression (js.WithOmitCredentials).
+		jsRT:    cookieStripper{inner: fetch.NewSharedTransport(ssrfControl(o.jsAllowPrivate))},
 		limiter: limiter,
 		retries: o.retries,
 		search:  o.search,
@@ -660,7 +682,7 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 	var renderDur time.Duration
 	if ro.render && b.renderer != nil {
 		var diag js.RenderResult
-		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, SessionStorage: ro.sessStorage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout}
+		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, SessionStorage: ro.sessStorage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout, AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI}
 		if b.jsNetwork {
 			env.Transport = b.newRenderTransport(client, ro.timeout)
 		}
@@ -1618,7 +1640,7 @@ func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.Liv
 	if err := dom.Parse(tmp); err != nil {
 		return nil, err
 	}
-	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(), SessionStorage: sess.SessionStorage()}
+	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(), SessionStorage: sess.SessionStorage(), AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI}
 	if b.jsNetwork {
 		env.Transport = b.newLiveTransport(sess.Client())
 	}

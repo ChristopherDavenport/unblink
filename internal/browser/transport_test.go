@@ -11,7 +11,39 @@ import (
 	"time"
 
 	"github.com/christopherdavenport/unblink/internal/fetch"
+	"github.com/christopherdavenport/unblink/internal/js"
 )
+
+// fakeRT captures the Cookie header it receives, for the cookieStripper test.
+type fakeRT struct{ gotCookie string }
+
+func (f *fakeRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	f.gotCookie = req.Header.Get("Cookie")
+	return &http.Response{StatusCode: 204, Body: http.NoBody, Header: make(http.Header)}, nil
+}
+
+// TestCookieStripper verifies the shared JS RoundTripper drops the Cookie header
+// only when a request is marked by js.WithOmitCredentials (a non-credentialed
+// cross-origin fetch/XHR), and preserves it otherwise.
+func TestCookieStripper(t *testing.T) {
+	newReq := func(ctx context.Context) *http.Request {
+		r, _ := http.NewRequestWithContext(ctx, "GET", "https://x.com/", nil)
+		r.Header.Set("Cookie", "sid=secret")
+		return r
+	}
+	// No omit marker → cookie preserved (same-origin / credentialed path).
+	f := &fakeRT{}
+	_, _ = cookieStripper{inner: f}.RoundTrip(newReq(context.Background()))
+	if f.gotCookie != "sid=secret" {
+		t.Errorf("cookie stripped without omit marker: got %q", f.gotCookie)
+	}
+	// Omit marker → cookie removed.
+	f2 := &fakeRT{}
+	_, _ = cookieStripper{inner: f2}.RoundTrip(newReq(js.WithOmitCredentials(context.Background())))
+	if f2.gotCookie != "" {
+		t.Errorf("cookie not stripped with omit marker: got %q", f2.gotCookie)
+	}
+}
 
 func TestIsBlockedIP(t *testing.T) {
 	cases := map[string]bool{
