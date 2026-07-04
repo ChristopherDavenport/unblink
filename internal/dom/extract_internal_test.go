@@ -176,8 +176,12 @@ func TestLandmarkRole(t *testing.T) {
 func TestHashID(t *testing.T) {
 	doc := mustParse(t, `<html><body><main><button id="x">Go</button></main></body></html>`)
 	n := buildIDIndex(doc)["x"]
-	if hashID("btn", n, "Go", "") != hashID("btn", n, "Go", "") {
-		t.Error("hashID not deterministic")
+	// Deterministic: a re-parse of the same tree (a distinct node) hashes equal —
+	// hashID is a pure function of its inputs (no rand/time/global state).
+	reparsed := mustParse(t, `<html><body><main><button id="x">Go</button></main></body></html>`)
+	n2 := buildIDIndex(reparsed)["x"]
+	if a, b := hashID("btn", n, "Go", ""), hashID("btn", n2, "Go", ""); a != b {
+		t.Errorf("hashID not deterministic: %q vs %q", a, b)
 	}
 	// Identical semantic twins share a base hash; the minter appends -N.
 	doc2 := mustParse(t, `<html><body><main><button>Go</button><button>Go</button></main></body></html>`)
