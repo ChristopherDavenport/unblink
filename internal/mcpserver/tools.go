@@ -485,6 +485,72 @@ func (s *Server) handleData(ctx context.Context, _ *mcp.CallToolRequest, args da
 	return s.framedJSON(r), *r, nil
 }
 
+// --- extract ---
+
+const (
+	defaultExtractLimit = 50
+	maxExtractLimit     = 200
+	maxExtractFields    = 50
+)
+
+type extractArgs struct {
+	target
+	Root   string         `json:"root,omitempty" jsonschema:"optional CSS selector for the record container; each match emits one record (document order). Omit to treat the whole document as a single record"`
+	Fields map[string]any `json:"fields" jsonschema:"map of output field name to selector. Each value is either a CSS selector string (takes the first matching element's collapsed text) or an object {\"selector\":\"…\",\"attr\":\"…\"} to take an attribute value instead of text. A field whose selector matches nothing is omitted. Attribute values are returned verbatim (not URL-resolved)"`
+	Limit  int            `json:"limit,omitempty" jsonschema:"maximum records to return (default 50, capped at 200); truncated in the result reports whether more matched"`
+}
+
+func (s *Server) handleExtract(ctx context.Context, _ *mcp.CallToolRequest, args extractArgs) (*mcp.CallToolResult, browser.ExtractResult, error) {
+	specs, err := parseFieldSpecs(args.Fields)
+	if err != nil {
+		return errorResult(&browser.Error{Code: browser.ErrBadInput, Message: err.Error()}), browser.ExtractResult{}, nil
+	}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = defaultExtractLimit
+	}
+	if limit > maxExtractLimit {
+		limit = maxExtractLimit
+	}
+	r, err := s.browser.Extract(ctx, args.request(), args.Root, specs, limit)
+	if err != nil {
+		return errorResult(err), browser.ExtractResult{}, nil
+	}
+	return s.framedJSON(r), *r, nil
+}
+
+// parseFieldSpecs converts the union-typed fields arg (string | {selector, attr})
+// into dom.FieldSpec, the plain schema type the dom layer takes. Parsing the
+// MCP-shaped caller input belongs in this adapter, not in dom.
+func parseFieldSpecs(fields map[string]any) (map[string]dom.FieldSpec, error) {
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("fields is required: map at least one output name to a selector")
+	}
+	if len(fields) > maxExtractFields {
+		return nil, fmt.Errorf("too many fields: %d (max %d)", len(fields), maxExtractFields)
+	}
+	out := make(map[string]dom.FieldSpec, len(fields))
+	for name, raw := range fields {
+		switch v := raw.(type) {
+		case string:
+			if strings.TrimSpace(v) == "" {
+				return nil, fmt.Errorf("field %q: selector is empty", name)
+			}
+			out[name] = dom.FieldSpec{Selector: v}
+		case map[string]any:
+			sel, _ := v["selector"].(string)
+			at, _ := v["attr"].(string)
+			if strings.TrimSpace(sel) == "" {
+				return nil, fmt.Errorf("field %q: object form requires a non-empty \"selector\"", name)
+			}
+			out[name] = dom.FieldSpec{Selector: sel, Attr: at}
+		default:
+			return nil, fmt.Errorf("field %q: value must be a selector string or a {selector, attr} object", name)
+		}
+	}
+	return out, nil
+}
+
 // --- site ---
 
 type siteArgs struct {

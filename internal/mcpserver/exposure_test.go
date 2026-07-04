@@ -17,7 +17,7 @@ func enabledNames(cfg Config) (string, []string) {
 }
 
 func TestResolveEnabledTools(t *testing.T) {
-	const all = "browse,click,console,controls,cookies,data,find,forms,interact,links,map,read,requests,search,session,site,submit_form"
+	const all = "browse,click,console,controls,cookies,data,extract,find,forms,interact,links,map,read,requests,search,session,site,submit_form"
 
 	for _, tc := range []struct {
 		name string
@@ -26,20 +26,20 @@ func TestResolveEnabledTools(t *testing.T) {
 	}{
 		{"default full both caps", Config{JSEnabled: true, SearchEnabled: true}, all},
 		{"default, no JS drops interact/requests/console", Config{JSEnabled: false, SearchEnabled: true},
-			"browse,click,controls,cookies,data,find,forms,links,map,read,search,session,site,submit_form"},
+			"browse,click,controls,cookies,data,extract,find,forms,links,map,read,search,session,site,submit_form"},
 		{"default, no search drops search", Config{JSEnabled: true, SearchEnabled: false},
-			"browse,click,console,controls,cookies,data,find,forms,interact,links,map,read,requests,session,site,submit_form"},
+			"browse,click,console,controls,cookies,data,extract,find,forms,interact,links,map,read,requests,session,site,submit_form"},
 		{"default, neither cap", Config{},
-			"browse,click,controls,cookies,data,find,forms,links,map,read,session,site,submit_form"},
+			"browse,click,controls,cookies,data,extract,find,forms,links,map,read,session,site,submit_form"},
 		{"core preset", Config{Tools: "core", JSEnabled: true, SearchEnabled: true}, "browse,find,read"},
 		{"read-only preset with search off", Config{Tools: "read-only", JSEnabled: true},
-			"browse,console,controls,data,find,forms,links,map,read,requests,site"}, // search gated out
+			"browse,console,controls,data,extract,find,forms,links,map,read,requests,site"}, // search gated out
 		{"explicit names", Config{Tools: "read,browse", JSEnabled: true, SearchEnabled: true}, "browse,read"},
 		{"preset plus name", Config{Tools: "core,data", JSEnabled: true, SearchEnabled: true}, "browse,data,find,read"},
 		{"denylist subtracts", Config{DisableTools: "map,search", JSEnabled: true, SearchEnabled: true},
-			"browse,click,console,controls,cookies,data,find,forms,interact,links,read,requests,session,site,submit_form"},
+			"browse,click,console,controls,cookies,data,extract,find,forms,interact,links,read,requests,session,site,submit_form"},
 		{"deny a preset", Config{Tools: "full", DisableTools: "core", JSEnabled: true, SearchEnabled: true},
-			"click,console,controls,cookies,data,forms,interact,links,map,requests,search,session,site,submit_form"},
+			"click,console,controls,cookies,data,extract,forms,interact,links,map,requests,search,session,site,submit_form"},
 		{"capability gate beats explicit request", Config{Tools: "read,interact", JSEnabled: false}, "read"},
 		{"whitespace tolerated", Config{Tools: " core , data ", JSEnabled: true}, "browse,data,find,read"},
 	} {

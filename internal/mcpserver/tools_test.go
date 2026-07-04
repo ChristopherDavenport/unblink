@@ -7,7 +7,47 @@ import (
 	"testing"
 
 	"github.com/christopherdavenport/unblink/internal/browser"
+	"github.com/christopherdavenport/unblink/internal/dom"
 )
+
+func TestParseFieldSpecs(t *testing.T) {
+	// Happy path: string form (text) and object form (attribute).
+	specs, err := parseFieldSpecs(map[string]any{
+		"title": "h1",
+		"sku":   map[string]any{"selector": "[data-sku]", "attr": "data-sku"},
+	})
+	if err != nil {
+		t.Fatalf("parseFieldSpecs: %v", err)
+	}
+	if specs["title"] != (dom.FieldSpec{Selector: "h1"}) {
+		t.Errorf("title = %+v", specs["title"])
+	}
+	if specs["sku"] != (dom.FieldSpec{Selector: "[data-sku]", Attr: "data-sku"}) {
+		t.Errorf("sku = %+v", specs["sku"])
+	}
+
+	for name, fields := range map[string]map[string]any{
+		"empty map":             {},
+		"empty string":          {"f": ""},
+		"blank string":          {"f": "   "},
+		"object no selector":    {"f": map[string]any{"attr": "href"}},
+		"object blank selector": {"f": map[string]any{"selector": "  "}},
+		"wrong value type":      {"f": 42},
+	} {
+		if _, err := parseFieldSpecs(fields); err == nil {
+			t.Errorf("%s: want error, got nil", name)
+		}
+	}
+
+	// Field-count cap.
+	many := make(map[string]any, maxExtractFields+1)
+	for i := 0; i <= maxExtractFields; i++ {
+		many[string(rune('a'+i%26))+strings.Repeat("x", i)] = "div"
+	}
+	if _, err := parseFieldSpecs(many); err == nil || !strings.Contains(err.Error(), "too many") {
+		t.Errorf("field cap: err = %v", err)
+	}
+}
 
 func TestFilesOf(t *testing.T) {
 	// Happy path: text and base64 content, default filename, MIME carried.
