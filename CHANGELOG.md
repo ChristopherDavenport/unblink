@@ -7,6 +7,15 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Added
 
+- **`browse` now proposes extraction schemas (`collections`).** Every `browse` auto-detects the
+  page's dominant repeating record-sets (product lists, search results, table-like rows) and returns
+  each as a ready-to-use `extract` schema: a validated `root` selector, the enclosing landmark region,
+  and record-relative field selectors (`{name, selector, attr}`). Detection runs inside the always-on
+  structural pass (`internal/dom/collections.go`), reuses `browse`'s region classification to rank
+  candidates (content lists in `main`/`article` win; nav/footer chrome is demoted or dropped), and
+  validates every emitted schema by round-tripping it through the `extract` executor — so a surfaced
+  collection always works. This closes the discovery gap: an agent orienting with `browse` gets the
+  selectors for free instead of reading raw HTML to find them. Terse and capped to keep `browse` cheap.
 - **`extract` tool — caller-directed CSS-schema extraction.** Pass a `fields` schema mapping
   each output name to a CSS selector (a string takes the first matching element's collapsed text;
   an object `{selector, attr}` takes an attribute value instead) and an optional `root` selector to

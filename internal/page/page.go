@@ -138,12 +138,13 @@ type PageMeta struct {
 	TwitterCard string // twitter:card
 	TwitterSite string // twitter:site
 
-	Links    []Link
-	Forms    []Form
-	Images   []Image
-	Headings []Heading
-	Controls []Control // non-anchor interactive controls (interact targets)
-	Regions  []Region  // semantic landmark regions (banner/nav/main/…)
+	Links       []Link
+	Forms       []Form
+	Images      []Image
+	Headings    []Heading
+	Controls    []Control    // non-anchor interactive controls (interact targets)
+	Regions     []Region     // semantic landmark regions (banner/nav/main/…)
+	Collections []Collection // auto-detected repeating record-sets (browse → extract schemas)
 }
 
 // Link is an anchor with its href resolved to an absolute URL.
@@ -231,6 +232,27 @@ type Region struct {
 	Links    int    `json:"links,omitempty"`
 	Forms    int    `json:"forms,omitempty"`
 	Headings int    `json:"headings,omitempty"`
+}
+
+// SchemaField is one field of a detected collection's extraction schema. It maps
+// 1:1 onto dom.FieldSpec: Selector is record-relative; Attr == "" means the
+// element's collapsed text, else the named attribute value. The json tags mirror
+// the extract tool's field shape so an agent can copy a field verbatim.
+type SchemaField struct {
+	Name     string `json:"name"`
+	Selector string `json:"selector"`
+	Attr     string `json:"attr,omitempty"`
+}
+
+// Collection is a detected repeating record-set — a run of same-shape sibling
+// containers (product cards, search results, table-like rows) with a ready-to-use
+// extraction schema. It is schema-only (no sample values, to keep browse terse):
+// hand Root plus each field's {selector, attr} straight to the extract tool.
+type Collection struct {
+	Root   string        `json:"root"`             // selector matching the repeated containers
+	Count  int           `json:"count"`            // containers the root resolves to, doc-wide
+	Region string        `json:"region,omitempty"` // enclosing landmark role (main/navigation/…)
+	Fields []SchemaField `json:"fields,omitempty"`
 }
 
 // Article is the reduced, readable content extracted from a Page.

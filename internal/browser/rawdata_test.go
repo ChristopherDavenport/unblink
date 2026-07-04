@@ -249,3 +249,37 @@ func TestExtractLimit(t *testing.T) {
 		t.Errorf("count = %d, want 1 (limit)", r.Count)
 	}
 }
+
+const collectionsHTML = `<!doctype html><html><body><main><ul>
+<li class="product"><h2 class="name">Widget</h2><span class="price">$9.99</span><a class="buy" href="/p/1" data-sku="W-1">Buy</a></li>
+<li class="product"><h2 class="name">Gadget</h2><span class="price">$19.99</span><a class="buy" href="/p/2" data-sku="G-2">Buy</a></li>
+<li class="product"><h2 class="name">Gizmo</h2><span class="price">$4.50</span><a class="buy" href="/p/3" data-sku="Z-3">Buy</a></li>
+</ul></main></body></html>`
+
+func TestBrowseSurfacesCollections(t *testing.T) {
+	srv := serveContent(t, "text/html; charset=utf-8", []byte(collectionsHTML))
+	b := newBrowser(t)
+	r, err := b.Browse(context.Background(), req(srv.URL))
+	if err != nil {
+		t.Fatalf("browse: %v", err)
+	}
+	if len(r.Collections) == 0 {
+		t.Fatal("browse surfaced no collections")
+	}
+	c := r.Collections[0]
+	if c.Root == "" || c.Count != 3 || c.Region != "main" || len(c.Fields) == 0 {
+		t.Fatalf("collection = %+v", c)
+	}
+	// The surfaced schema must be valid extract input.
+	fields := make(map[string]dom.FieldSpec, len(c.Fields))
+	for _, f := range c.Fields {
+		fields[f.Name] = dom.FieldSpec{Selector: f.Selector, Attr: f.Attr}
+	}
+	er, err := b.Extract(context.Background(), req(srv.URL), c.Root, fields, 200)
+	if err != nil {
+		t.Fatalf("extract with browse-suggested schema failed: %v", err)
+	}
+	if er.Count != 3 {
+		t.Errorf("extract via suggested schema returned %d records, want 3", er.Count)
+	}
+}

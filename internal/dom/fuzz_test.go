@@ -3,6 +3,7 @@ package dom_test
 import (
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/christopherdavenport/unblink/internal/dom"
@@ -33,6 +34,11 @@ func FuzzParseExtract(f *testing.F) {
 	// Duplicate ids and deeply nested landmarks stress the id index + region walk.
 	f.Add([]byte(`<main><nav><section aria-label=x><header><footer><form aria-label=y>` +
 		`<button id="d">1</button><button id="d">2</button></form></footer></header></section></nav></main>`))
+	// A repeating record-set drives collection detection (root synthesis + the
+	// Records round-trip) via Extract below.
+	f.Add([]byte(`<main><ul>` +
+		strings.Repeat(`<li class="p"><h2 class="n">t</h2><a href="/x" data-id="1">b</a><span class="pr">$1</span></li>`, 4) +
+		`</ul></main>`))
 
 	base, _ := url.Parse("https://fuzz.example/dir/page")
 	f.Fuzz(func(t *testing.T, data []byte) {

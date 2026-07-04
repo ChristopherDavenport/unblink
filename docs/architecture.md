@@ -658,6 +658,20 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   one Obscura/Lightpanda differentiator ("CSS-schema extraction") that fit unblink's reduce-to-meaning
   identity rather than its automation turf — see `docs/comparison.md`.
 
+- **`collections` — repeating-structure discovery in `browse`.** ✅ Closes the "how does the agent know
+  the selectors" gap for `extract`: `browse` now auto-detects a page's dominant repeating record-sets
+  and hands back a ready-to-use `{root, fields}` schema for each. Detection (`internal/dom/collections.go`,
+  `detectCollections`) runs inside the always-on `dom.Extract` structural pass and is surfaced via
+  `summarize`, terse and two-tier capped (`maxCollections`/`maxCollectionsOut`) like regions/headings.
+  It groups a parent's direct children by a structural signature (tag + sorted classes — the same key as
+  `selIndex.sigCount`, now built once in `Extract` and shared with `extractInteractive` — or a bounded
+  shape hash for class-less repeats), gates out thin/pagination/nav-chrome lists, and **ranks by the
+  enclosing landmark region** (content lists in `main`/`article` win; `nav`/`footer` are demoted or
+  dropped) — the region synergy is why this lives alongside `browse` rather than in a standalone tool.
+  Every synthesized `root` is re-resolved against the group and the whole schema is proven by one
+  `dom.Records` round-trip, so a surfaced collection is always valid `extract` input. Schema-only (no
+  sample values) to keep `browse` cheap; `extract` executes it.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

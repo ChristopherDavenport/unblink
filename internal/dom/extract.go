@@ -85,13 +85,15 @@ func Extract(p *page.Page) error {
 
 	res := newIDResolver(p.Doc)
 	minter := newIDMinter()
+	ix := buildSelIndex(p.Doc) // one document DFS, shared by controls + collections
 
 	m.Links = extractLinks(p.Doc, base)
 	m.Forms = extractForms(p.Doc, base, p.FinalURL, res, minter)
 	m.Images = extractImages(p.Doc, base)
 	m.Headings = extractHeadings(p.Doc, minter)
-	m.Controls = extractInteractive(p.Doc, base, res, minter)
+	m.Controls = extractInteractive(p.Doc, base, res, minter, ix)
 	m.Regions = extractRegions(p.Doc, res, minter)
+	m.Collections = detectCollections(p.Doc, ix, res)
 	return nil
 }
 
@@ -462,18 +464,14 @@ func countRegionMembers(doc *html.Node, regionSet map[*html.Node]*page.Region) {
 // than one sub-selector (e.g. <button onclick>) appears once (dedup by node).
 // The uniqueness index is built once (one walk) on the first control, replacing
 // a full-document query per control on control-dense pages.
-func extractInteractive(doc *html.Node, base *url.URL, res *idResolver, minter *idMinter) []page.Control {
+func extractInteractive(doc *html.Node, base *url.URL, res *idResolver, minter *idMinter, ix *selIndex) []page.Control {
 	var out []page.Control
 	seen := map[*html.Node]bool{}
-	var ix *selIndex
 	for _, n := range selInteractive.MatchAll(doc) {
 		if seen[n] {
 			continue
 		}
 		seen[n] = true
-		if ix == nil {
-			ix = buildSelIndex(doc)
-		}
 		name := accessibleName(n, res)
 		role := attr(n, "role")
 		kind := controlKind(n)
