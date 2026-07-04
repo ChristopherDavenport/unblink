@@ -119,6 +119,9 @@ func New(opts ...Option) *Engine {
 		e.stop = make(chan struct{})
 		go e.refill()
 	}
+	// Start any extension background worker on its own eventloop, warm for the process
+	// lifetime (its filter-list setup runs once, not per render).
+	e.extHost.startBackground(e.memGuard)
 	return e
 }
 
@@ -176,6 +179,7 @@ func (e *Engine) Close() {
 		if e.stop != nil {
 			close(e.stop)
 		}
+		e.extHost.Close()
 		e.memGuard.close()
 	})
 }

@@ -719,6 +719,21 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   Deferred to Phase 3+ (what uBlock Origin's *dynamic* cosmetics need): the background service worker
   + messaging, storage persistence + onChanged, and MV2 webRequest.
 
+- **WebExtensions — background worker + runtime messaging (Phase 3, ADR 0010).** ✅ Adds the
+  persistent background context and the message path uBlock's *dynamic* cosmetic filtering uses.
+  The extension's background scripts run on a dedicated engine-lifetime eventloop — a separate goja
+  runtime from every page render, started once and kept warm (`internal/js/bgworker.go`), reusing the
+  page bridge with a minimal empty document (a SW has no DOM — pragmatic simplification) and a
+  `bundleTransport` that serves the extension's own files. `chrome.runtime.sendMessage`
+  (`internal/js/broker.go`) round-trips a content script ↔ background, carrying plain Go values across
+  the two runtimes via each loop's RunOnLoop (sync + async `sendResponse`). **The ADR-0004 crux is
+  resolved**: the background's own eventloop means its timers can't hold a page open, and each
+  cross-runtime round-trip is bracketed on the page's `pending` counter (like a network request), so a
+  content-script reply's DOM effect lands before settle — proven by `TestBackgroundMessaging`. Storage
+  (`chrome.storage.*`) is a shared in-memory store across contexts. Deferred to Phase 4 (needs
+  `chrome-extension://` serving): storage disk persistence + onChanged, background→page messaging, real
+  Port, external background fetch, and MV2 webRequest.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

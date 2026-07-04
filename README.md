@@ -329,11 +329,15 @@ target is **uBlock Origin Lite (MV3)**. unblink currently supports:
 - **Content scripts** — an extension's `content_scripts` JS/CSS is injected into
   matching pages, with a `chrome`/`browser` API surface (`runtime`, `i18n`, `storage`,
   `scripting`, `tabs`, …).
+- **Background worker + messaging** — the extension's background scripts run on their own
+  event loop, and `chrome.runtime.sendMessage` round-trips between a content script and
+  the background (uBlock's model: a content script asks the background which selectors to
+  hide for the current host, then hides them).
 
 Extensions require the JavaScript engine (they are rejected under `--disable-js`);
-extension JS runs in the same sandbox as page JS (heap/byte/SSRF guards apply). The
-background service worker + messaging, storage persistence, and MV2 `webRequest` (what
-uBlock Origin's *dynamic* cosmetic filtering needs) are in-progress follow-ups.
+extension JS runs in the same sandbox as page JS (heap/byte/SSRF guards apply). Still
+in progress: `chrome-extension://` resource serving + storage disk persistence and MV2
+`webRequest` (the last pieces a stock uBlock Origin build needs).
 
 ## Configuration
 

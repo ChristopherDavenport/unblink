@@ -16,6 +16,8 @@ import (
 type ExtensionHost struct {
 	bundles []*webext.Bundle
 	storage *extStore
+	broker  *msgBroker
+	bg      *bgWorker // background worker for the first extension declaring one; nil otherwise
 }
 
 // newExtensionHost builds a host from the loaded bundles, or returns nil when none are
@@ -24,7 +26,30 @@ func newExtensionHost(bundles []*webext.Bundle) *ExtensionHost {
 	if len(bundles) == 0 {
 		return nil
 	}
-	return &ExtensionHost{bundles: bundles, storage: newExtStore()}
+	h := &ExtensionHost{bundles: bundles, storage: newExtStore()}
+	h.broker = &msgBroker{host: h}
+	for _, b := range bundles {
+		if b.Manifest != nil && (b.Manifest.Background.ServiceWorker != "" || len(b.Manifest.Background.Scripts) > 0) {
+			h.bg = &bgWorker{bundle: b, host: h}
+			break
+		}
+	}
+	return h
+}
+
+// startBackground launches the background worker (if any) on its own eventloop. Called
+// once by the engine right after construction so the memory guard tracks its runtime.
+func (h *ExtensionHost) startBackground(memGuard *memGuard) {
+	if h != nil && h.bg != nil {
+		h.bg.start(memGuard)
+	}
+}
+
+// Close tears down the background worker's runtime.
+func (h *ExtensionHost) Close() {
+	if h != nil && h.bg != nil {
+		h.bg.close()
+	}
 }
 
 // extStore is the in-memory backing for chrome.storage (local/session/sync/managed),

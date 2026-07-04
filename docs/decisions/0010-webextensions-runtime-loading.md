@@ -126,3 +126,39 @@ requests:
 Still deferred to Phase 3+: the background service worker + `runtime` messaging (settle
 via the `pending` bracket), storage persistence + `onChanged`, and MV2 `webRequest` — the
 parts uBlock Origin's *dynamic* cosmetic filtering depends on.
+
+## Amendment — Phase 3: background worker + runtime messaging
+
+Adds the persistent background context and the message path uBlock's *dynamic* cosmetic
+filtering uses (a content script asks the background which selectors apply to the current
+host, then hides them).
+
+- **Background worker** (`internal/js/bgworker.go`): the extension's background scripts run
+  on a dedicated, engine-lifetime eventloop — a *separate goja runtime* from every page
+  render, started once and kept warm. It reuses the page bridge with a minimal empty
+  document (a real service worker has no DOM; giving it one is a pragmatic simplification,
+  like same-world content scripts, that reuses the whole prelude + chrome API + fetch
+  stack). Its fetch/module loader serves the extension's own files (`bundleTransport`);
+  external background network is out of scope for now. Classic background scripts (MV2
+  `background.scripts` / a non-module `service_worker`) run directly; a module
+  `service_worker` is bundled through the esbuild path (best-effort, not yet validated
+  against a real MV3 build).
+- **Messaging broker** (`internal/js/broker.go`): `chrome.runtime.sendMessage` from a
+  page/content script routes to the background's `onMessage` listeners and back, carrying
+  plain Go values across the two runtimes via each loop's `RunOnLoop`. Both the synchronous
+  `sendResponse` and the async (`return true` + later `sendResponse`) forms work.
+- **The ADR-0004 reconciliation (the central risk, resolved).** The background runs on its
+  own eventloop, so its perpetual timers live in its own audit and can never hold a page
+  render open. Content-script async triggered by messaging stays visible to the page's
+  settle because every round-trip is **bracketed on the page's `pending` counter** (with a
+  keepalive), exactly like a network request — incremented synchronously when the message
+  is sent, decremented on the page loop when the reply lands. `TestBackgroundMessaging`
+  proves an async reply's DOM effect lands *before* settle (not snapshotted away).
+- **Storage**: `chrome.storage.local/session/sync/managed` is a shared in-memory store on
+  the `ExtensionHost`, so the background and content scripts share state within the process.
+
+Still deferred (to Phase 4, alongside the `chrome-extension://` resource serving a real MV3
+build needs): storage **disk persistence** (so uBO's filter-list compile survives restarts)
+and **`onChanged`** fan-out, background→page / `tabs.sendMessage`, real `connect`/`Port`,
+external background fetch, and MV2 `webRequest`. Content scripts remain same-world
+(isolated worlds are Phase 5).

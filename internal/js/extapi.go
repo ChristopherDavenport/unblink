@@ -18,6 +18,7 @@ func (b *bridge) installExtensionAPI(win *goja.Object) {
 	if active == nil {
 		return
 	}
+	b.extActiveID = active.ID
 	chrome := vm.NewObject()
 
 	// --- chrome.runtime ---
@@ -43,13 +44,24 @@ func (b *bridge) installExtensionAPI(win *goja.Object) {
 		_ = info.Set("arch", "x86-64")
 		return b.apiReturn(call, info)
 	})
-	// No background worker yet (Phase 3): messaging has no responder, so sendMessage
-	// resolves undefined and the message events never fire.
-	_ = runtime.Set("sendMessage", func(call goja.FunctionCall) goja.Value {
-		return b.apiReturn(call, goja.Undefined())
-	})
+	// runtime messaging. In the background context, onMessage registers real listeners
+	// and sendMessage (background → other contexts) is not delivered yet. In a page/
+	// content-script context, sendMessage routes to the background through the broker,
+	// bracketed on the page's pending counter (ADR 0004); onMessage is a stub (pages
+	// rarely receive unsolicited messages in this model).
+	if b.bgMode {
+		_ = runtime.Set("onMessage", b.newOnMessageListener())
+		_ = runtime.Set("sendMessage", func(call goja.FunctionCall) goja.Value {
+			return b.apiReturn(call, goja.Undefined())
+		})
+	} else {
+		_ = runtime.Set("onMessage", b.newEventStub())
+		_ = runtime.Set("sendMessage", func(call goja.FunctionCall) goja.Value {
+			msg, cb := sendMessageArgs(call)
+			return b.sendMessageToBackground(msg, cb)
+		})
+	}
 	_ = runtime.Set("connect", func(goja.FunctionCall) goja.Value { return b.newPortStub() })
-	_ = runtime.Set("onMessage", b.newEventStub())
 	_ = runtime.Set("onConnect", b.newEventStub())
 	_ = runtime.Set("onInstalled", b.newEventStub())
 	_ = runtime.Set("onStartup", b.newEventStub())
@@ -329,4 +341,70 @@ func trimLeadingSlash(s string) string {
 		s = s[1:]
 	}
 	return s
+}
+
+// newOnMessageListener is the background context's chrome.runtime.onMessage: it appends
+// real listeners the broker dispatches to.
+func (b *bridge) newOnMessageListener() *goja.Object {
+	o := b.vm.NewObject()
+	_ = o.Set("addListener", func(call goja.FunctionCall) goja.Value {
+		if fn, ok := goja.AssertFunction(call.Argument(0)); ok {
+			b.msgListeners = append(b.msgListeners, fn)
+		}
+		return goja.Undefined()
+	})
+	_ = o.Set("removeListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = o.Set("hasListener", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(len(b.msgListeners) > 0) })
+	return o
+}
+
+// sendMessageArgs extracts (message, callback) from a chrome.runtime.sendMessage call.
+// The common forms are sendMessage(message) and sendMessage(message, callback); the
+// extensionId-prefixed overloads are not distinguished here (Phase 3).
+func sendMessageArgs(call goja.FunctionCall) (goja.Value, goja.Callable) {
+	n := len(call.Arguments)
+	if n == 0 {
+		return goja.Undefined(), nil
+	}
+	if n >= 2 {
+		if fn, ok := goja.AssertFunction(call.Argument(n - 1)); ok {
+			return call.Argument(0), fn
+		}
+	}
+	return call.Argument(0), nil
+}
+
+// sendMessageToBackground routes a page/content-script message to the background worker
+// and resolves with its reply. The round-trip is bracketed on b.pending (with a
+// keepalive) so the render will not settle until the reply lands — the ADR-0004
+// invariant that keeps a content-script message from being snapshotted away.
+func (b *bridge) sendMessageToBackground(msg goja.Value, cb goja.Callable) goja.Value {
+	vm := b.vm
+	promise, resolve, _ := vm.NewPromise()
+	if b.extHost == nil || b.extHost.broker == nil {
+		_ = resolve(goja.Undefined())
+		return vm.ToValue(promise)
+	}
+	msgGo := exportSafe(msg)
+	sender := map[string]any{"id": b.extActiveID}
+	if b.base != nil {
+		sender["url"] = b.base.String()
+		sender["origin"] = b.base.Scheme + "://" + b.base.Host
+	}
+
+	b.pending.Add(1) // hold the settle open across the round-trip
+	keep := b.acquireKeepalive()
+	respond := func(resp any) {
+		_ = b.loop.RunOnLoop(func(vm *goja.Runtime) {
+			rv := vm.ToValue(resp)
+			if cb != nil {
+				_, _ = cb(goja.Undefined(), rv)
+			}
+			_ = resolve(rv)
+			b.releaseKeepalive(keep)
+			b.pending.Add(-1)
+		})
+	}
+	b.extHost.broker.sendToBackground(msgGo, sender, respond)
+	return vm.ToValue(promise)
 }
