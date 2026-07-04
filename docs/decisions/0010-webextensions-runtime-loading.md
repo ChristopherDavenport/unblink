@@ -189,3 +189,25 @@ Still deferred to **Phase 5**: MV2 `webRequest` (full uBlock Origin's own JS net
 background→page / `tabs.sendMessage` and real `connect`/`Port`, external background fetch,
 validating a real module service worker, true isolated content-script worlds, scriptlet
 injection (`##+js`), and the IndexedDB/cacheStorage shim.
+
+## Amendment — Phase 5: MV2 `webRequest` blocking
+
+Manifest-V2 uBlock Origin does its own network filtering in the background: it registers
+`chrome.webRequest.onBeforeRequest` as a *blocking* listener and returns `{cancel:true}`
+(or `{redirectUrl}`) for requests its engine matches. unblink does not reimplement that
+matcher — it **delivers each subrequest to the background's listeners and honors the
+verdict** (`internal/js/extwebrequest.go`).
+
+The wrinkle is *where* a request is decided: the listeners live in the background runtime,
+but a subrequest is evaluated on the page's fetch goroutine (off every event loop). So the
+verdict is fetched via a **timeout-guarded round-trip onto the background loop** — no event
+loop blocks, and a wedged background degrades to "allow" (2 s cap) rather than hanging the
+render. `blockingTransport` consults declarativeNetRequest first (cheap, off-loop), then
+the webRequest verdict only when the background has registered listeners (an atomic count
+read off-loop; the listeners themselves are touched only on the background loop). A related
+fix made background `start()` **block until the background's synchronous setup completes**,
+so the first page request always sees the registered listeners (previously a startup race).
+
+Still deferred: background→page / `tabs.sendMessage` and real `connect`/`Port`, external
+background fetch, a validated module service worker, true isolated content-script worlds,
+scriptlet injection (`##+js`), and the IndexedDB/cacheStorage shim.

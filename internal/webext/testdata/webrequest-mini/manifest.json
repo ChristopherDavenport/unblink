@@ -1,0 +1,7 @@
+{
+  "manifest_version": 2,
+  "name": "WebRequest Mini",
+  "version": "1.0",
+  "permissions": ["webRequest", "webRequestBlocking", "<all_urls>"],
+  "background": { "scripts": ["bg.js"], "persistent": true }
+}

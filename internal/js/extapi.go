@@ -173,8 +173,17 @@ func (b *bridge) installExtensionAPI(win *goja.Object) {
 	})
 	_ = chrome.Set("declarativeNetRequest", dnr)
 
+	// --- chrome.webRequest (MV2): onBeforeRequest is a real blocking listener in the
+	//     background; the other stages are inert stubs ---
+	webRequest := vm.NewObject()
+	_ = webRequest.Set("onBeforeRequest", b.newWebRequestEvent())
+	for _, ev := range []string{"onBeforeSendHeaders", "onSendHeaders", "onHeadersReceived", "onResponseStarted", "onCompleted", "onErrorOccurred", "onBeforeRedirect", "onAuthRequired"} {
+		_ = webRequest.Set(ev, b.newEventStub())
+	}
+	_ = chrome.Set("webRequest", webRequest)
+
 	// --- niche event/UI namespaces: inert stubs so init code doesn't throw ---
-	for _, ns := range []string{"alarms", "contextMenus", "notifications", "webNavigation", "webRequest", "commands", "idle"} {
+	for _, ns := range []string{"alarms", "contextMenus", "notifications", "webNavigation", "commands", "idle"} {
 		_ = chrome.Set(ns, b.newNamespaceStub())
 	}
 

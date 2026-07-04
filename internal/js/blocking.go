@@ -51,9 +51,12 @@ type blockingTransport struct {
 func (t *blockingTransport) Do(ctx context.Context, method, rawURL string, headers map[string]string, body []byte) (*Response, error) {
 	if u, err := url.Parse(rawURL); err == nil {
 		req := webext.Request{URL: u, Method: method, Type: reqTypeFrom(ctx), Initiator: t.initiator}
+		// declarativeNetRequest (MV3, static + dynamic) then MV2 webRequest.onBeforeRequest.
+		// A redirect target degrades to a block (cancelling the tracker is the safe subset).
 		d := t.host.matchNetwork(req)
-		// A redirect target degrades to a block until web_accessible_resources can be
-		// served (Phase 4) — cancelling the tracker is the safe subset of a redirect rule.
+		if !d.Block && d.RedirectTo == "" {
+			d = t.host.webRequestVerdict(req)
+		}
 		if d.Block || d.RedirectTo != "" {
 			t.blocked.Add(1)
 			return nil, errBlockedByExtension

@@ -338,10 +338,13 @@ target is **uBlock Origin Lite (MV3)**. unblink currently supports:
   fire `onChanged`; `declarativeNetRequest` dynamic/session rules added at runtime take
   effect.
 
+- **MV2 `webRequest`** — a Manifest-V2 extension's background can block/redirect requests
+  from a blocking `webRequest.onBeforeRequest` listener (full uBlock Origin's model).
+
 Extensions require the JavaScript engine (they are rejected under `--disable-js`);
-extension JS runs in the same sandbox as page JS (heap/byte/SSRF guards apply). Still
-in progress toward a stock uBlock Origin build: MV2 `webRequest`, isolated content-script
-worlds, and scriptlet injection.
+extension JS runs in the same sandbox as page JS (heap/byte/SSRF guards apply). Still in
+progress toward a fully stock uBlock Origin build: isolated content-script worlds, scriptlet
+injection (`##+js`), and an IndexedDB/cacheStorage shim.
 
 ## Configuration
 

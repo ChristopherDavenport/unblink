@@ -747,6 +747,19 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   Deferred to Phase 5: MV2 webRequest, background→page messaging + real Port, external background fetch,
   a validated module service worker, isolated content-script worlds, scriptlets, IndexedDB/cacheStorage shim.
 
+- **WebExtensions — MV2 webRequest blocking (Phase 5, ADR 0010).** ✅ A Manifest-V2 extension's
+  background can cancel/redirect requests from a blocking `webRequest.onBeforeRequest` listener — full
+  uBlock Origin's model (its own JS network engine returns `{cancel:true}`). unblink delivers each
+  subrequest to the background's listeners and honors the verdict (`internal/js/extwebrequest.go`).
+  Since a request is decided on the page's off-loop fetch goroutine but the listeners live in the
+  background runtime, the verdict is a **timeout-guarded round-trip onto the background loop** (2s cap →
+  degrades to allow, never hangs); `blockingTransport` checks DNR first, then webRequest only when the
+  background has listeners (atomic count read off-loop). Background `start()` now blocks until the
+  background's synchronous setup finishes, so the first request sees the listeners (fixed a startup
+  race). Net: `internal/js/extwebrequest_test.go`. Remaining Phase-5 hardening (background→page
+  messaging, real Port, external background fetch, validated module SW, isolated worlds, scriptlets,
+  IndexedDB shim) is still open.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

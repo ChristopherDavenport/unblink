@@ -36,18 +36,24 @@ type bgWorker struct {
 	cancel   context.CancelFunc
 	memGuard *memGuard
 
-	started atomic.Bool
-	closed  atomic.Bool
+	started     atomic.Bool
+	closed      atomic.Bool
+	webReqCount atomic.Int32 // number of registered webRequest.onBeforeRequest listeners (read off-loop)
 }
 
 // bgReqTimeout bounds a background fetch (extension resource reads are local; this is a
 // generous ceiling for any future external fetch).
 const bgReqTimeout = 30 * time.Second
 
-// start builds the background runtime and runs its scripts (which register the
-// onMessage listeners). Called once at engine construction, off the render critical
-// path. Delivery jobs queue after the script-run job on the same loop, so listeners
-// registered synchronously at top level are in place before the first message.
+// bgStartTimeout bounds how long engine construction waits for the background's
+// synchronous setup. A wedged background degrades to "not ready" rather than hanging.
+const bgStartTimeout = 5 * time.Second
+
+// start builds the background runtime and runs its scripts (which register the message /
+// webRequest listeners). Called once at engine construction. It blocks until the
+// background's synchronous top-level setup completes, so the listeners are in place
+// before the first page request consults them (an off-loop webReqCount check, unlike
+// message delivery, does not queue behind the script-run job).
 func (w *bgWorker) start(memGuard *memGuard) {
 	if !w.started.CompareAndSwap(false, true) {
 		return
@@ -58,7 +64,9 @@ func (w *bgWorker) start(memGuard *memGuard) {
 	w.ctx, w.cancel = context.WithCancel(context.Background())
 	doc, _ := html.Parse(strings.NewReader("<html><head></head><body></body></html>"))
 	base, _ := url.Parse(w.bundle.BaseURL)
+	ready := make(chan struct{})
 	w.loop.RunOnLoop(func(vm *goja.Runtime) {
+		defer close(ready)
 		defer func() { _ = recover() }() // a panic here must not crash the loop goroutine
 		w.vm.Store(vm)
 		if memGuard != nil {
@@ -72,6 +80,10 @@ func (w *bgWorker) start(memGuard *memGuard) {
 		w.bridge = b
 		w.runBackgroundScripts(b)
 	})
+	select {
+	case <-ready:
+	case <-time.After(bgStartTimeout):
+	}
 }
 
 // runBackgroundScripts executes the manifest's background scripts. Classic scripts

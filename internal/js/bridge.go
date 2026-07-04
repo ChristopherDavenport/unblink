@@ -170,9 +170,10 @@ type bridge struct {
 
 	// bgMode marks the background-service-worker bridge (Phase 3): chrome.runtime.onMessage
 	// registers real listeners here (in msgListeners) instead of the page's stub.
-	bgMode       bool
-	msgListeners []goja.Callable // background onMessage listeners
-	extActiveID  string          // active extension id, for message sender identity
+	bgMode          bool
+	msgListeners    []goja.Callable  // background onMessage listeners
+	webReqListeners []webReqListener // background MV2 webRequest.onBeforeRequest listeners
+	extActiveID     string           // active extension id, for message sender identity
 
 	// dynSem bounds how many runtime dynamic import() chunks fetch+bundle off-loop
 	// at once, so a page firing hundreds of concurrent import()s can't spawn an
