@@ -86,12 +86,35 @@ type RenderDiag struct {
 	DOMBusy       bool // the DOM was still mutating when the snapshot was taken
 	TimersPending int  // one-shot timers still scheduled at snapshot (content may be behind one)
 
+	// Requests/Console are the page-JS network log and console output captured
+	// during the render, surfaced by the requests/console tools (not dumped on
+	// every read, for token budget). Both are capped; *Truncated flags drops.
+	Requests          []NetRequest
+	RequestsTruncated bool
+	Console           []ConsoleMessage
+	ConsoleTruncated  bool
+
 	// Timing: where the render's wall clock went (setup / script execution /
 	// settle poll). Debug-observability only — never surfaced in tool output.
 	SetupDur  time.Duration
 	ExecDur   time.Duration
 	SettleDur time.Duration
 	TotalDur  time.Duration
+}
+
+// NetRequest is one subrequest the page's JavaScript made (the requests tool).
+type NetRequest struct {
+	Method string `json:"method"`
+	URL    string `json:"url"`
+	Status int    `json:"status,omitempty"` // 0 when the request errored before a response
+	Failed bool   `json:"failed,omitempty"`
+	Err    string `json:"error,omitempty"`
+}
+
+// ConsoleMessage is one captured page console.* call (the console tool).
+type ConsoleMessage struct {
+	Level string `json:"level"`
+	Text  string `json:"text"`
 }
 
 // PageMeta holds page-level metadata and extracted structure, populated by the

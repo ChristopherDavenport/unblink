@@ -379,6 +379,79 @@ func (s *Server) handleControls(ctx context.Context, _ *mcp.CallToolRequest, arg
 	return s.framedJSON(out), out, nil
 }
 
+// --- requests ---
+
+type requestsArgs struct {
+	target
+}
+
+type requestsOut struct {
+	Count     int               `json:"count"`
+	Truncated bool              `json:"truncated,omitempty"`
+	Requests  []page.NetRequest `json:"requests"`
+}
+
+func (s *Server) handleRequests(ctx context.Context, _ *mcp.CallToolRequest, args requestsArgs) (*mcp.CallToolResult, requestsOut, error) {
+	reqs, truncated, err := s.browser.Requests(ctx, args.request())
+	if err != nil {
+		return errorResult(err), requestsOut{}, nil
+	}
+	out := requestsOut{Count: len(reqs), Truncated: truncated, Requests: reqs}
+	return s.framedJSON(out), out, nil
+}
+
+// --- console ---
+
+type consoleArgs struct {
+	target
+	Level string `json:"level,omitempty" jsonschema:"filter to one console level: log|info|warn|error|debug"`
+}
+
+type consoleOut struct {
+	Count     int                   `json:"count"`
+	Truncated bool                  `json:"truncated,omitempty"`
+	Messages  []page.ConsoleMessage `json:"messages"`
+}
+
+func (s *Server) handleConsole(ctx context.Context, _ *mcp.CallToolRequest, args consoleArgs) (*mcp.CallToolResult, consoleOut, error) {
+	msgs, truncated, err := s.browser.Console(ctx, args.request())
+	if err != nil {
+		return errorResult(err), consoleOut{}, nil
+	}
+	if lvl := strings.ToLower(strings.TrimSpace(args.Level)); lvl != "" {
+		var filtered []page.ConsoleMessage
+		for _, m := range msgs {
+			if m.Level == lvl {
+				filtered = append(filtered, m)
+			}
+		}
+		msgs = filtered
+	}
+	out := consoleOut{Count: len(msgs), Truncated: truncated, Messages: msgs}
+	return s.framedJSON(out), out, nil
+}
+
+// --- cookies ---
+
+type cookiesArgs struct {
+	Session string      `json:"session" jsonschema:"session id whose cookie jar to operate on (required)"`
+	Action  string      `json:"action,omitempty" jsonschema:"list (default), set, or clear"`
+	URL     string      `json:"url,omitempty" jsonschema:"origin to scope by (absolute http(s) URL); defaults to the session's current page"`
+	Cookies []cookieArg `json:"cookies,omitempty" jsonschema:"cookies to add or update (set action): name + value"`
+}
+
+func (s *Server) handleCookies(_ context.Context, _ *mcp.CallToolRequest, args cookiesArgs) (*mcp.CallToolResult, browser.CookiesResult, error) {
+	set := make([]browser.CookieInput, 0, len(args.Cookies))
+	for _, c := range args.Cookies {
+		set = append(set, browser.CookieInput{Name: c.Name, Value: c.Value})
+	}
+	res, err := s.browser.Cookies(args.Session, args.Action, args.URL, set)
+	if err != nil {
+		return errorResult(err), browser.CookiesResult{}, nil
+	}
+	return jsonResult(res), *res, nil
+}
+
 // --- interact ---
 
 type interactArgs struct {

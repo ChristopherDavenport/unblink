@@ -125,6 +125,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.fireLifecycle()
 		if env.Diag != nil {
 			*env.Diag = b.collectDiagnostics()
+			b.fillCaptureLogs(env.Diag) // best-effort: the request/console log so far
 		}
 		c.bridge = b
 	})
