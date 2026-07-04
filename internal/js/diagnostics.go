@@ -130,6 +130,7 @@ const (
 // recordConsole appends a captured console.* message (loop goroutine, no lock —
 // like recordError). Text is length-capped.
 func (b *bridge) recordConsole(level, text string) {
+	b.bgDebug("console."+level, text)
 	if len(b.consoleLog) >= maxConsoleMsgs {
 		b.consoleDropped++
 		return

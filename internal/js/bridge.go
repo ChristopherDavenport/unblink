@@ -174,6 +174,7 @@ type bridge struct {
 	msgListeners    []goja.Callable  // background onMessage listeners
 	webReqListeners []webReqListener // background MV2 webRequest.onBeforeRequest listeners
 	extActiveID     string           // active extension id, for message sender identity
+	inert           goja.Value       // cached self-propagating inert stub for unimplemented chrome.* APIs
 
 	// dynSem bounds how many runtime dynamic import() chunks fetch+bundle off-loop
 	// at once, so a page firing hundreds of concurrent import()s can't spawn an
@@ -198,7 +199,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 			// chrome-extension:// URL is served from the bundle before the gate
 			// (extResourceTransport) so extension resources aren't DNR-blocked. Both sit
 			// inside the counting transport so they still show in the requests diagnostics.
-			transport = &blockingTransport{inner: transport, host: extHost, initiator: initiatorHost(base)}
+			transport = &blockingTransport{inner: transport, host: extHost, initiator: initiatorHost(base), pageURL: baseURLString(base)}
 			transport = &extResourceTransport{inner: transport, host: extHost, page: base}
 		}
 		nc = &countingTransport{inner: transport}

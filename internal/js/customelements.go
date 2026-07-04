@@ -388,7 +388,11 @@ const maxDiagErrors = 64
 
 // recordError appends a script/upgrade exception for render diagnostics (Phase E).
 func (b *bridge) recordError(err error) {
-	if err != nil && len(b.diagErrors) < maxDiagErrors {
+	if err == nil {
+		return
+	}
+	b.bgDebug("error", err.Error())
+	if len(b.diagErrors) < maxDiagErrors {
 		b.diagErrors = append(b.diagErrors, err.Error())
 	}
 }

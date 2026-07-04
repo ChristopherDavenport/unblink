@@ -38,13 +38,19 @@ type Manifest struct {
 	Action              *Action
 }
 
-// Background describes the extension's background context: an MV3 service worker or an
-// MV2 background page's scripts.
+// Background describes the extension's background context: an MV3 service worker, an MV2
+// background-page HTML file, or an MV2 background scripts list.
 type Background struct {
-	ServiceWorker string   // MV3
-	Scripts       []string // MV2
-	Module        bool     // type == "module"
+	ServiceWorker string   // MV3 service_worker
+	Page          string   // MV2 background.page (an HTML file whose <script>s are the background)
+	Scripts       []string // MV2 background.scripts
+	Module        bool     // service_worker type == "module"
 	Persistent    bool     // MV2 persistent background page (default true in MV2)
+}
+
+// HasBackground reports whether the manifest declares any background context.
+func (b Background) HasBackground() bool {
+	return b.ServiceWorker != "" || b.Page != "" || len(b.Scripts) > 0
 }
 
 // RunAt is a content script's injection timing.
@@ -149,6 +155,7 @@ type rawManifest struct {
 
 type rawBackground struct {
 	ServiceWorker string   `json:"service_worker"`
+	Page          string   `json:"page"`
 	Scripts       []string `json:"scripts"`
 	Type          string   `json:"type"`
 	Persistent    *bool    `json:"persistent"`
@@ -207,6 +214,7 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		HostPermissions:     raw.HostPermissions,
 		Background: Background{
 			ServiceWorker: raw.Background.ServiceWorker,
+			Page:          raw.Background.Page,
 			Scripts:       raw.Background.Scripts,
 			Module:        raw.Background.Type == "module",
 			// MV2 background pages are persistent unless told otherwise; MV3 has no

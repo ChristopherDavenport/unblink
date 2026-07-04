@@ -1,6 +1,9 @@
 # Build output
 /bin/
 
+# Real WebExtensions used for local validation (not vendored — ADR 0010)
+/extensions/
+
 # Editor / OS cruft
 *.swp
 .DS_Store

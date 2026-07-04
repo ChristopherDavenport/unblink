@@ -29,5 +29,10 @@ func loadFS(fsys fs.FS) (*Bundle, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildBundle(m, fsys)
+	b, err := buildBundle(m, fsys)
+	if err != nil {
+		return nil, err
+	}
+	b.RawManifest = data
+	return b, nil
 }

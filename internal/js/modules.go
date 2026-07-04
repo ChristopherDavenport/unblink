@@ -272,16 +272,20 @@ func (b *bridge) modulePlugin(importMap map[string]string) esbuild.Plugin {
 // moduleResolve joins a specifier against the importing module's URL (or the page
 // base URL for the entry point).
 func (b *bridge) moduleResolve(importer, spec string) (string, error) {
-	// An absolute http(s) specifier resolves to itself — no base needed. Besides
-	// being correct, this keeps off-loop dynamic-import bundles (bundleDynamicChunk,
-	// whose entry imports an absolute URL) from reading docBaseNow off the loop
-	// goroutine, which would race with on-loop navigation updates.
-	if u, err := url.Parse(spec); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+	// An absolute specifier (http/https, or chrome-extension:// for a background
+	// module) resolves to itself — no base needed. Besides being correct, this keeps
+	// off-loop dynamic-import bundles (bundleDynamicChunk, whose entry imports an
+	// absolute URL) from reading docBaseNow off the loop goroutine, which would race
+	// with on-loop navigation updates.
+	if u, err := url.Parse(spec); err == nil && u.IsAbs() {
 		return u.String(), nil
 	}
+	// Relative imports resolve against the importer when it is an absolute URL (so a
+	// module's own path, not the document base, anchors its siblings); otherwise the
+	// document/extension base.
 	var base *url.URL
-	if strings.HasPrefix(importer, "http://") || strings.HasPrefix(importer, "https://") {
-		base, _ = url.Parse(importer)
+	if iu, err := url.Parse(importer); err == nil && iu.IsAbs() {
+		base = iu
 	} else {
 		base = b.docBaseNow()
 	}
@@ -306,7 +310,9 @@ func isBareSpecifier(spec string) bool {
 		return false
 	case strings.HasPrefix(spec, "./"), strings.HasPrefix(spec, "../"), strings.HasPrefix(spec, "/"):
 		return false
-	case strings.HasPrefix(spec, "http://"), strings.HasPrefix(spec, "https://"):
+	case strings.Contains(spec, "://"):
+		// Any absolute-URL specifier (http/https, and chrome-extension:// for an
+		// extension background module) is not bare.
 		return false
 	default:
 		return true

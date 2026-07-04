@@ -490,6 +490,21 @@ const preludeJS = `
     window.WebSocket = WS;
   }
 
+  // Image: HTMLImageElement constructor stub. Construction and src assignment never
+  // throw; nothing is fetched or rendered (no load/error fires). Enough for code that
+  // does new Image() for a beacon/probe without blocking on it.
+  if (typeof window.Image === 'undefined') {
+    var Img = function (w, h) {
+      this.width = w || 0; this.height = h || 0;
+      this.naturalWidth = 0; this.naturalHeight = 0; this.complete = false;
+      this.src = ''; this.srcset = ''; this.alt = ''; this.crossOrigin = null;
+      this.onload = null; this.onerror = null;
+      this.addEventListener = function () {}; this.removeEventListener = function () {};
+      this.setAttribute = function () {}; this.getAttribute = function () { return null; };
+    };
+    window.Image = Img;
+  }
+
   // Worker/SharedWorker: inert stubs — construction succeeds, messages go
   // nowhere. Apps that offload work keep running on their main-thread fallback
   // path (or simply never receive results) instead of throwing at load.

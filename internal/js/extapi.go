@@ -31,12 +31,19 @@ func (b *bridge) installExtensionAPI(win *goja.Object) {
 	}
 	_ = runtime.Set("getURL", getURL)
 	_ = runtime.Set("getManifest", func(goja.FunctionCall) goja.Value {
+		// Return the full manifest so an extension can read any field (browser_action,
+		// icons, options_ui, …), with __MSG__ references resolved as a browser does.
+		if len(active.RawManifest) > 0 {
+			var mo map[string]any
+			if json.Unmarshal([]byte(active.Locales.Substitute(string(active.RawManifest))), &mo) == nil {
+				return vm.ToValue(mo)
+			}
+		}
 		m := vm.NewObject()
 		if man := active.Manifest; man != nil {
 			_ = m.Set("manifest_version", man.ManifestVersion)
 			_ = m.Set("name", active.Locales.Substitute(man.Name))
 			_ = m.Set("version", man.Version)
-			_ = m.Set("description", active.Locales.Substitute(man.Description))
 		}
 		return m
 	})
@@ -182,13 +189,12 @@ func (b *bridge) installExtensionAPI(win *goja.Object) {
 	}
 	_ = chrome.Set("webRequest", webRequest)
 
-	// --- niche event/UI namespaces: inert stubs so init code doesn't throw ---
-	for _, ns := range []string{"alarms", "contextMenus", "notifications", "webNavigation", "commands", "idle"} {
-		_ = chrome.Set(ns, b.newNamespaceStub())
-	}
-
-	_ = vm.Set("chrome", chrome)
-	_ = vm.Set("browser", chrome) // Firefox alias
+	// Any namespace not implemented above (alarms, contextMenus, notifications,
+	// webNavigation, windows, idle, …) falls through to a permissive inert stub so an
+	// extension's init doesn't throw on a missing API. See extapi_permissive.go.
+	chromeObj := b.wrapChrome(chrome)
+	_ = vm.Set("chrome", chromeObj)
+	_ = vm.Set("browser", chromeObj) // Firefox alias
 }
 
 // apiReturn supports both the MV2 callback and MV3 promise forms: it invokes a
@@ -234,22 +240,6 @@ func (b *bridge) newActionStub() *goja.Object {
 		_ = o.Set(m, func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
 	}
 	_ = o.Set("onClicked", b.newEventStub())
-	return o
-}
-
-// newNamespaceStub returns a permissive object: reading any property yields another
-// callable/event-ish stub, so an extension poking at an unimplemented namespace gets
-// inert behavior instead of a TypeError.
-func (b *bridge) newNamespaceStub() *goja.Object {
-	o := b.vm.NewObject()
-	_ = o.Set("addListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
-	_ = o.Set("removeListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
-	_ = o.Set("create", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
-	_ = o.Set("clear", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
-	_ = o.Set("onAlarm", b.newEventStub())
-	_ = o.Set("onClicked", b.newEventStub())
-	_ = o.Set("onBeforeRequest", b.newEventStub())
-	_ = o.Set("onCompleted", b.newEventStub())
 	return o
 }
 

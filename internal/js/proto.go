@@ -121,6 +121,10 @@ func (b *bridge) installPrototypes() {
 	b.defineCtor("Comment", b.protoComment)
 	b.defineCtor("DocumentFragment", b.protoDocumentFragment)
 	b.defineCtor("Document", b.protoDocument)
+	// HTMLDocument is the (legacy) subclass every HTML document is an instance of;
+	// share the Document prototype so `document instanceof HTMLDocument` holds and code
+	// that patches HTMLDocument.prototype (e.g. uBlock's vapi) resolves it.
+	b.defineCtor("HTMLDocument", b.protoDocument)
 	b.defineCtor("Element", b.protoElement)
 	b.defineHTMLElementCtor()
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,17 @@ import (
 	"github.com/dop251/goja_nodejs/eventloop"
 	"golang.org/x/net/html"
 )
+
+// extDebug enables stderr tracing of the extension background's errors/console output,
+// for bringing up real extensions. Off unless UNBLINK_DEBUG_EXT is set.
+var extDebug = os.Getenv("UNBLINK_DEBUG_EXT") != ""
+
+// bgDebug traces a background error/console line to stderr when UNBLINK_DEBUG_EXT is set.
+func (b *bridge) bgDebug(kind, msg string) {
+	if extDebug && b.bgMode {
+		fmt.Fprintf(os.Stderr, "[ext-bg %s] %s\n", kind, msg)
+	}
+}
 
 // bgWorker runs an extension's background scripts on a dedicated, engine-lifetime
 // eventloop — the analog of a persistent background page / service worker. It is a
@@ -86,11 +98,17 @@ func (w *bgWorker) start(memGuard *memGuard) {
 	}
 }
 
-// runBackgroundScripts executes the manifest's background scripts. Classic scripts
-// (MV2 background.scripts, or a non-module service_worker) run directly; a module
+// runBackgroundScripts executes the manifest's background context. A background *page*
+// (MV2, used by uBlock Origin / Privacy Badger) is an HTML file whose scripts are run in
+// order (classics first, then modules, matching how those pages are authored). Classic
+// scripts (MV2 background.scripts, or a non-module service_worker) run directly; a module
 // service worker is bundled through the esbuild module path.
 func (w *bgWorker) runBackgroundScripts(b *bridge) {
 	bg := w.bundle.Manifest.Background
+	if bg.Page != "" {
+		w.runBackgroundPage(b, bg.Page)
+		return
+	}
 	if bg.ServiceWorker != "" && bg.Module {
 		node := &html.Node{Type: html.ElementNode, Data: "script", Attr: []html.Attribute{
 			{Key: "type", Val: "module"},
@@ -110,6 +128,24 @@ func (w *bgWorker) runBackgroundScripts(b *bridge) {
 		}
 		b.compileAndRun("background:"+w.bundle.ID+"/"+f, string(data))
 	}
+}
+
+// runBackgroundPage runs an MV2 background HTML page's scripts: classic scripts first
+// (they set up the globals the module entry expects), then module scripts (bundled via
+// esbuild, their imports fetched from the extension through the bundle transport).
+func (w *bgWorker) runBackgroundPage(b *bridge, page string) {
+	data, err := w.bundle.ReadResource(page)
+	if err != nil {
+		b.recordError(fmt.Errorf("background page %q: %w", page, err))
+		return
+	}
+	pageDoc, err := html.Parse(strings.NewReader(string(data)))
+	if err != nil {
+		b.recordError(fmt.Errorf("background page %q: %w", page, err))
+		return
+	}
+	b.runScripts(collectScripts(pageDoc))
+	b.runModules(collectModuleScripts(pageDoc), parseImportMap(pageDoc))
 }
 
 // deliver dispatches one message to the background's onMessage listeners on the
@@ -167,8 +203,12 @@ func (w *bgWorker) close() {
 	if w.cancel != nil {
 		w.cancel()
 	}
-	if w.memGuard != nil {
-		if vm := w.vm.Load(); vm != nil {
+	if vm := w.vm.Load(); vm != nil {
+		// Interrupt first so a wedged/looping background script (a real extension can
+		// hit one deep in init) is broken out of, letting Terminate join the loop
+		// goroutine instead of hanging shutdown.
+		vm.Interrupt("unblink: extension host closing")
+		if w.memGuard != nil {
 			w.memGuard.unregister(vm)
 		}
 	}

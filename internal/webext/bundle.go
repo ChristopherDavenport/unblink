@@ -14,12 +14,13 @@ import (
 // of its files (an unpacked dir or the archive interior, read uniformly through fs.FS),
 // a stable ID, and its compiled static network rules.
 type Bundle struct {
-	ID       string
-	Manifest *Manifest
-	FS       fs.FS
-	BaseURL  string       // "chrome-extension://<id>/"
-	Net      *RuleMatcher // compiled static declarativeNetRequest rulesets (never nil)
-	Locales  *Locales     // default-locale messages for i18n / __MSG__ substitution
+	ID          string
+	Manifest    *Manifest
+	RawManifest []byte // the raw manifest.json bytes, for chrome.runtime.getManifest()
+	FS          fs.FS
+	BaseURL     string       // "chrome-extension://<id>/"
+	Net         *RuleMatcher // compiled static declarativeNetRequest rulesets (never nil)
+	Locales     *Locales     // default-locale messages for i18n / __MSG__ substitution
 }
 
 // ContentScriptsFor returns the content scripts that should run on u, in manifest
@@ -54,6 +55,11 @@ func (b *Bundle) ReadResource(p string) ([]byte, error) {
 func (b *Bundle) ResourceAccessible(path string, pageURL *url.URL) bool {
 	if b.Manifest == nil {
 		return false
+	}
+	// The extension's own contexts (its background page, its content scripts) may read
+	// any of its files. The background's base is chrome-extension://<id>/.
+	if pageURL != nil && pageURL.Scheme == "chrome-extension" && pageURL.Host == b.ID {
+		return true
 	}
 	if pageURL != nil && len(b.ContentScriptsFor(pageURL)) > 0 {
 		return true

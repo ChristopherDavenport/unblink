@@ -75,14 +75,14 @@ func (b *bridge) newWebRequestEvent() *goja.Object {
 // webRequestVerdict asks the background's onBeforeRequest listeners whether to cancel or
 // redirect req. Returns an empty decision when there are no listeners, the background is
 // absent, or the round-trip times out.
-func (h *ExtensionHost) webRequestVerdict(req webext.Request) webext.Decision {
+func (h *ExtensionHost) webRequestVerdict(req webext.Request, documentURL string) webext.Decision {
 	w := h.bg
 	if w == nil || w.webReqCount.Load() == 0 {
 		return webext.Decision{}
 	}
 	result := make(chan webext.Decision, 1)
 	scheduled := w.loop.RunOnLoop(func(vm *goja.Runtime) {
-		result <- w.bridge.runWebRequest(vm, req)
+		result <- w.bridge.runWebRequest(vm, req, documentURL)
 	})
 	if !scheduled {
 		return webext.Decision{}
@@ -97,7 +97,7 @@ func (h *ExtensionHost) webRequestVerdict(req webext.Request) webext.Decision {
 
 // runWebRequest invokes the matching onBeforeRequest listeners and returns the first
 // blocking/redirecting verdict. Runs on the background loop.
-func (b *bridge) runWebRequest(vm *goja.Runtime, req webext.Request) webext.Decision {
+func (b *bridge) runWebRequest(vm *goja.Runtime, req webext.Request, documentURL string) webext.Decision {
 	for _, l := range b.webReqListeners {
 		if !l.matches(req.URL) {
 			continue
@@ -110,6 +110,11 @@ func (b *bridge) runWebRequest(vm *goja.Runtime, req webext.Request) webext.Deci
 		_ = details.Set("frameId", 0)
 		_ = details.Set("parentFrameId", -1)
 		_ = details.Set("requestId", "0")
+		// NOTE: documentUrl/originUrl are intentionally NOT set. Supplying them sends
+		// uBlock Origin's context-aware matching into an apparent infinite loop against
+		// our stubbed per-tab page store (needs a real pageStore/tabs model — Phase 5+).
+		// Without them uBO over-blocks (treats requests as context-less), but does not hang.
+		_ = documentURL
 		ret, err := l.fn(goja.Undefined(), details)
 		if err != nil {
 			b.recordError(err)

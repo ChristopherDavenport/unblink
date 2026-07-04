@@ -211,3 +211,34 @@ so the first page request always sees the registered listeners (previously a sta
 Still deferred: background→page / `tabs.sendMessage` and real `connect`/`Port`, external
 background fetch, a validated module service worker, true isolated content-script worlds,
 scriptlet injection (`##+js`), and the IndexedDB/cacheStorage shim.
+
+## Amendment — real-extension bring-up (uBlock Origin, Privacy Badger)
+
+Validated against unmodified real extensions (loaded via `--extension`, never vendored;
+env-gated smoke test `internal/js/realext_smoke_test.go`, `UNBLINK_DEBUG_EXT=1` traces the
+background). Both are **MV2 with a background *page*** (`background: {"page": "…"}`), which
+drove several gaps closed:
+
+- **`background.page`** (an HTML file whose `<script>`s are the background) is now run —
+  classic scripts then module scripts, the latter bundled via esbuild with `chrome-extension://`
+  recognized as an absolute specifier (`modules.go`).
+- An extension's **own background/content-script contexts may read all of its files**
+  (`Bundle.ResourceAccessible`), not just `web_accessible_resources`.
+- **`chrome.runtime.getManifest()` returns the full manifest** (real extensions read
+  `browser_action`, `icons`, …).
+- **The `chrome` object is permissive**: any unimplemented namespace/event falls through to a
+  self-propagating inert value (callable + event-shaped, coerces to `""`), so an extension's
+  init doesn't crash on a missing API (`extapi_permissive.go`). This alone took Privacy Badger
+  from an early crash to a **clean full init**.
+- Missing globals the backgrounds need (`HTMLDocument`, `Image`) added.
+- **Robustness:** a real extension can wedge its background in a deep-init loop; the background
+  runtime is now `Interrupt`ed on close so a loaded extension can never hang shutdown, and
+  `start()` is time-bounded so it can't hang construction.
+
+State: **Privacy Badger fully initializes** with no errors (it is learning-based, so it does
+not block on a cold profile). **uBlock Origin** loads, runs its background page, and — when its
+async init completes — **blocks real trackers** (google-analytics, doubleclick, …) through the
+MV2 `webRequest` path; its full init is non-deterministic (can hit an infinite loop deep in
+setup, now safely interrupted) and supplying `documentUrl`/`originUrl` triggers that loop, so
+page context is withheld for now (uBO then over-blocks context-lessly). Fully-correct uBO
+remains follow-up work (a real per-tab page store, IndexedDB, and the loop's root cause).

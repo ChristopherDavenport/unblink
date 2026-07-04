@@ -27,7 +27,7 @@ func newExtensionHost(bundles []*webext.Bundle) *ExtensionHost {
 	h := &ExtensionHost{bundles: bundles, storage: newExtStore(extStorageDir())}
 	h.broker = &msgBroker{host: h}
 	for _, b := range bundles {
-		if b.Manifest != nil && (b.Manifest.Background.ServiceWorker != "" || len(b.Manifest.Background.Scripts) > 0) {
+		if b.Manifest != nil && b.Manifest.Background.HasBackground() {
 			h.bg = &bgWorker{bundle: b, host: h}
 			break
 		}
@@ -92,4 +92,12 @@ func initiatorHost(base *url.URL) string {
 		return ""
 	}
 	return base.Hostname()
+}
+
+// baseURLString returns the full page URL (for webRequest documentUrl/originUrl).
+func baseURLString(base *url.URL) string {
+	if base == nil {
+		return ""
+	}
+	return base.String()
 }
