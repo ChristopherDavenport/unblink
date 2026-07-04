@@ -46,6 +46,8 @@ func FuzzParseExtract(f *testing.F) {
 		_ = dom.Microdata(p.Doc, base)
 		_ = dom.Find(p.Doc, "a", 5)
 		_ = dom.Text(p.Doc, true)
+		_, _, _ = dom.Records(p.Doc, "div", map[string]dom.FieldSpec{"t": {Selector: "a"}, "h": {Selector: "img", Attr: "src"}}, 20)
+		_, _, _ = dom.Records(p.Doc, "", map[string]dom.FieldSpec{"t": {Selector: "a"}}, 20)
 		dom.StripDuplicateBlocks(p.Doc) // mutates, so keep it last
 	})
 }

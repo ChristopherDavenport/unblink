@@ -34,7 +34,7 @@ explicit about both directions.
 | Engine | Pure Go, hand-rolled DOM (no browser engine) | Real Chrome / Firefox / WebKit / Edge | Real headless Chromium (Puppeteer/CDP) | From-scratch engine in Rust | From-scratch engine in Zig |
 | JavaScript | goja (Go interpreter), on by default (`--disable-js` opts out); renders React/Vue/Preact/Svelte/Lit via a flat-DOM model + a broad Web API surface (real `fetch`/Streams/`FileReader`/`crypto.subtle`; inert-but-non-throwing canvas-2D/Web Audio/WebRTC/`indexedDB`/media stubs) so pages rarely crash at boot | Full (real browser) | Full (real Chromium) | Embedded V8 (our React/Vue fixtures render; the Lit one came back empty) | Embedded V8; beta — "hundreds of Web APIs" unimplemented (though it rendered all four of our fixtures) |
 | Agent protocol | MCP (stdio), 14 tools | MCP (Node), 50+ tools | MCP (Node ≥ 20), 43 tools in profiles (7/23/43) | CDP (Puppeteer/Playwright drop-in) + MCP (11 tools) | CDP (WebSocket) + MCP (stdio) + CLI agent mode |
-| Page representation | Reduced Markdown (article or full page) + structured tools (outline, links, forms, JSON-LD/tables) | Accessibility-tree snapshots | Typed page decomposition, 3 detail levels, targeted `find` queries | DOM automation primitives (navigate/click/fill/evaluate) | DOM automation primitives; some semantic extraction |
+| Page representation | Reduced Markdown (article or full page) + structured tools (outline, links, forms, JSON-LD/tables, CSS-schema extraction) | Accessibility-tree snapshots | Typed page decomposition, 3 detail levels, targeted `find` queries | DOM automation primitives (navigate/click/fill/evaluate) | DOM automation primitives; some semantic extraction |
 | Screenshots / pixels | No — permanent non-goal | Yes, plus video, tracing, PDF export | Yes (real Chromium) | Not a focus | No — no graphical rendering |
 | Install footprint | One static binary (linux/darwin/windows), nothing else; ~36 MB, ~26 MB idle RSS ([measured](#measured-footprint)) | Node + full browser install | Node + Chromium (npm or Docker) | ~147 MB of binaries; [measured](#measured-footprint): 8 MB idle RSS, 2 ms cold start — leaner than its own claims | ~138 MB single binary; [measured](#measured-footprint): 15 MB idle RSS, 5 ms cold start; no native Windows, glibc-only Linux |
 | Token efficiency | Core design: token-budgeted, cursor-paginated Markdown; cheap `browse`/`find` orientation. [Measured](#token-cost-per-page): reads a nav-heavy portal for ~1% of a snapshot's tokens | Verbose — [measured](#token-cost-per-page): ×88 unblink's read on a nav-heavy portal; no orientation surface | Core design: orientation 23–178× smaller than a11y-tree dumps. [Measured](#token-cost-per-page): orientation 1.3–2× unblink's `browse`; *reading* costs snapshot-scale | Not a design concern — [measured](#token-cost-per-page): its snapshot truncates at ~4 KB and never reaches the article on a nav-heavy page | Not a design concern, though its `markdown` tool is genuinely dense — [measured](#token-cost-per-page): cheapest column on small clean pages, ×68 unblink on a nav-heavy portal (no reduction, budget, or orientation) |
@@ -465,7 +465,9 @@ dropped or fired.
 
 This is the crux of the differentiation. Obscura and Lightpanda are lean
 real-browser *automation* engines — richer interaction surfaces than unblink
-(multi-tab, storage-state replay, stealth, CSS-schema extraction) and real V8.
+(multi-tab, storage-state replay, stealth) and real V8. (Caller-directed
+CSS-schema extraction, once one of their differentiators, is now covered by
+unblink's `extract` tool.)
 They compete with Playwright MCP, a lighter CDP drop-in. unblink competes on
 the content boundary itself: reduce the page to meaning, treat what crosses into
 the model as untrusted, and cover the non-HTML web — the things a faithful DOM,

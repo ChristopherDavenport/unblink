@@ -83,7 +83,7 @@ func New(b *browser.Browser, cfg Config) *Server {
 // toolOrder is the full tool set in registration order; also the "full" preset.
 var toolOrder = []string{
 	"read", "browse", "links", "forms", "find", "click", "submit_form",
-	"controls", "interact", "data", "requests", "console", "site", "map",
+	"controls", "interact", "data", "extract", "requests", "console", "site", "map",
 	"search", "session", "cookies",
 }
 
@@ -102,7 +102,7 @@ var toolPresets = map[string][]string{
 	"full": toolOrder,
 	"core": {"read", "browse", "find"},
 	"read-only": {"read", "browse", "links", "forms", "find", "controls", "data",
-		"requests", "console", "site", "map", "search"},
+		"extract", "requests", "console", "site", "map", "search"},
 }
 
 // resolveEnabledTools computes the tools to register: the operator allow-list
@@ -293,6 +293,16 @@ func (s *Server) registerTools() {
 			"microdata, or all (the default). HTML pages only. Use this instead of read when you want " +
 			"the page's structured facts rather than its prose.",
 	}, s.handleData)
+
+	addTool(s, "extract", &mcp.Tool{
+		Annotations: readOnlyAnn,
+		Description: "Extract caller-directed structured records from a page with a CSS-selector schema. " +
+			"Pass fields as a map of output name to selector (a string takes the element's text; an object " +
+			"{selector, attr} takes an attribute instead), and an optional root selector to emit one record " +
+			"per matching container (e.g. root=\"li.product\"). Returns an array of records. Read-only, HTML " +
+			"only, no JavaScript injection — pure selection over the parsed DOM. Use this when you know the " +
+			"page's structure and want specific fields; use data for embedded JSON-LD/tables/microdata.",
+	}, s.handleExtract)
 
 	addTool(s, "requests", &mcp.Tool{
 		Annotations: readOnlyAnn,

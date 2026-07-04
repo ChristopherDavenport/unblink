@@ -1307,6 +1307,50 @@ func (b *Browser) Data(ctx context.Context, req Request, kind string) (*DataResu
 	return res, nil
 }
 
+// ExtractResult is the structured records the extract tool pulled from a page
+// via a caller-supplied CSS-selector schema.
+type ExtractResult struct {
+	Root      string       `json:"root,omitempty"`
+	Fields    []string     `json:"fields"`
+	Count     int          `json:"count"`
+	Truncated bool         `json:"truncated,omitempty"`
+	Records   []dom.Record `json:"records"`
+}
+
+// Extract pulls caller-directed structured records from req's page: for each
+// element matching root (or the whole document when root is empty) it applies
+// the fields schema (each selector → the first match's collapsed text, or a
+// named attribute) and emits one record per match, capped at limit. HTML pages
+// only; read-only over p.Doc. An invalid root or field selector is a bad_input
+// error; zero root matches is an empty result, not an error.
+func (b *Browser) Extract(ctx context.Context, req Request, root string, fields map[string]dom.FieldSpec, limit int) (*ExtractResult, error) {
+	p, _, err := b.resolve(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("browser: extract: %w", err)
+	}
+	if p.Doc == nil {
+		return nil, errf(ErrBadInput, "extract requires an HTML page (got %s)", kindString(p.Kind))
+	}
+	root = strings.TrimSpace(root)
+	recs, truncated, err := dom.Records(p.Doc, root, fields, limit)
+	if err != nil {
+		// The only failure mode is a bad root/field selector — the caller's fault.
+		return nil, errf(ErrBadInput, "%v", err)
+	}
+	names := make([]string, 0, len(fields))
+	for n := range fields {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return &ExtractResult{
+		Root:      root,
+		Fields:    names,
+		Count:     len(recs),
+		Truncated: truncated,
+		Records:   recs,
+	}, nil
+}
+
 // Find searches req's page text for query and returns up to maxHits snippets.
 func (b *Browser) Find(ctx context.Context, req Request, query string, maxHits int) ([]dom.Hit, error) {
 	p, _, err := b.resolve(ctx, req)

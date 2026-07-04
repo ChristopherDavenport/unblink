@@ -645,6 +645,19 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   `internal/js/webapi_tier3_test.go` + `js-api-smoke` markers `api-26`/`api-27`. **Still not
   stubbed** (reactive): EME, Web NFC, File System Access, and the Privacy Sandbox proposals.
 
+- **`extract` tool — caller-directed CSS-schema extraction.** ✅ Complements the auto-discovery
+  `data` tool (JSON-LD/tables/microdata) with a schema the *agent* supplies: `fields` maps each
+  output name to a CSS selector (a string takes the first match's collapsed text; `{selector, attr}`
+  takes an attribute value instead), an optional `root` selector emits one record per matching
+  container, and the result is an array of records (`limit` default 50, hard cap 200; `truncated`
+  when more matched). The selection primitive is `dom.Records` (`internal/dom/schema.go`) — all
+  cascadia/selector work stays inside `internal/dom`, the enforced DOM boundary; `Browser.Extract`
+  orchestrates and `mcpserver` adapts (a `map[string]any` field arg lets the MCP schema accept both
+  the string and object forms). Read-only over the parsed tree, no page-JS injection (unlike a browser
+  `evaluate`), HTML only, reusing the existing `collapsedText`/`attr`/`truncate` helpers. Closes the
+  one Obscura/Lightpanda differentiator ("CSS-schema extraction") that fit unblink's reduce-to-meaning
+  identity rather than its automation turf — see `docs/comparison.md`.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

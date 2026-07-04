@@ -3,6 +3,21 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## Unreleased
+
+### Added
+
+- **`extract` tool — caller-directed CSS-schema extraction.** Pass a `fields` schema mapping
+  each output name to a CSS selector (a string takes the first matching element's collapsed text;
+  an object `{selector, attr}` takes an attribute value instead) and an optional `root` selector to
+  emit one record per matching container (e.g. `root="li.product"`); omit `root` to treat the whole
+  document as a single record. Returns an array of records — `limit` defaults to 50 (hard cap 200)
+  and `truncated` reports whether more matched. Read-only, HTML only, no JavaScript injection: pure
+  selection over the parsed DOM via the new `dom.Records` primitive (`internal/dom/schema.go`).
+  Complements `data` (auto-discovered JSON-LD/tables/microdata) with agent-directed extraction, and
+  closes the one Obscura/Lightpanda differentiator ("CSS-schema extraction") that fit unblink's
+  reduce-to-meaning identity. Included in the `read-only` and `full` tool presets; not capability-gated.
+
 ## v0.20.0 — 2026-07-04
 
 ### Added
