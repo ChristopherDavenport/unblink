@@ -22,6 +22,7 @@ var (
 	selHTML     = cascadia.MustCompile("html")
 	selBase     = cascadia.MustCompile("base[href]")
 	selCanon    = cascadia.MustCompile("link[rel=canonical]")
+	selIcon     = cascadia.MustCompile("link[rel~=icon]")
 	selAnchor   = cascadia.MustCompile("a[href]")
 	selImg      = cascadia.MustCompile("img[src]")
 	selForm     = cascadia.MustCompile("form")
@@ -71,12 +72,26 @@ func Extract(p *page.Page) error {
 	if c := selCanon.MatchFirst(p.Doc); c != nil {
 		m.Canonical = resolveURL(base, attr(c, "href"))
 	}
+	m.Image = resolveURL(base, firstNonEmpty(metas["og:image"], metas["twitter:image"]))
+	m.Author = firstNonEmpty(metas["author"], metas["article:author"])
+	m.Published = metas["article:published_time"]
+	m.Modified = metas["article:modified_time"]
+	m.ThemeColor = metas["theme-color"]
+	m.TwitterCard = metas["twitter:card"]
+	m.TwitterSite = metas["twitter:site"]
+	if ic := selIcon.MatchFirst(p.Doc); ic != nil {
+		m.Favicon = resolveURL(base, attr(ic, "href"))
+	}
+
+	res := newIDResolver(p.Doc)
+	minter := newIDMinter()
 
 	m.Links = extractLinks(p.Doc, base)
-	m.Forms = extractForms(p.Doc, base, p.FinalURL)
+	m.Forms = extractForms(p.Doc, base, p.FinalURL, res, minter)
 	m.Images = extractImages(p.Doc, base)
-	m.Headings = extractHeadings(p.Doc)
-	m.Controls = extractInteractive(p.Doc)
+	m.Headings = extractHeadings(p.Doc, minter)
+	m.Controls = extractInteractive(p.Doc, base, res, minter)
+	m.Regions = extractRegions(p.Doc, res, minter)
 	return nil
 }
 
@@ -156,7 +171,7 @@ func extractLinks(doc *html.Node, base *url.URL) []page.Link {
 	return out
 }
 
-func extractForms(doc *html.Node, base, pageURL *url.URL) []page.Form {
+func extractForms(doc *html.Node, base, pageURL *url.URL, res *idResolver, minter *idMinter) []page.Form {
 	var out []page.Form
 	for _, f := range selForm.MatchAll(doc) {
 		action := resolveURL(base, attr(f, "action"))
@@ -175,18 +190,21 @@ func extractForms(doc *html.Node, base, pageURL *url.URL) []page.Form {
 			Enctype: strings.ToLower(strings.TrimSpace(attr(f, "enctype"))),
 		}
 		for _, fld := range selField.MatchAll(f) {
-			form.Fields = append(form.Fields, extractField(fld))
+			form.Fields = append(form.Fields, extractField(fld, res, minter))
 		}
 		out = append(out, form)
 	}
 	return out
 }
 
-func extractField(n *html.Node) page.Field {
+func extractField(n *html.Node, res *idResolver, minter *idMinter) page.Field {
 	f := page.Field{
-		Name:     attr(n, "name"),
-		Value:    attr(n, "value"),
-		Required: hasAttr(n, "required"),
+		Name:        attr(n, "name"),
+		Value:       attr(n, "value"),
+		Placeholder: attr(n, "placeholder"),
+		Required:    hasAttr(n, "required") || strings.EqualFold(attr(n, "aria-required"), "true"),
+		Disabled:    hasAttr(n, "disabled"),
+		Invalid:     ariaInvalid(n),
 	}
 	switch n.Data {
 	case "select":
@@ -208,8 +226,26 @@ func extractField(n *html.Node) page.Field {
 		if f.Type == "" {
 			f.Type = "text"
 		}
+		switch strings.ToLower(f.Type) {
+		case "checkbox", "radio":
+			f.Checked = boolStr(hasAttr(n, "checked") || strings.EqualFold(attr(n, "aria-checked"), "true"))
+		}
 	}
+	f.ID = minter.mint(fieldPrefix(f.Type), n, accessibleName(n, res), "")
 	return f
+}
+
+func fieldPrefix(fieldType string) string {
+	switch strings.ToLower(fieldType) {
+	case "select":
+		return "sel"
+	case "textarea":
+		return "txt"
+	case "checkbox", "radio":
+		return "chk"
+	default:
+		return "inp"
+	}
 }
 
 func extractImages(doc *html.Node, base *url.URL) []page.Image {
@@ -224,16 +260,201 @@ func extractImages(doc *html.Node, base *url.URL) []page.Image {
 	return out
 }
 
-func extractHeadings(doc *html.Node) []page.Heading {
+func extractHeadings(doc *html.Node, minter *idMinter) []page.Heading {
 	var out []page.Heading
 	for _, h := range selHeadings.MatchAll(doc) {
 		lvl := headingLevel(h.Data)
 		if lvl == 0 {
 			continue
 		}
-		out = append(out, page.Heading{Level: lvl, Text: collapsedText(h), ID: attr(h, "id")})
+		text := collapsedText(h)
+		id := attr(h, "id")
+		if id == "" {
+			id = minter.mint("h", h, text, "heading")
+		}
+		out = append(out, page.Heading{Level: lvl, Text: text, ID: id})
 	}
 	return out
+}
+
+// extractRegions maps the page's semantic landmarks into Region records with a
+// per-region interactive inventory (the "by-landmark" orientation). No spatial
+// data — roles/labels/counts are all computed from the node tree.
+func extractRegions(doc *html.Node, res *idResolver, minter *idMinter) []page.Region {
+	// One cheap DFS with a tag/role switch, rather than a MatchAll over a big
+	// landmark selector group — a 14-way cascadia group evaluated on every node
+	// is a page-wide cost even when there are no landmarks at all.
+	var order []*html.Node
+	roleOf := map[*html.Node]string{}
+	var scan func(*html.Node)
+	scan = func(n *html.Node) {
+		if n.Type == html.ElementNode && isLandmarkCandidate(n) {
+			if role := landmarkRole(n, res); role != "" {
+				roleOf[n] = role
+				order = append(order, n)
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			scan(c)
+		}
+	}
+	scan(doc)
+	if len(order) == 0 {
+		return nil
+	}
+	// Preallocated so &regions[i] stays valid for the regionSet ownership map.
+	regions := make([]page.Region, len(order))
+	regionSet := make(map[*html.Node]*page.Region, len(order))
+	for i, n := range order {
+		role := roleOf[n]
+		label := explicitName(n, res)
+		if label == "" {
+			label = nearestHeadingText(n)
+		}
+		regions[i] = page.Region{
+			ID:    minter.mint("rgn", n, label, role),
+			Role:  role,
+			Label: label,
+		}
+		regionSet[n] = &regions[i]
+	}
+	countRegionMembers(doc, regionSet)
+	return regions
+}
+
+// isLandmarkCandidate cheaply screens whether n could be a landmark before the
+// fuller landmarkRole check. A sectioning tag qualifies outright; any other
+// element qualifies only if it carries a landmark role attribute (one attr scan).
+func isLandmarkCandidate(n *html.Node) bool {
+	switch n.Data {
+	case "header", "footer", "nav", "main", "aside", "section", "form":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(attr(n, "role"))) {
+	case "banner", "contentinfo", "navigation", "main", "complementary", "region", "search", "form":
+		return true
+	}
+	return false
+}
+
+// landmarkRole returns n's ARIA landmark role, or "" if n is not a landmark. An
+// explicit role attribute wins. header/footer are banner/contentinfo only at the
+// top level — scoped inside article/aside/main/nav/section they are generic
+// (ARIA scoping). form and section/[role=region] are landmarks only when they
+// carry an explicit accessible name.
+func landmarkRole(n *html.Node, res *idResolver) string {
+	switch strings.ToLower(strings.TrimSpace(attr(n, "role"))) {
+	case "banner":
+		return "banner"
+	case "navigation":
+		return "navigation"
+	case "main":
+		return "main"
+	case "complementary":
+		return "complementary"
+	case "contentinfo":
+		return "contentinfo"
+	case "search":
+		return "search"
+	case "form":
+		return namedLandmark(n, res, "form")
+	case "region":
+		return namedLandmark(n, res, "region")
+	}
+	switch n.Data {
+	case "nav":
+		return "navigation"
+	case "main":
+		return "main"
+	case "aside":
+		return "complementary"
+	case "header":
+		if sectioningScoped(n) {
+			return ""
+		}
+		return "banner"
+	case "footer":
+		if sectioningScoped(n) {
+			return ""
+		}
+		return "contentinfo"
+	case "form":
+		return namedLandmark(n, res, "form")
+	case "section":
+		return namedLandmark(n, res, "region")
+	}
+	return ""
+}
+
+// namedLandmark returns role only when n has an explicit accessible name.
+func namedLandmark(n *html.Node, res *idResolver, role string) string {
+	if explicitName(n, res) != "" {
+		return role
+	}
+	return ""
+}
+
+// sectioningScoped reports whether n is nested within a sectioning element, in
+// which case a header/footer is generic rather than a banner/contentinfo landmark.
+func sectioningScoped(n *html.Node) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		switch p.Data {
+		case "article", "aside", "main", "nav", "section":
+			return true
+		}
+	}
+	return false
+}
+
+// nearestHeadingText returns the first descendant heading's text (a display-only
+// label fallback for an otherwise-unnamed landmark).
+func nearestHeadingText(n *html.Node) string {
+	if h := selHeadings.MatchFirst(n); h != nil {
+		return collapsedText(h)
+	}
+	return ""
+}
+
+// countRegionMembers tallies links/forms/headings/controls into their innermost
+// owning region in a single DFS that carries the enclosing region down the tree.
+// A node is classified against its *enclosing* region before entering its own,
+// so a landmark element counts toward its parent, never itself — nested
+// landmarks don't double-count. Matching each node against the same compiled
+// selectors the flat extractors use keeps the per-region counts definitionally
+// identical to the links/forms/controls tools, in one walk instead of four.
+func countRegionMembers(doc *html.Node, regionSet map[*html.Node]*page.Region) {
+	if len(regionSet) == 0 {
+		return
+	}
+	var walk func(n *html.Node, current *page.Region)
+	walk = func(n *html.Node, current *page.Region) {
+		if n.Type == html.ElementNode {
+			if current != nil {
+				if selAnchor.Match(n) {
+					current.Links++
+				}
+				if n.Data == "form" {
+					current.Forms++
+				}
+				if selHeadings.Match(n) {
+					current.Headings++
+				}
+				if selInteractive.Match(n) {
+					current.Controls++
+				}
+			}
+			if r := regionSet[n]; r != nil {
+				current = r // n's subtree belongs to n's own region
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c, current)
+		}
+	}
+	walk(doc, nil)
 }
 
 // extractInteractive collects the page's non-anchor interactive controls, each
@@ -241,7 +462,7 @@ func extractHeadings(doc *html.Node) []page.Heading {
 // than one sub-selector (e.g. <button onclick>) appears once (dedup by node).
 // The uniqueness index is built once (one walk) on the first control, replacing
 // a full-document query per control on control-dense pages.
-func extractInteractive(doc *html.Node) []page.Control {
+func extractInteractive(doc *html.Node, base *url.URL, res *idResolver, minter *idMinter) []page.Control {
 	var out []page.Control
 	seen := map[*html.Node]bool{}
 	var ix *selIndex
@@ -253,27 +474,111 @@ func extractInteractive(doc *html.Node) []page.Control {
 		if ix == nil {
 			ix = buildSelIndex(doc)
 		}
-		out = append(out, page.Control{
-			Text:     controlLabel(n),
+		name := accessibleName(n, res)
+		role := attr(n, "role")
+		kind := controlKind(n)
+		c := page.Control{
+			Text:     name,
 			Selector: selectorFor(ix, doc, n),
-			Kind:     controlKind(n),
-			Role:     attr(n, "role"),
-			Disabled: hasAttr(n, "disabled"),
-		})
+			ID:       minter.mint(controlPrefix(kind), n, name, role),
+			Kind:     kind,
+			Role:     role,
+		}
+		applyControlState(&c, n, base)
+		out = append(out, c)
 	}
 	return out
 }
 
-func controlLabel(n *html.Node) string {
-	if l := strings.TrimSpace(attr(n, "aria-label")); l != "" {
-		return l
-	}
-	if n.Data == "input" {
-		if v := strings.TrimSpace(attr(n, "value")); v != "" {
-			return v
+// applyControlState fills a control's ARIA/DOM-derivable state in a single pass
+// over n.Attr (control-dense pages call this per control, so it avoids the ~15
+// separate linear attribute scans a call-per-field version would cost). Tri/bi-
+// state values are "" when not applicable, so omitempty drops them for plain
+// controls.
+func applyControlState(c *page.Control, n *html.Node, base *url.URL) {
+	var ariaChecked, ariaExpanded, ariaPressed, ariaSelected, value, placeholder, href, typ string
+	var hasChecked, hasRequired, ariaRequired, invalid, disabled bool
+	for _, a := range n.Attr {
+		switch a.Key {
+		case "aria-checked":
+			ariaChecked = a.Val
+		case "aria-expanded":
+			ariaExpanded = a.Val
+		case "aria-pressed":
+			ariaPressed = a.Val
+		case "aria-selected":
+			ariaSelected = a.Val
+		case "checked":
+			hasChecked = true
+		case "required":
+			hasRequired = true
+		case "aria-required":
+			ariaRequired = strings.EqualFold(a.Val, "true")
+		case "aria-invalid":
+			invalid = !strings.EqualFold(strings.TrimSpace(a.Val), "false")
+		case "disabled":
+			disabled = true
+		case "aria-disabled":
+			if strings.EqualFold(a.Val, "true") {
+				disabled = true
+			}
+		case "value":
+			value = a.Val
+		case "placeholder":
+			placeholder = a.Val
+		case "href":
+			href = a.Val
+		case "type":
+			typ = a.Val
 		}
 	}
-	return collapsedText(n)
+	nativeChecked := hasChecked && n.Data == "input" && isCheckableType(typ)
+	c.Checked = normTristate(ariaChecked, true, nativeChecked)
+	c.Expanded = normTristate(ariaExpanded, false, false)
+	c.Pressed = normTristate(ariaPressed, true, false)
+	c.Selected = normTristate(ariaSelected, false, false)
+	c.Required = hasRequired || ariaRequired
+	c.Invalid = invalid
+	c.Disabled = disabled
+	if v := strings.TrimSpace(value); v != "" {
+		c.Value = v
+	}
+	if pl := strings.TrimSpace(placeholder); pl != "" {
+		c.Placeholder = pl
+	}
+	if h := strings.TrimSpace(href); h != "" {
+		c.Href = resolveURL(base, h)
+	}
+}
+
+// isCheckableType reports whether an input type carries a native checked state.
+func isCheckableType(typ string) bool {
+	switch strings.ToLower(typ) {
+	case "checkbox", "radio":
+		return true
+	}
+	return false
+}
+
+// controlPrefix maps a control kind to a stable-id prefix (see ADR 0008).
+func controlPrefix(kind string) string {
+	switch kind {
+	case "tab":
+		return "tab"
+	case "summary":
+		return "sum"
+	case "interactive":
+		return "el"
+	default: // button|submit|reset|role-button
+		return "btn"
+	}
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 func controlKind(n *html.Node) string {

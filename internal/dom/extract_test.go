@@ -220,3 +220,115 @@ func TestExtractControls(t *testing.T) {
 		t.Errorf("role=button control = %+v", roleBtn)
 	}
 }
+
+func TestExtractMetadata(t *testing.T) {
+	m := loadStructured(t).Meta
+	for name, got := range map[string]string{
+		"canonical":    m.Canonical,
+		"image":        m.Image,
+		"author":       m.Author,
+		"published":    m.Published,
+		"modified":     m.Modified,
+		"twitter_card": m.TwitterCard,
+		"twitter_site": m.TwitterSite,
+		"theme_color":  m.ThemeColor,
+		"favicon":      m.Favicon,
+	} {
+		if got == "" {
+			t.Errorf("%s empty", name)
+		}
+	}
+	if m.Canonical != "https://example.com/blog/post" {
+		t.Errorf("canonical = %q", m.Canonical)
+	}
+	if m.Image != "https://example.com/images/cover.png" {
+		t.Errorf("image not absolutized: %q", m.Image)
+	}
+	if m.Author != "Ada Lovelace" {
+		t.Errorf("author = %q", m.Author)
+	}
+	if m.Favicon != "https://example.com/favicon.ico" {
+		t.Errorf("favicon = %q", m.Favicon)
+	}
+}
+
+func TestExtractRegions(t *testing.T) {
+	p := loadStructured(t)
+	byRole := map[string]page.Region{}
+	for _, r := range p.Meta.Regions {
+		byRole[r.Role] = r
+		if r.ID == "" {
+			t.Errorf("region %q missing id", r.Role)
+		}
+	}
+	if len(p.Meta.Regions) != 3 {
+		t.Fatalf("regions = %d, want 3 (navigation/main/contentinfo): %+v", len(p.Meta.Regions), p.Meta.Regions)
+	}
+	if nav := byRole["navigation"]; nav.Links != 3 {
+		t.Errorf("navigation region = %+v, want 3 links", nav)
+	}
+	if main := byRole["main"]; main.Headings != 4 || main.Forms != 1 || main.Controls != 1 {
+		t.Errorf("main region = %+v, want 4 headings / 1 form / 1 control", main)
+	}
+	if foot := byRole["contentinfo"]; foot.Links != 1 {
+		t.Errorf("contentinfo region = %+v, want 1 link", foot)
+	}
+	// The unnamed <form> in <main> must NOT be promoted to a landmark.
+	if _, ok := byRole["form"]; ok {
+		t.Error("unnamed form should not be a region")
+	}
+}
+
+func TestExtractControlState(t *testing.T) {
+	p := extractInline(t, `
+		<button aria-expanded="false">Menu</button>
+		<div role="tab" tabindex="0" aria-selected="true">Tab One</div>
+		<button aria-pressed="mixed">Bold</button>
+		<span role="button" aria-label="Toggle" aria-checked="true" tabindex="0">x</span>
+		<button aria-invalid="true" aria-required="true" disabled>Broken</button>`)
+
+	byText := map[string]page.Control{}
+	for _, c := range p.Meta.Controls {
+		byText[c.Text] = c
+		if c.ID == "" {
+			t.Errorf("control %q missing id", c.Text)
+		}
+	}
+	if c := byText["Menu"]; c.Expanded != "false" {
+		t.Errorf("Menu expanded = %q, want false", c.Expanded)
+	}
+	if c := byText["Tab One"]; c.Selected != "true" || c.Kind != "tab" {
+		t.Errorf("Tab One = %+v", c)
+	}
+	if c := byText["Bold"]; c.Pressed != "mixed" {
+		t.Errorf("Bold pressed = %q, want mixed", c.Pressed)
+	}
+	if c := byText["Toggle"]; c.Checked != "true" || c.Kind != "role-button" {
+		t.Errorf("Toggle = %+v", c)
+	}
+	if c := byText["Broken"]; !c.Invalid || !c.Required || !c.Disabled {
+		t.Errorf("Broken = %+v", c)
+	}
+}
+
+func TestExtractHashIDStability(t *testing.T) {
+	id := func(p *page.Page, text string) string {
+		for _, c := range p.Meta.Controls {
+			if c.Text == text {
+				return c.ID
+			}
+		}
+		return ""
+	}
+	// Sibling reorder + unrelated class churn must not change the base id.
+	a := extractInline(t, `<main><div class="x"><button>Alpha</button><button>Beta</button></div></main>`)
+	b := extractInline(t, `<main><div class="y"><button>Beta</button><button>Alpha</button></div></main>`)
+	if idA, idB := id(a, "Alpha"), id(b, "Alpha"); idA == "" || idA != idB {
+		t.Errorf("Alpha id not stable across reorder/class change: %q vs %q", idA, idB)
+	}
+	// Renaming the accessible name changes the id.
+	c := extractInline(t, `<main><div class="x"><button>Gamma</button><button>Beta</button></div></main>`)
+	if id(c, "Gamma") == id(a, "Alpha") {
+		t.Error("renamed control kept its id")
+	}
+}

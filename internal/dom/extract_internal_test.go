@@ -11,7 +11,18 @@ import (
 	"testing"
 
 	"golang.org/x/net/html"
+
+	"github.com/christopherdavenport/unblink/internal/page"
 )
+
+func mustParse(t *testing.T, src string) *html.Node {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return doc
+}
 
 // legacySelectorFor is the pre-index implementation, verbatim.
 func legacySelectorFor(doc, n *html.Node) string {
@@ -89,5 +100,115 @@ func TestSelectorForMatchesLegacy(t *testing.T) {
 				t.Errorf("%s: selector %q does not resolve to its control", name, got)
 			}
 		}
+	}
+}
+
+func TestAccessibleName(t *testing.T) {
+	doc := mustParse(t, `<html><body>
+		<span id="lbl">Labelled By Text</span>
+		<button id="b1" aria-labelledby="lbl" aria-label="ignored">text</button>
+		<button id="b2" aria-label="Aria Label">ignored text</button>
+		<label>Wrapped <button id="b3">x</button></label>
+		<button id="b4" title="Title Text"></button>
+		<button id="b5">Just Text</button>
+	</body></html>`)
+	idx, res := buildIDIndex(doc), newIDResolver(doc)
+	for id, want := range map[string]string{
+		"b1": "Labelled By Text", // labelledby beats aria-label
+		"b2": "Aria Label",
+		"b3": "Wrapped x", // ancestor <label> text
+		"b4": "Title Text",
+		"b5": "Just Text",
+	} {
+		if got := accessibleName(idx[id], res); got != want {
+			t.Errorf("%s: name = %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestAccessibleNameCycleSafe(t *testing.T) {
+	// A self-reference and a two-node aria-labelledby cycle must terminate.
+	doc := mustParse(t, `<html><body>
+		<button id="self" aria-labelledby="self">fallback</button>
+		<span id="a" aria-labelledby="b">A</span>
+		<span id="b" aria-labelledby="a">B</span>
+	</body></html>`)
+	idx, res := buildIDIndex(doc), newIDResolver(doc)
+	if got := accessibleName(idx["self"], res); got != "fallback" {
+		t.Errorf("self-ref name = %q, want fallback", got)
+	}
+	if got := accessibleName(idx["a"], res); got != "B" {
+		t.Errorf("cycle name = %q, want B (single-level)", got)
+	}
+}
+
+func TestLandmarkRole(t *testing.T) {
+	doc := mustParse(t, `<html><body>
+		<header id="top">banner</header>
+		<nav id="nav">n</nav>
+		<main id="main">
+			<header id="scoped">article header</header>
+			<section id="unnamed"><h2>x</h2></section>
+			<section id="named" aria-label="Details"><h2>y</h2></section>
+		</main>
+		<form id="anonform"><input></form>
+		<form id="namedform" aria-label="Search"><input></form>
+		<footer id="foot">f</footer>
+	</body></html>`)
+	idx, res := buildIDIndex(doc), newIDResolver(doc)
+	for id, want := range map[string]string{
+		"top":       "banner",
+		"nav":       "navigation",
+		"main":      "main",
+		"scoped":    "", // header scoped inside <main> is generic
+		"unnamed":   "", // unnamed section is not a landmark
+		"named":     "region",
+		"anonform":  "", // unnamed form is not a landmark
+		"namedform": "form",
+		"foot":      "contentinfo",
+	} {
+		if got := landmarkRole(idx[id], res); got != want {
+			t.Errorf("%s: role = %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestHashID(t *testing.T) {
+	doc := mustParse(t, `<html><body><main><button id="x">Go</button></main></body></html>`)
+	n := buildIDIndex(doc)["x"]
+	// Deterministic: a re-parse of the same tree (a distinct node) hashes equal —
+	// hashID is a pure function of its inputs (no rand/time/global state).
+	reparsed := mustParse(t, `<html><body><main><button id="x">Go</button></main></body></html>`)
+	n2 := buildIDIndex(reparsed)["x"]
+	if a, b := hashID("btn", n, "Go", ""), hashID("btn", n2, "Go", ""); a != b {
+		t.Errorf("hashID not deterministic: %q vs %q", a, b)
+	}
+	// Identical semantic twins share a base hash; the minter appends -N.
+	doc2 := mustParse(t, `<html><body><main><button>Go</button><button>Go</button></main></body></html>`)
+	m := newIDMinter()
+	var ids []string
+	for _, b := range selInteractive.MatchAll(doc2) {
+		ids = append(ids, m.mint("btn", b, "Go", ""))
+	}
+	if len(ids) != 2 || ids[0] == ids[1] || !strings.HasSuffix(ids[1], "-2") {
+		t.Errorf("twin ids = %v, want [base, base-2]", ids)
+	}
+}
+
+func TestCountRegionMembersInnermost(t *testing.T) {
+	// A link inside nav (inside main) is owned by nav, not main; the nav element
+	// itself is owned by main. No double-counting across the nested landmarks.
+	doc := mustParse(t, `<html><body>
+		<main id="m"><nav id="n"><a href="/x">link</a></nav><a href="/y">outer</a></main>
+	</body></html>`)
+	idx := buildIDIndex(doc)
+	main := &page.Region{Role: "main"}
+	nav := &page.Region{Role: "navigation"}
+	countRegionMembers(doc, map[*html.Node]*page.Region{idx["m"]: main, idx["n"]: nav})
+	if nav.Links != 1 {
+		t.Errorf("nav.Links = %d, want 1 (inner link)", nav.Links)
+	}
+	if main.Links != 1 {
+		t.Errorf("main.Links = %d, want 1 (outer link only; nav's link owned by nav)", main.Links)
 	}
 }
