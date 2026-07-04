@@ -317,8 +317,16 @@ best-in-class third-party tooling — most usefully, ad/tracker blocking. Point
 unblink ships **no** extension code — you supply it — which keeps GPL-licensed
 extensions (uBlock Origin is GPL-3) fully separate from unblink's MIT source, the
 same way a browser loads a user-installed add-on (see
-[ADR 0010](docs/decisions/0010-webextensions-runtime-loading.md)). The recommended
-target is **uBlock Origin Lite (MV3)**. unblink currently supports:
+[ADR 0010](docs/decisions/0010-webextensions-runtime-loading.md)).
+
+**Recommended: uBlock Origin Lite (MV3).** Download `uBOLite_*.chromium.zip` from
+[uBlockOrigin/uBOL-home releases](https://github.com/uBlockOrigin/uBOL-home/releases)
+and point `--extension` at it. Its `declarativeNetRequest` rulesets (EasyList,
+EasyPrivacy, uBlock filters — ~18k rules) are evaluated by unblink directly, so it
+blocks real ad/tracker requests immediately with no in-extension filter compilation.
+(*Full* uBlock Origin — the `.xpi`/`.zip` on gorhill/uBlock — is MV2 and compiles its
+filter lists in JS, which is impractical in a pure-Go engine; Lite is the answer.)
+unblink currently supports:
 
 - **Network filtering** — an extension's `declarativeNetRequest` static rules cancel
   page-JavaScript requests to blocked ad/tracker hosts before they leave the process

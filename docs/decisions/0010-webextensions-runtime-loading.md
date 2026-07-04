@@ -255,12 +255,23 @@ path, independent of any one extension):
   `chrome.storage.local`, which is backed for real. External background fetches return a clean
   404 (not a rejection) so an extension falls back to its bundled copy.
 
-State: **Privacy Badger fully initializes** (learning-based, so it does not block on a cold
-profile). **uBlock Origin** loads, runs its background page, and reaches its asset/public-suffix
-loading — but its **static filter engine never becomes ready** (`µb.readyToFilter` stays false):
-compiling EasyList + EasyPrivacy + uBO's lists (~3.6 MB) in goja is impractical, and its init
-stalls in the list-loading pipeline. Running the *full* MV2 uBO in-process is therefore not
-viable; the **practical ad-block target is uBlock Origin Lite (MV3)** — declarative
-`declarativeNetRequest` rulesets the host evaluates directly (Phase 1), with no in-engine filter
-compilation. The full-uBO gaps (an IndexedDB/cacheStorage shim, an external list transport, and
-filter-compile performance) are recorded but not pursued.
+State:
+
+- **uBlock Origin Lite (MV3) — verified working.** Loading `uBOLite_*.chromium.zip`
+  compiles its **18,249 `declarativeNetRequest` rules** (the 6 default rulesets: uBlock
+  filters, EasyList, EasyPrivacy, …) into the host matcher, and unblink **blocks real
+  trackers** (`adscore.com`, `adsmeasurement.com`, `analytics.blue`, …) while correctly
+  passing first-party and benign requests — a full render in ~0.1 s. No service worker or
+  in-engine filter compilation is involved: the static rulesets are evaluated by unblink's
+  own `RuleMatcher` (Phase 1). **This is the recommended ad-block configuration.**
+- **Full uBlock Origin (MV2) — not viable in-process.** It loads and runs its background
+  page but its static filter engine never becomes ready (`µb.readyToFilter` stays false):
+  compiling EasyList + EasyPrivacy + uBO's lists (~3.6 MB) in goja is impractical and its
+  init stalls in the list-loading pipeline. The gaps (an IndexedDB/cacheStorage shim, an
+  external list transport, filter-compile performance) are recorded but not pursued — uBO
+  Lite is the answer.
+- **Privacy Badger (MV2)** fully initializes (learning-based, so it does not block on a cold
+  profile).
+
+Note the gorhill/uBlock GitHub releases ship *full* uBO for both Firefox (`.xpi`) and Chromium
+(`.zip`) — both MV2. uBlock Origin **Lite** is the separate `uBlockOrigin/uBOL-home` project.

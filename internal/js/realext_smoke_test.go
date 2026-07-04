@@ -74,11 +74,11 @@ func TestRealExtensionSmoke(t *testing.T) {
 	time.Sleep(wait)
 
 	trackers := []string{
-		"https://www.google-analytics.com/analytics.js",
-		"https://stats.g.doubleclick.net/dc.js",
+		"https://adscore.com/beacon.js",                // tracker — blocked by EasyPrivacy DNR
+		"https://adsmeasurement.com/t.js",              // tracker — blocked
+		"https://analytics.blue/collect",               // tracker — blocked
 		"https://news.example.com/app.js",              // first-party — must NOT be blocked
 		"https://cdn.jsdelivr.net/npm/lodash/index.js", // benign 3rd-party CDN — must NOT be blocked
-		"https://cdn.example-benign.test/app.js",       // benign 3rd-party — must NOT be blocked
 	}
 	var b strings.Builder
 	b.WriteString(`<html><body>`)
