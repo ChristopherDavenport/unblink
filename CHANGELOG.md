@@ -3,6 +3,35 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## v0.22.0 — 2026-07-04
+
+### Added
+
+- **WebExtensions runtime loading — ad/tracker blocking with real, unmodified
+  extensions ([ADR 0010](docs/decisions/0010-webextensions-runtime-loading.md)).**
+  `--extension <dir|.xpi|.crx|.zip>` and `--extensions-dir` load a user-supplied
+  browser extension at runtime — unblink ships **no** extension bytes, keeping GPL
+  tooling (uBlock Origin is GPL-3) out of the MIT tree the way a browser loads a
+  user add-on. A new pure-Go `internal/webext` package models MV2/MV3 manifests,
+  match patterns, and a tokenized no-ReDoS Adblock `urlFilter` matcher; the engine
+  surface (`internal/js/ext*.go`) provides the `chrome`/`browser` API, content
+  scripts, cosmetic filtering (element-hiding CSS → physical node removal, since
+  there is no CSSOM), a background worker + runtime messaging, static/dynamic
+  `declarativeNetRequest`, and MV2 `webRequest` blocking. **uBlock Origin Lite
+  (MV3) is verified working**: its 18,249 `declarativeNetRequest` rules compile
+  into unblink's host matcher and block real trackers (~0.1 s render, no service
+  worker); Privacy Badger fully initializes. Extensions require JavaScript
+  (rejected under `--disable-js`) and run in the same heap/byte/SSRF sandbox as
+  page JS. *Full* uBlock Origin (MV2) is not viable in-process — compiling its
+  filter lists in goja is too slow; Lite is the answer.
+- **Resource-based JavaScript budgets + concurrent module-graph warming
+  ([ADR 0009](docs/decisions/0009-resource-based-js-budgets.md)).** A per-render /
+  per-dispatch **byte** budget (`--js-max-bytes`, default 64 MiB) replaces the
+  fixed request-count cap (now an off-by-default backstop, `--js-max-requests`)
+  and the removed live-session rate window. Concurrent `<link rel=modulepreload>`
+  warming loads a code-split SPA's serial `import()` graph as cache hits — adding
+  no async primitive, so the provable-idle settle invariant (ADR 0004) still holds.
+
 ## v0.21.0 — 2026-07-04
 
 ### Added
