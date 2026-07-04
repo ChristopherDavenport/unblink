@@ -189,7 +189,30 @@ results rather than logged away.
 | `data`        | `{ url?, session?, use_current?, kind? }`          | Machine-readable structured data embedded in a page: JSON-LD (schema.org), HTML data tables (caption/headers/rows), and microdata (itemscope/itemprop). `kind` selects `jsonld`, `tables`, `microdata`, or `all` (default). HTML only. *(Tables: colspan and rowspan are expanded onto the real grid; microdata `itemref` unsupported; JSON-LD `@graph` is flattened. `raw_html` returns source with relative URLs left as-is.)* |
 | `session`     | `{ action: new\|list\|state\|history\|back\|forward\|close, session?, url?, headers?, cookies?, auth? }` | Manage a session's lifecycle and navigation. `new` accepts `url` + `headers`/`cookies`/`auth` to attach credentials for that origin (see [Authentication](#authentication)); re-creating a live id with new credentials errors (close it first). `list` returns every live session's state (including `live_js`, whether a persistent runtime is attached). |
 | `map`         | `{ url, max_urls?, max_depth? }`                   | Discover a site's URLs: harvests sitemap.xml (robots.txt + `/sitemap.xml`, following sitemap indexes) and crawls same-origin links breadth-first from the seed. Returns a bounded, de-duplicated list tagged `source=sitemap\|crawl` with depth. Exposure-grade — surfaces robots.txt but never gates on it. Send an MCP progress token (`_meta.progressToken`) to stream progress while the walk (up to 60s) runs. |
-| `search`      | `{ query, count?, site? }`                         | Web search via the configured provider (SearXNG or Brave): ranked results (title, url, snippet). `site` restricts to one domain. Requires `--search-provider` (see [Search](#search)); errors cleanly otherwise. |
+| `search`      | `{ query, count?, site? }`                         | Web search via the configured provider (SearXNG or Brave): ranked results (title, url, snippet). `site` restricts to one domain. Requires `--search-provider` (see [Search](#search)); not exposed otherwise. |
+
+### Tool selection
+
+Every tool the server advertises costs the model context on each turn, so unblink
+exposes only tools that can actually do something, and lets you narrow that further:
+
+- **Unusable tools are hidden automatically.** `search` isn't exposed without a
+  `--search-provider`, and `interact` isn't exposed under `--disable-js` — a tool
+  that could only return an error is noise in the tool list.
+- **Pick a subset with `--tools`.** Pass a comma-separated list of tool names
+  and/or presets. Presets: `core` (`read`, `browse`, `find`), `read-only` (every
+  read-only tool — no sessions, navigation, or form/interaction writes), and
+  `full` (everything, the default). `--disable-tools` subtracts from the set.
+
+```sh
+./bin/unblink --tools core                 # minimal reading surface: read, browse, find
+./bin/unblink --tools read-only            # all read-only tools, no state changes
+./bin/unblink --tools core,data            # a preset plus an extra tool
+./bin/unblink --disable-tools map,search   # everything except these
+```
+
+A tool named explicitly that can't run (e.g. `--tools interact` with `--disable-js`)
+is dropped with a stderr warning; unknown names are ignored with a warning.
 
 ### Authentication
 
@@ -231,8 +254,9 @@ point it at a provider, so it never reaches an external service by default:
 UNBLINK_SEARCH_API_KEY=… ./bin/unblink --search-provider=brave
 ```
 
-Without `--search-provider` the tool is still listed but returns a clean "not
-configured" error. The API key is read only from `UNBLINK_SEARCH_API_KEY`, sent
+Without `--search-provider` the `search` tool isn't exposed at all (a tool that
+could only return "not configured" is context cost with no value — see
+[Tool selection](#tool-selection)). The API key is read only from `UNBLINK_SEARCH_API_KEY`, sent
 only as a request header, and never logged. Search only queries the provider —
 result URLs are fetched later by `read`/`browse` through the SSRF-guarded path.
 
@@ -303,6 +327,8 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 | `--session-cap` | `256` | Max concurrent sessions (oldest evicted on overflow). |
 | `--search-provider` | none | Web-search backend for the `search` tool: `searxng` or `brave` (empty disables it). |
 | `--search-endpoint` | none | Search endpoint URL (SearXNG base URL; optional Brave override). API key comes from `UNBLINK_SEARCH_API_KEY`. |
+| `--tools` | all | Limit the exposed tools to a comma-separated list of tool names and/or presets (`core`, `read-only`, `full`). Empty exposes every usable tool. |
+| `--disable-tools` | none | Remove tools from the exposed set (comma-separated names/presets), applied after `--tools`. |
 
 ## License
 

@@ -150,7 +150,7 @@ func newWorld(ctx context.Context, host http.Handler, bopts []browser.Option, sa
 	if err != nil {
 		return nil, fmt.Errorf("browser.New: %w", err)
 	}
-	s := mcpserver.New(b, safe)
+	s := mcpserver.New(b, mcpserver.Config{SafeOutput: safe, JSEnabled: true, SearchEnabled: true})
 
 	st, ct := mcp.NewInMemoryTransports()
 	ss, err := s.Connect(ctx, st)

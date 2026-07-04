@@ -40,7 +40,7 @@ func TestMapProgressNotifications(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	s := New(b, false)
+	s := New(b, Config{JSEnabled: true, SearchEnabled: true})
 
 	ctx := context.Background()
 	st, ct := mcp.NewInMemoryTransports()

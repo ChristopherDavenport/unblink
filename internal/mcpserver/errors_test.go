@@ -35,7 +35,7 @@ func TestToolAnnotations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	s := New(b, true)
+	s := New(b, Config{SafeOutput: true, JSEnabled: true, SearchEnabled: true})
 
 	ctx := context.Background()
 	st, ct := mcp.NewInMemoryTransports()
