@@ -162,6 +162,12 @@ type bridge struct {
 	// loaded. The subrequest network gate (blockingTransport) is wired from it.
 	extHost *ExtensionHost
 
+	// cosmeticSelectors are element-hiding selectors gathered from loaded extensions'
+	// content-script CSS (and injected styles); seenCosmetic de-dupes them. Applied as
+	// physical node detachment once the DOM is frozen (no CSSOM). nil without an extension.
+	cosmeticSelectors []string
+	seenCosmetic      map[string]bool
+
 	// dynSem bounds how many runtime dynamic import() chunks fetch+bundle off-loop
 	// at once, so a page firing hundreds of concurrent import()s can't spawn an
 	// unbounded number of esbuild builds. Buffered to dynImportConcurrency.
@@ -271,6 +277,9 @@ func (b *bridge) install() {
 	b.installAsync()
 	b.installDynamicImport()
 	b.installSubtle()
+	if b.extHost != nil {
+		b.installExtensionAPI(win)
+	}
 	b.trackRejections()
 }
 

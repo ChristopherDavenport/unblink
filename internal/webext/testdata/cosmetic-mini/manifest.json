@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "version": "1.0",
+  "default_locale": "en",
+  "content_scripts": [
+    {
+      "matches": ["*://*.example.com/*"],
+      "exclude_matches": ["*://noads.example.com/*"],
+      "css": ["hide.css"],
+      "js": ["cs.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

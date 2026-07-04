@@ -1,0 +1,7 @@
+{
+  "extName": { "message": "Cosmetic Mini" },
+  "greeting": {
+    "message": "Hello $USER$",
+    "placeholders": { "user": { "content": "$1" } }
+  }
+}

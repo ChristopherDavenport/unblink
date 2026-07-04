@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"path"
 	"strings"
 )
@@ -18,6 +19,32 @@ type Bundle struct {
 	FS       fs.FS
 	BaseURL  string       // "chrome-extension://<id>/"
 	Net      *RuleMatcher // compiled static declarativeNetRequest rulesets (never nil)
+	Locales  *Locales     // default-locale messages for i18n / __MSG__ substitution
+}
+
+// ContentScriptsFor returns the content scripts that should run on u, in manifest
+// order.
+func (b *Bundle) ContentScriptsFor(u *url.URL) []ContentScript {
+	if b.Manifest == nil {
+		return nil
+	}
+	var out []ContentScript
+	for _, cs := range b.Manifest.ContentScripts {
+		if cs.MatchesURL(u) {
+			out = append(out, cs)
+		}
+	}
+	return out
+}
+
+// ReadResource reads an extension-relative file (a content-script JS/CSS path) through
+// the bundle's filesystem view, rejecting paths that escape the extension root.
+func (b *Bundle) ReadResource(p string) ([]byte, error) {
+	rel := cleanRel(p)
+	if rel == "" {
+		return nil, fmt.Errorf("webext: invalid resource path %q", p)
+	}
+	return fs.ReadFile(b.FS, rel)
 }
 
 // buildBundle assembles a Bundle from a parsed manifest and its file view, compiling
@@ -54,6 +81,7 @@ func buildBundle(m *Manifest, fsys fs.FS) (*Bundle, error) {
 		return nil, err
 	}
 	b.Net = nm
+	b.Locales = loadLocales(fsys, m.DefaultLocale)
 	return b, nil
 }
 

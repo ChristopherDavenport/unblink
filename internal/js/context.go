@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/christopherdavenport/unblink/internal/webext"
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/eventloop"
 	"golang.org/x/net/html"
@@ -119,11 +120,17 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.startModulePreload(doc) // warm the modulepreload chunk graph concurrently
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
+		// Extension content scripts share the page world (ADR 0010): gather hiding CSS
+		// once, then inject JS at each run_at around the page's own scripts.
+		b.injectContentScriptCSS()
+		b.injectContentScripts(webext.RunAtStart)
 		b.runScripts(scripts)
 		if len(modules) > 0 {
 			b.runModules(modules, parseImportMap(doc))
 		}
+		b.injectContentScripts(webext.RunAtEnd)
 		b.fireLifecycle()
+		b.injectContentScripts(webext.RunAtIdle)
 		if env.Diag != nil {
 			*env.Diag = b.collectDiagnostics()
 			b.fillCaptureLogs(env.Diag) // best-effort: the request/console log so far
@@ -179,6 +186,9 @@ func (c *Context) Snapshot(ctx context.Context) ([]byte, uint64, error) {
 			// snapshot shows what a browser would render. Clone-based: the live tree
 			// keeps its separate shadow subtrees intact for the next Dispatch.
 			root = c.bridge.flattenCloneDoc()
+			// Detach extension-hidden ad markup from the clone (the live tree keeps it,
+			// so a later Dispatch still sees the real DOM).
+			c.bridge.applyCosmeticFilters(root)
 			ver = c.bridge.domVersion
 		}
 		out = []byte(outerHTML(root))

@@ -1,0 +1,332 @@
+package js
+
+import (
+	"github.com/christopherdavenport/unblink/internal/webext"
+	"github.com/dop251/goja"
+)
+
+// installExtensionAPI installs the chrome / browser namespace that content scripts
+// (and, later, the background worker) call. Everything is a Go closure because each
+// method touches host state — storage, the cosmetic buffer, the loaded manifest. With
+// unblink's same-world content-script model there is one shared chrome object bound to
+// the "active" extension (ADR 0010); a no-op or accept-and-ignore stub is provided for
+// the UI/eventing surface unblink has no equivalent for, so an extension's init code
+// runs instead of throwing. Guarded by b.extHost != nil in install().
+func (b *bridge) installExtensionAPI(win *goja.Object) {
+	vm := b.vm
+	active := b.extHost.activeBundleFor(b.base)
+	if active == nil {
+		return
+	}
+	chrome := vm.NewObject()
+
+	// --- chrome.runtime ---
+	runtime := vm.NewObject()
+	_ = runtime.Set("id", active.ID)
+	getURL := func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(active.BaseURL + trimLeadingSlash(call.Argument(0).String()))
+	}
+	_ = runtime.Set("getURL", getURL)
+	_ = runtime.Set("getManifest", func(goja.FunctionCall) goja.Value {
+		m := vm.NewObject()
+		if man := active.Manifest; man != nil {
+			_ = m.Set("manifest_version", man.ManifestVersion)
+			_ = m.Set("name", active.Locales.Substitute(man.Name))
+			_ = m.Set("version", man.Version)
+			_ = m.Set("description", active.Locales.Substitute(man.Description))
+		}
+		return m
+	})
+	_ = runtime.Set("getPlatformInfo", func(call goja.FunctionCall) goja.Value {
+		info := vm.NewObject()
+		_ = info.Set("os", "linux")
+		_ = info.Set("arch", "x86-64")
+		return b.apiReturn(call, info)
+	})
+	// No background worker yet (Phase 3): messaging has no responder, so sendMessage
+	// resolves undefined and the message events never fire.
+	_ = runtime.Set("sendMessage", func(call goja.FunctionCall) goja.Value {
+		return b.apiReturn(call, goja.Undefined())
+	})
+	_ = runtime.Set("connect", func(goja.FunctionCall) goja.Value { return b.newPortStub() })
+	_ = runtime.Set("onMessage", b.newEventStub())
+	_ = runtime.Set("onConnect", b.newEventStub())
+	_ = runtime.Set("onInstalled", b.newEventStub())
+	_ = runtime.Set("onStartup", b.newEventStub())
+	_ = runtime.Set("lastError", goja.Undefined())
+	_ = chrome.Set("runtime", runtime)
+
+	// --- chrome.i18n ---
+	i18n := vm.NewObject()
+	_ = i18n.Set("getMessage", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(active.Locales.GetSub(call.Argument(0).String(), toStringSlice(call.Argument(1))))
+	})
+	_ = i18n.Set("getUILanguage", func(goja.FunctionCall) goja.Value { return vm.ToValue("en-US") })
+	_ = i18n.Set("getAcceptLanguages", func(call goja.FunctionCall) goja.Value {
+		return b.apiReturn(call, vm.ToValue([]string{"en-US", "en"}))
+	})
+	_ = chrome.Set("i18n", i18n)
+
+	// --- chrome.extension (legacy aliases) ---
+	ext := vm.NewObject()
+	_ = ext.Set("getURL", getURL)
+	_ = ext.Set("inIncognitoContext", false)
+	_ = chrome.Set("extension", ext)
+
+	// --- chrome.storage ---
+	storage := vm.NewObject()
+	for _, area := range []string{"local", "session", "sync", "managed"} {
+		_ = storage.Set(area, b.newStorageArea(active.ID, area))
+	}
+	_ = storage.Set("onChanged", b.newEventStub())
+	_ = chrome.Set("storage", storage)
+
+	// --- chrome.scripting (insertCSS feeds the cosmetic pass) ---
+	scripting := vm.NewObject()
+	_ = scripting.Set("insertCSS", func(call goja.FunctionCall) goja.Value {
+		if o, ok := call.Argument(0).(*goja.Object); ok {
+			b.captureInsertCSS(o, active)
+		}
+		return b.apiReturn(call, goja.Undefined())
+	})
+	_ = scripting.Set("removeCSS", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	_ = scripting.Set("executeScript", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue([]any{})) })
+	_ = scripting.Set("registerContentScripts", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	_ = chrome.Set("scripting", scripting)
+
+	// --- chrome.tabs (single synthetic tab) ---
+	tabs := vm.NewObject()
+	tabObj := func() *goja.Object {
+		o := vm.NewObject()
+		_ = o.Set("id", 1)
+		_ = o.Set("active", true)
+		if b.base != nil {
+			_ = o.Set("url", b.base.String())
+		}
+		return o
+	}
+	_ = tabs.Set("query", func(call goja.FunctionCall) goja.Value {
+		return b.apiReturn(call, vm.ToValue([]any{tabObj()}))
+	})
+	_ = tabs.Set("get", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, tabObj()) })
+	_ = tabs.Set("sendMessage", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	_ = tabs.Set("insertCSS", func(call goja.FunctionCall) goja.Value {
+		for _, a := range call.Arguments {
+			if o, ok := a.(*goja.Object); ok {
+				b.captureInsertCSS(o, active)
+			}
+		}
+		return b.apiReturn(call, goja.Undefined())
+	})
+	_ = tabs.Set("onUpdated", b.newEventStub())
+	_ = tabs.Set("onRemoved", b.newEventStub())
+	_ = chrome.Set("tabs", tabs)
+
+	// --- chrome.action / browserAction (accept-and-ignore) ---
+	action := b.newActionStub()
+	_ = chrome.Set("action", action)
+	_ = chrome.Set("browserAction", action)
+
+	// --- chrome.permissions (declared permissions are granted) ---
+	perms := vm.NewObject()
+	_ = perms.Set("contains", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue(true)) })
+	_ = perms.Set("request", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue(true)) })
+	_ = perms.Set("getAll", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.NewObject()) })
+	_ = perms.Set("onAdded", b.newEventStub())
+	_ = perms.Set("onRemoved", b.newEventStub())
+	_ = chrome.Set("permissions", perms)
+
+	// --- chrome.declarativeNetRequest (dynamic rules are Phase 4; static rules are
+	//     enforced host-side already) ---
+	dnr := vm.NewObject()
+	_ = dnr.Set("updateDynamicRules", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	_ = dnr.Set("updateSessionRules", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	_ = dnr.Set("getDynamicRules", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue([]any{})) })
+	_ = dnr.Set("getSessionRules", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue([]any{})) })
+	_ = dnr.Set("updateEnabledRulesets", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	_ = dnr.Set("isRegexSupported", func(call goja.FunctionCall) goja.Value {
+		o := vm.NewObject()
+		_ = o.Set("isSupported", true)
+		return b.apiReturn(call, o)
+	})
+	_ = chrome.Set("declarativeNetRequest", dnr)
+
+	// --- niche event/UI namespaces: inert stubs so init code doesn't throw ---
+	for _, ns := range []string{"alarms", "contextMenus", "notifications", "webNavigation", "webRequest", "commands", "idle"} {
+		_ = chrome.Set(ns, b.newNamespaceStub())
+	}
+
+	_ = vm.Set("chrome", chrome)
+	_ = vm.Set("browser", chrome) // Firefox alias
+}
+
+// apiReturn supports both the MV2 callback and MV3 promise forms: it invokes a
+// trailing function argument (if any) with result and returns a resolved promise of
+// result. Resolving synchronously keeps the settle audit intact — the .then job runs
+// on goja's tracked microtask queue, introducing no new async primitive (ADR 0004).
+func (b *bridge) apiReturn(call goja.FunctionCall, result goja.Value) goja.Value {
+	if n := len(call.Arguments); n > 0 {
+		if fn, ok := goja.AssertFunction(call.Argument(n - 1)); ok {
+			_, _ = fn(goja.Undefined(), result)
+		}
+	}
+	promise, resolve, _ := b.vm.NewPromise()
+	_ = resolve(result)
+	return b.vm.ToValue(promise)
+}
+
+// newEventStub returns an addListener/removeListener/hasListener event object whose
+// listeners never fire (no background/eventing surface until later phases).
+func (b *bridge) newEventStub() *goja.Object {
+	o := b.vm.NewObject()
+	_ = o.Set("addListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = o.Set("removeListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = o.Set("hasListener", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
+	return o
+}
+
+// newPortStub returns an inert runtime.Port (no background worker to connect to yet).
+func (b *bridge) newPortStub() *goja.Object {
+	o := b.vm.NewObject()
+	_ = o.Set("name", "")
+	_ = o.Set("postMessage", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = o.Set("disconnect", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = o.Set("onMessage", b.newEventStub())
+	_ = o.Set("onDisconnect", b.newEventStub())
+	return o
+}
+
+// newActionStub returns an accept-and-ignore browser action (no toolbar UI).
+func (b *bridge) newActionStub() *goja.Object {
+	o := b.vm.NewObject()
+	for _, m := range []string{"setIcon", "setBadgeText", "setBadgeBackgroundColor", "setTitle", "setPopup", "enable", "disable", "setBadgeTextColor"} {
+		_ = o.Set(m, func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	}
+	_ = o.Set("onClicked", b.newEventStub())
+	return o
+}
+
+// newNamespaceStub returns a permissive object: reading any property yields another
+// callable/event-ish stub, so an extension poking at an unimplemented namespace gets
+// inert behavior instead of a TypeError.
+func (b *bridge) newNamespaceStub() *goja.Object {
+	o := b.vm.NewObject()
+	_ = o.Set("addListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = o.Set("removeListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = o.Set("create", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	_ = o.Set("clear", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, goja.Undefined()) })
+	_ = o.Set("onAlarm", b.newEventStub())
+	_ = o.Set("onClicked", b.newEventStub())
+	_ = o.Set("onBeforeRequest", b.newEventStub())
+	_ = o.Set("onCompleted", b.newEventStub())
+	return o
+}
+
+// newStorageArea builds a chrome.storage area (get/set/remove/clear/getBytesInUse) over
+// the host's shared in-memory store, scoped to this extension + area.
+func (b *bridge) newStorageArea(extID, area string) *goja.Object {
+	vm := b.vm
+	prefix := extID + "\x00" + area + "\x00"
+	st := b.extHost.storage
+	o := vm.NewObject()
+	_ = o.Set("get", func(call goja.FunctionCall) goja.Value {
+		keys, all, defaults := storageKeys(call.Argument(0))
+		res := st.get(prefix, keys, all)
+		for k, v := range defaults { // fill declared defaults for missing keys
+			if _, ok := res[k]; !ok {
+				res[k] = v
+			}
+		}
+		return b.apiReturn(call, vm.ToValue(res))
+	})
+	_ = o.Set("set", func(call goja.FunctionCall) goja.Value {
+		if o, ok := call.Argument(0).(*goja.Object); ok {
+			kv := map[string]any{}
+			for _, k := range o.Keys() {
+				kv[k] = o.Get(k).Export()
+			}
+			st.set(prefix, kv)
+		}
+		return b.apiReturn(call, goja.Undefined())
+	})
+	_ = o.Set("remove", func(call goja.FunctionCall) goja.Value {
+		st.remove(prefix, toStringSlice(call.Argument(0)))
+		return b.apiReturn(call, goja.Undefined())
+	})
+	_ = o.Set("clear", func(call goja.FunctionCall) goja.Value {
+		st.clear(prefix)
+		return b.apiReturn(call, goja.Undefined())
+	})
+	_ = o.Set("getBytesInUse", func(call goja.FunctionCall) goja.Value { return b.apiReturn(call, vm.ToValue(0)) })
+	_ = o.Set("onChanged", b.newEventStub())
+	return o
+}
+
+// captureInsertCSS pulls CSS text from a scripting/tabs insertCSS details object
+// (inline `css`/`code`, or `files`/`file` read from the extension) into the cosmetic
+// buffer, so injected element-hiding stylesheets remove nodes at extraction time.
+func (b *bridge) captureInsertCSS(details *goja.Object, active *webext.Bundle) {
+	if v := details.Get("css"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+		b.addCosmeticCSS(active.Locales.Substitute(v.String()))
+	}
+	if v := details.Get("code"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+		b.addCosmeticCSS(active.Locales.Substitute(v.String()))
+	}
+	for _, key := range []string{"files", "file"} {
+		for _, f := range toStringSlice(details.Get(key)) {
+			if data, err := active.ReadResource(f); err == nil {
+				b.addCosmeticCSS(active.Locales.Substitute(string(data)))
+			}
+		}
+	}
+}
+
+// storageKeys interprets a chrome.storage.get argument: null/undefined → all keys; a
+// string or array → those keys; an object → its keys, with the object's values as
+// defaults for missing entries.
+func storageKeys(v goja.Value) (keys []string, all bool, defaults map[string]any) {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return nil, true, nil
+	}
+	if o, ok := v.(*goja.Object); ok {
+		if _, isArr := o.Export().([]any); !isArr {
+			defaults = map[string]any{}
+			for _, k := range o.Keys() {
+				keys = append(keys, k)
+				defaults[k] = o.Get(k).Export()
+			}
+			return keys, false, defaults
+		}
+	}
+	return toStringSlice(v), false, nil
+}
+
+// toStringSlice normalizes a goja value that may be a string, an array of strings, or
+// absent into a []string.
+func toStringSlice(v goja.Value) []string {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return nil
+	}
+	switch e := v.Export().(type) {
+	case string:
+		return []string{e}
+	case []any:
+		out := make([]string, 0, len(e))
+		for _, x := range e {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return e
+	}
+	return nil
+}
+
+func trimLeadingSlash(s string) string {
+	for len(s) > 0 && s[0] == '/' {
+		s = s[1:]
+	}
+	return s
+}

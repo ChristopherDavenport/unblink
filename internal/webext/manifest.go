@@ -15,6 +15,7 @@ package webext
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 )
 
 // Manifest is the parsed, normalized subset of an extension's manifest.json. It spans
@@ -67,6 +68,37 @@ type ContentScript struct {
 	RunAt          RunAt
 	AllFrames      bool
 	World          string // "ISOLATED" (default) or "MAIN"
+}
+
+// MatchesURL reports whether this content script should run on u: at least one
+// Matches pattern matches, no ExcludeMatches does, and the include/exclude globs (if
+// any) are satisfied against the full URL string.
+func (cs ContentScript) MatchesURL(u *url.URL) bool {
+	if !anyPatternMatch(cs.Matches, u) || anyPatternMatch(cs.ExcludeMatches, u) {
+		return false
+	}
+	if len(cs.IncludeGlobs) > 0 && !anyGlobMatch(cs.IncludeGlobs, u.String()) {
+		return false
+	}
+	return !anyGlobMatch(cs.ExcludeGlobs, u.String())
+}
+
+func anyPatternMatch(ps []MatchPattern, u *url.URL) bool {
+	for _, p := range ps {
+		if p.Matches(u) {
+			return true
+		}
+	}
+	return false
+}
+
+func anyGlobMatch(gs []Glob, s string) bool {
+	for _, g := range gs {
+		if g.Matches(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // WebAccessibleResource is one web_accessible_resources entry. MV2's flat glob array

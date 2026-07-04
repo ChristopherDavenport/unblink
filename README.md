@@ -318,13 +318,22 @@ unblink ships **no** extension code — you supply it — which keeps GPL-licens
 extensions (uBlock Origin is GPL-3) fully separate from unblink's MIT source, the
 same way a browser loads a user-installed add-on (see
 [ADR 0010](docs/decisions/0010-webextensions-runtime-loading.md)). The recommended
-target is **uBlock Origin Lite (MV3)**. Today unblink honors an extension's
-`declarativeNetRequest` static rules: page-JavaScript requests to blocked ad/tracker
-hosts are cancelled before they leave the process (visible in the `requests` tool as
-blocked). Extensions require the JavaScript engine (they are rejected under
-`--disable-js`); extension JS runs in the same sandbox as page JS (heap/byte/SSRF
-guards apply). Cosmetic filtering and the fuller `chrome`/`browser` API surface are
-planned follow-ups.
+target is **uBlock Origin Lite (MV3)**. unblink currently supports:
+
+- **Network filtering** — an extension's `declarativeNetRequest` static rules cancel
+  page-JavaScript requests to blocked ad/tracker hosts before they leave the process
+  (visible in the `requests` tool as blocked).
+- **Cosmetic filtering** — element-hiding CSS (content-script stylesheets / `insertCSS`)
+  removes ad *markup* from the extracted Markdown (unblink has no CSSOM, so a
+  `display:none` rule becomes physical node removal).
+- **Content scripts** — an extension's `content_scripts` JS/CSS is injected into
+  matching pages, with a `chrome`/`browser` API surface (`runtime`, `i18n`, `storage`,
+  `scripting`, `tabs`, …).
+
+Extensions require the JavaScript engine (they are rejected under `--disable-js`);
+extension JS runs in the same sandbox as page JS (heap/byte/SSRF guards apply). The
+background service worker + messaging, storage persistence, and MV2 `webRequest` (what
+uBlock Origin's *dynamic* cosmetic filtering needs) are in-progress follow-ups.
 
 ## Configuration
 

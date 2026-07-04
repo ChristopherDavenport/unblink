@@ -701,6 +701,24 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   end-to-end blocked fetch), `internal/browser/extensions_test.go` (wiring + the `--disable-js`
   rejection).
 
+- **WebExtensions — content scripts, `chrome` API, cosmetic filtering (Phase 2, ADR 0010).** ✅
+  Adds the surface that lets an extension *modify the page*. `content_scripts` JS/CSS matching the
+  page are injected at their `run_at` (document_start/end/idle) around the page's own scripts, in
+  one-shot renders and live sessions (`internal/js/contentscript.go`, wired in `engine.go`/`context.go`).
+  The `chrome`/`browser` namespace (`internal/js/extapi.go`) is installed as Go closures — `runtime`
+  (getURL/id/getManifest + message/port stubs), `i18n.getMessage` from `_locales`, in-memory
+  `storage`, `scripting.insertCSS`, a synthetic `tabs`, and accept-and-ignore UI/eventing stubs —
+  supporting both the MV2-callback and MV3-promise forms (synchronous resolve keeps the ADR-0004
+  settle audit intact). **Cosmetic filtering** (`internal/js/cosmetic.go`) is the key lever: with no
+  CSSOM, element-hiding CSS is translated into *physical node removal* — matched ad markup is
+  detached from the frozen tree post-Terminate (one-shot) / on the snapshot clone (live), invisible
+  to page JS. Content scripts run **same-world** (one JS global + `chrome`; true isolated worlds are
+  Phase 5), and a script-less page now still renders when an extension is loaded. Nets:
+  `internal/webext/i18n_test.go`, `internal/js/cosmetic_internal_test.go` (+ `FuzzHidingSelectors`),
+  `internal/js/contentscript_test.go` (end-to-end cosmetic strip + content-script i18n/DOM edit).
+  Deferred to Phase 3+ (what uBlock Origin's *dynamic* cosmetics need): the background service worker
+  + messaging, storage persistence + onChanged, and MV2 webRequest.
+
 Permanent JS non-goals (still no layout engine): a real layout/geometry engine,
 canvas/WebGL, Workers/WebSocket/IndexedDB. **Element** geometry and CSSOM are
 **honest constant stubs** — `getBoundingClientRect`/`offset*`/`getComputedStyle`

@@ -94,3 +94,35 @@ true isolated worlds are likewise deferred and will be recorded when built.
 - Cosmetic filtering, the `chrome`/`browser` API surface, the background worker, and
   full uBlock Origin compatibility remain future phases; this ADR is amended as each
   lands.
+
+## Amendment — Phase 2: content scripts, `chrome` API, cosmetic filtering
+
+Adds the parts of the surface that let an extension *modify the page*, not just block
+requests:
+
+- **Content scripts** (`content_scripts[].js`/`.css`) matching the page are injected
+  around the page's own scripts at their `run_at` (document_start/end/idle), in both
+  one-shot renders and live sessions.
+- **The `chrome`/`browser` API** is installed as Go closures (`internal/js/extapi.go`):
+  `runtime` (getURL/id/getManifest; message/port stubs — no responder until the
+  background worker exists), `i18n.getMessage` from `_locales`, `storage`
+  (local/session/sync/managed — in-memory, shared per process; disk persistence is
+  Phase 3), `scripting.insertCSS`, a single-synthetic-tab `tabs`, and accept-and-ignore
+  stubs for the UI/eventing surface (`action`, `permissions`→granted, alarms, …) so an
+  extension's init runs instead of throwing. Methods support both the MV2 callback and
+  MV3 promise forms; resolving synchronously keeps the ADR-0004 settle audit intact.
+- **Cosmetic filtering.** There is no CSSOM, so element-hiding CSS (content-script CSS +
+  `insertCSS`) is translated into **physical node removal**: the hidden ad markup is
+  detached from the frozen tree post-Terminate (one-shot) / on the snapshot clone (live),
+  invisible to page JS — mirroring how CSS hiding fires no mutation events. Because
+  unblink emits Markdown and never fetches images, this DOM-stripping is the biggest
+  output-quality lever.
+- **Same-world simplification** (deferred true isolation to Phase 5): content scripts run
+  in the page's single JS global with `chrome` added, which the page can see; the shared
+  `chrome` binds to one "active" extension (the first with a content script matching the
+  page). A script-less page now still gets a render when an extension is loaded (its
+  content scripts must run) — a browser does the same.
+
+Still deferred to Phase 3+: the background service worker + `runtime` messaging (settle
+via the `pending` bracket), storage persistence + `onChanged`, and MV2 `webRequest` — the
+parts uBlock Origin's *dynamic* cosmetic filtering depends on.

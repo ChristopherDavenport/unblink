@@ -197,9 +197,11 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	}
 	scripts := collectScripts(doc)
 	modules := collectModuleScripts(doc)
-	if len(scripts) == 0 && len(modules) == 0 {
+	if len(scripts) == 0 && len(modules) == 0 && e.extHost == nil {
 		return nil // nothing to run; leave the tree untouched
 	}
+	// With an extension loaded, even a script-less page needs a render: its content
+	// scripts must run and its cosmetic rules must be applied (a browser does the same).
 
 	// Bound concurrency (each render holds a runtime's worth of memory).
 	select {
@@ -268,11 +270,17 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
 		setupDone = time.Now()
+		// Extension content scripts share the page world (ADR 0010). Gather their
+		// hiding CSS once, then inject JS at each run_at around the page's own scripts.
+		b.injectContentScriptCSS()
+		b.injectContentScripts(webext.RunAtStart)
 		b.runScripts(scripts)
 		if len(modules) > 0 {
 			b.runModules(modules, parseImportMap(doc))
 		}
+		b.injectContentScripts(webext.RunAtEnd)
 		b.fireLifecycle()
+		b.injectContentScripts(webext.RunAtIdle)
 		execDone = time.Now()
 		if env.Diag != nil {
 			*env.Diag = b.collectDiagnostics()
@@ -320,6 +328,10 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	// this may splice destructively into doc.
 	if b != nil {
 		b.ComposeShadowInto(doc)
+		// Cosmetic filtering: detach extension-hidden ad markup from the frozen tree so
+		// it never reaches the Markdown. Post-Terminate (like shadow composition) means
+		// page JS never observes the removal — mirroring CSS hiding's lack of events.
+		b.applyCosmeticFilters(doc)
 	}
 	if env.Diag != nil {
 		// Timing: a wedged script can leave setupDone/execDone unset; attribute the
