@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -20,36 +19,45 @@ import (
 // guardedTransport implements js.Transport for in-page JavaScript requests
 // (external scripts, fetch, XHR). It shares the page client's cookie jar, blocks
 // requests to private/loopback/metadata addresses (SSRF guard, via the underlying
-// client's dial control), and enforces a per-render request budget.
+// client's dial control), and enforces the per-render/per-dispatch download budget.
 type guardedTransport struct {
 	client *fetch.Client
-	max    int32 // monotonic per-render cap (one-shot); 0 = no per-render cap
-	count  int32
-	denied int32 // requests rejected by the budget/window caps, for render diagnostics
 
-	// Rolling fixed-window cap for persistent (live) sessions, where a monotonic
-	// per-render count doesn't fit: at most windowMax requests per window. Bounds
-	// slow exfiltration/scan by a long-lived page without a hard lifetime cap.
-	windowMax int
-	window    time.Duration
-	mu        sync.Mutex
-	winStart  time.Time
-	winCount  int
+	// maxBytes is the cumulative downloaded-bytes budget — per render for a
+	// one-shot, per dispatch for a live session (reset by ResetBudget). 0 = off.
+	// This is the real per-render network bound; the wall-clock render budget is
+	// the time bound.
+	maxBytes int64
+	bytes    atomic.Int64
+
+	// max is an optional monotonic request-count cap — a runaway backstop for a
+	// page firing many tiny/zero-byte requests the byte budget can't see. 0 = off
+	// (the default); the byte budget + wall-clock are the primary bounds.
+	max   int32
+	count atomic.Int32
+
+	denied atomic.Int32 // requests rejected by the caps, for render diagnostics
 }
 
-// Do enforces the request budget and forwards to the guarded fetch client.
+// Do enforces the download/count budget and forwards to the guarded fetch client.
 func (g *guardedTransport) Do(ctx context.Context, method, url string, headers map[string]string, body []byte) (*js.Response, error) {
-	if g.max > 0 && atomic.AddInt32(&g.count, 1) > g.max {
-		atomic.AddInt32(&g.denied, 1)
-		return nil, fmt.Errorf("unblink: JavaScript request budget exceeded (max %d)", g.max)
+	if g.maxBytes > 0 && g.bytes.Load() >= g.maxBytes {
+		g.denied.Add(1)
+		return nil, fmt.Errorf("unblink: JavaScript download budget exceeded (max %d bytes)", g.maxBytes)
 	}
-	if g.windowMax > 0 && !g.allowWindow() {
-		atomic.AddInt32(&g.denied, 1)
-		return nil, fmt.Errorf("unblink: JavaScript request rate exceeded (max %d per %s)", g.windowMax, g.window)
+	if g.max > 0 && g.count.Add(1) > g.max {
+		g.denied.Add(1)
+		return nil, fmt.Errorf("unblink: JavaScript request count budget exceeded (max %d)", g.max)
 	}
 	res, err := g.client.Fetch(ctx, method, url, headers, body)
 	if err != nil {
 		return nil, err
+	}
+	// Size isn't knowable before the fetch, so the request that crosses the budget
+	// still completes; with concurrent warmers the overshoot is bounded by the
+	// in-flight batch. Deny kicks in on the next request.
+	if g.maxBytes > 0 {
+		g.bytes.Add(int64(len(res.Body)))
 	}
 	hdr := make(map[string]string, len(res.Header))
 	for k := range res.Header {
@@ -58,25 +66,19 @@ func (g *guardedTransport) Do(ctx context.Context, method, url string, headers m
 	return &js.Response{Status: res.Status, Headers: hdr, Body: res.Body, FinalURL: res.FinalURL}, nil
 }
 
-// Denied reports how many requests the budget/window caps rejected, for render
+// Denied reports how many requests the budget caps rejected, for render
 // diagnostics ("the page wanted more network than the per-render budget allows").
 func (g *guardedTransport) Denied() int {
-	return int(atomic.LoadInt32(&g.denied))
+	return int(g.denied.Load())
 }
 
-// allowWindow reports whether a request fits within the current fixed window,
-// resetting the window when it has elapsed. Safe for concurrent callers (async
-// fetches run off the loop goroutine).
-func (g *guardedTransport) allowWindow() bool {
-	now := time.Now()
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.winStart.IsZero() || now.Sub(g.winStart) >= g.window {
-		g.winStart = now
-		g.winCount = 0
-	}
-	g.winCount++
-	return g.winCount <= g.windowMax
+// ResetBudget clears the per-render/per-dispatch counters. A live session's
+// transport is built once (newLiveTransport) but each agent action gets a fresh
+// budget, so a long session isn't starved — see Context.Dispatch.
+func (g *guardedTransport) ResetBudget() {
+	g.bytes.Store(0)
+	g.count.Store(0)
+	g.denied.Store(0)
 }
 
 // newRenderTransport builds the guarded transport for one render, sharing the
@@ -104,14 +106,15 @@ func (b *Browser) newRenderTransport(client *fetch.Client, reqTimeout time.Durat
 	if err != nil {
 		return nil
 	}
-	return &guardedTransport{client: gc, max: int32(b.jsMaxRequests)}
+	return &guardedTransport{client: gc, maxBytes: b.jsMaxBytes, max: int32(b.jsMaxRequests)}
 }
 
 // newLiveTransport builds the guarded transport for a persistent per-session
-// runtime. Unlike a one-shot render, a live page runs for the session's lifetime,
-// so the per-render request count cap doesn't fit; abuse is bounded instead by the
-// SSRF dial guard, the rolling subrequest window below, the session idle TTL/cap,
-// and the per-host rate limiter when one is configured (--rate-limit, default off).
+// runtime. A live page runs for the session's lifetime, so the byte budget is
+// reset per dispatch (ResetBudget, called in Context.Dispatch) — each agent action
+// gets a fresh budget. Beyond that, abuse is bounded by the SSRF dial guard, the
+// session idle TTL/cap and live-runtime LRU, the process memory guard, and the
+// per-host rate limiter when one is configured (--rate-limit, default off).
 func (b *Browser) newLiveTransport(client *fetch.Client) js.Transport {
 	opts := []fetch.Option{
 		fetch.WithJar(client.Jar()),
@@ -127,21 +130,10 @@ func (b *Browser) newLiveTransport(client *fetch.Client) js.Transport {
 	if err != nil {
 		return nil
 	}
-	// No monotonic per-render cap (a live page runs for the session's lifetime), but a
-	// rolling window bounds sustained abuse on top of the SSRF guard (and the rate
-	// limiter, when configured).
-	return &guardedTransport{client: gc, windowMax: liveJSWindowMax, window: liveJSWindow}
+	// The byte budget is per-dispatch (reset in Context.Dispatch), so it bounds each
+	// agent action without capping a long legitimate session.
+	return &guardedTransport{client: gc, maxBytes: b.jsMaxBytes, max: int32(b.jsMaxRequests)}
 }
-
-// Rolling-window subrequest cap for persistent live sessions. Generous enough for a
-// heavy SPA's initial burst, low enough to bound a malicious page's sustained
-// beaconing/scanning over a long session — 300/min is the same 5/s average the
-// old default rate limit enforced, so the bound survives the limiter being
-// opt-in.
-const (
-	liveJSWindow    = time.Minute
-	liveJSWindowMax = 300
-)
 
 // errBlockedAddr is the SSRF guard's sentinel, wrapped into every dial rejection
 // so error classification can identify a blocked private/metadata target through

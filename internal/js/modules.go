@@ -18,12 +18,66 @@ const moduleNamespace = "unblink-url"
 var (
 	selModuleScript = cascadia.MustCompile("script[type=module]")
 	selImportMap    = cascadia.MustCompile("script[type=importmap]")
+	selPreload      = cascadia.MustCompile("link[rel~=modulepreload], link[rel~=preload]")
 )
 
 // collectModuleScripts returns <script type="module"> elements (inline + src) in
 // document order.
 func collectModuleScripts(doc *html.Node) []*html.Node {
 	return selModuleScript.MatchAll(doc)
+}
+
+// collectPreloadHrefs returns the absolute URLs of the page's <link rel=modulepreload>
+// (and script/module/fetch <link rel=preload>) hints — the code-split chunks a
+// framework declares up front. These are exactly the chunks the runtime import()
+// path would otherwise fetch serially; warming them concurrently (startModulePreload)
+// turns that path into cache hits. Deduped; unresolvable hrefs are skipped.
+func (b *bridge) collectPreloadHrefs(doc *html.Node) []string {
+	var urls []string
+	seen := make(map[string]bool)
+	for _, l := range selPreload.MatchAll(doc) {
+		rel := strings.ToLower(getAttr(l, "rel"))
+		if !relHasToken(rel, "modulepreload") {
+			// A plain rel=preload covers fonts/images/styles too; only script-like
+			// destinations are runnable modules worth warming.
+			switch strings.ToLower(strings.TrimSpace(getAttr(l, "as"))) {
+			case "script", "module", "fetch":
+			default:
+				continue
+			}
+		}
+		href := strings.TrimSpace(getAttr(l, "href"))
+		if href == "" {
+			continue
+		}
+		abs, err := b.resolveURL(href)
+		if err != nil || seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		urls = append(urls, abs)
+	}
+	return urls
+}
+
+// startModulePreload warms the page's modulepreload/preload chunk graph concurrently
+// into the asset cache before the (serial) runtime import() path runs. Engine
+// plumbing like startPrefetch — see warmConcurrent for the settle-safety rationale.
+func (b *bridge) startModulePreload(doc *html.Node) {
+	if b.transport == nil {
+		return
+	}
+	b.warmConcurrent(b.collectPreloadHrefs(doc))
+}
+
+// relHasToken reports whether the space-separated rel attribute contains tok.
+func relHasToken(rel, tok string) bool {
+	for _, f := range strings.Fields(rel) {
+		if f == tok {
+			return true
+		}
+	}
+	return false
 }
 
 // parseImportMap reads the first <script type="importmap"> and returns its
@@ -117,16 +171,18 @@ func (b *bridge) runModules(modules []*html.Node, importMap map[string]string) {
 // import and leave private fields / logical assignment / optional chaining native, so
 // nothing is routed through goja's buggy WeakMap (the reason blanket downleveling was
 // rejected — see crypto_test.go). esbuild lowers both import('x') and import(expr) to
-// Promise.resolve().then(() => __toESM(require(SPEC))). We then redirect that exact,
-// stable esbuild-generated substring to the __unblinkImportSync loader (installDynamicImport)
-// so the chunk actually fetches+bundles+runs and (await import(spec)).default resolves
-// to the chunk's real default. The rename is arity-preserving (require -> loader), leaves
-// the disabled global require untouched (the require()-off security control holds), and
-// only ever matches esbuild's dynamic-import lowering — a bare CommonJS require() call is
-// never printed as `__toESM(require(`, nor is a `require(` inside a string literal. If the
-// loader is absent/errors (e.g. no transport), it throws and the import rejects gracefully
-// (Phase A behavior). TestLowerDynamicImport* pins the generated shape so a goja/esbuild
-// bump that changes it fails loudly.
+// Promise.resolve().then(() => __toESM(require(SPEC))). We rewrite the exact, stable
+// `__toESM(require(` substring to `__unblinkImport((` (installDynamicImport): the doubled
+// open paren balances esbuild's trailing `))` so SPEC stays a parenthesized expression,
+// while dropping the __toESM wrapper — the loader now returns a Promise for the chunk
+// namespace, which the surrounding `.then` chains on, so sibling import()s fetch
+// concurrently instead of serializing. The disabled global require is left untouched
+// (the require()-off security control holds), and the substring only ever matches
+// esbuild's dynamic-import lowering — a bare CommonJS require() call is never printed as
+// `__toESM(require(`, nor is a `require(` inside a string literal. If the loader is
+// absent/errors (e.g. no transport), the Promise rejects and the import degrades
+// gracefully. TestLowerDynamicImport* pins the generated shape so a goja/esbuild bump
+// that changes it fails loudly.
 //
 // The default Format (Preserve/passthrough) is MANDATORY: Format IIFE would enable
 // tree-shaking (dropping side-effecting bundle code) and rewrite a CommonJS bundle's
@@ -141,7 +197,12 @@ func lowerDynamicImport(src string) (string, bool) {
 	if len(res.Errors) > 0 || len(res.Code) == 0 {
 		return "", false
 	}
-	code := strings.ReplaceAll(string(res.Code), "__toESM(require(", "__toESM("+dynImportGlobal+"(")
+	// esbuild prints the lowering as `__toESM(require(ARG))`. Replace the
+	// `__toESM(require(` prefix with `__unblinkImport((` — the doubled open paren
+	// balances the existing `))` (so ARG stays a parenthesized expression) while
+	// dropping esbuild's __toESM wrapper, which is incompatible with the loader now
+	// returning a Promise (the surrounding `.then` chains on it instead).
+	code := strings.ReplaceAll(string(res.Code), "__toESM(require(", dynImportGlobal+"((")
 	return code, true
 }
 
@@ -182,6 +243,15 @@ func (b *bridge) modulePlugin(importMap map[string]string) esbuild.Plugin {
 					contents := string(body)
 					return esbuild.OnLoadResult{Contents: &contents, Loader: loader}, nil
 				}
+				// A modulepreload/prefetch warm may be in flight for this chunk; join
+				// it (overlapping this build's wait with the other warmers) rather than
+				// issuing a duplicate fetch. On a warm that failed, fall through to a
+				// fresh fetch — a missing module is more consequential than a skipped
+				// classic script, so we retry rather than skip.
+				if body, ok, found := b.prefetched(a.Path); found && ok {
+					contents := string(body)
+					return esbuild.OnLoadResult{Contents: &contents, Loader: loader}, nil
+				}
 				ctx, cancel := context.WithTimeout(b.ctx, b.reqTimeout)
 				defer cancel()
 				res, err := b.transport.Do(ctx, "GET", a.Path, nil, nil)
@@ -202,6 +272,13 @@ func (b *bridge) modulePlugin(importMap map[string]string) esbuild.Plugin {
 // moduleResolve joins a specifier against the importing module's URL (or the page
 // base URL for the entry point).
 func (b *bridge) moduleResolve(importer, spec string) (string, error) {
+	// An absolute http(s) specifier resolves to itself — no base needed. Besides
+	// being correct, this keeps off-loop dynamic-import bundles (bundleDynamicChunk,
+	// whose entry imports an absolute URL) from reading docBaseNow off the loop
+	// goroutine, which would race with on-loop navigation updates.
+	if u, err := url.Parse(spec); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		return u.String(), nil
+	}
 	var base *url.URL
 	if strings.HasPrefix(importer, "http://") || strings.HasPrefix(importer, "https://") {
 		base, _ = url.Parse(importer)

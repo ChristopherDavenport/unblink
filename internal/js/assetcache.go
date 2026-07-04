@@ -20,11 +20,11 @@ import (
 // 60s cache, so "a bundle may change server-side within the TTL" is within the
 // product's accepted staleness; --js-asset-cache=false opts out. Cache hits
 // bypass the transport entirely, so they do not count toward NetRequests
-// (which reports real network attempts) or the per-render request budget.
+// (which reports real network attempts) or the per-render download budget.
 type assetCache struct {
 	mu        sync.Mutex
 	ttl       time.Duration
-	cur, prev map[string]assetEntry // two-generation swap eviction
+	cur, prev map[string]assetEntry // two-generation swap eviction, by summed bytes
 	curBytes  int64
 }
 
@@ -33,10 +33,13 @@ type assetEntry struct {
 	at   time.Time
 }
 
-const (
-	assetCacheMaxBytes   = 16 << 20 // summed body bytes per generation
-	assetCacheMaxEntries = 256
-)
+// assetCacheMaxBytes bounds the summed body bytes per generation (two generations
+// live at once, so worst-case memory is 2×). Sized at/above the per-render download
+// budget (DefaultJSMaxBytes) so a heavy code-split SPA's chunk graph stays in one
+// generation without a mid-render swap that would force re-fetching evicted chunks —
+// the 256-entry count cap this replaces thrashed on exactly that graph. Still well
+// under the 1 GiB heap guard (ADR 0003).
+const assetCacheMaxBytes = 64 << 20
 
 func newAssetCache(ttl time.Duration) *assetCache {
 	if ttl <= 0 {
@@ -69,7 +72,7 @@ func (a *assetCache) put(key string, body []byte) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if len(a.cur) >= assetCacheMaxEntries || a.curBytes+int64(len(body)) > assetCacheMaxBytes {
+	if a.curBytes+int64(len(body)) > assetCacheMaxBytes {
 		a.prev, a.cur = a.cur, map[string]assetEntry{}
 		a.curBytes = 0
 	}

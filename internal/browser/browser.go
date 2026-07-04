@@ -43,10 +43,18 @@ const (
 	DefaultMaxTokens     = 6000
 	MaxReadTokens        = 24000 // ceiling on a read chunk: max_tokens cannot defeat pagination
 
-	maxJSErrors          = 5   // uncaught JS errors surfaced per result
-	maxJSErrorLen        = 300 // runes per surfaced JS error
-	DefaultJSTimeout     = 5 * time.Second
-	DefaultJSMaxRequests = 50 // generous enough for an ES-module graph; still bounded
+	maxJSErrors      = 5   // uncaught JS errors surfaced per result
+	maxJSErrorLen    = 300 // runes per surfaced JS error
+	DefaultJSTimeout = 5 * time.Second
+	// DefaultJSMaxBytes is the per-render/per-dispatch cumulative download budget for
+	// page JS — the real network bound (with the wall-clock render budget as the time
+	// bound). 64 MiB comfortably holds a heavy code-split SPA's module graph plus its
+	// data fetches, well under the 1 GiB heap guard. --js-max-bytes tunes it, 0 disables.
+	DefaultJSMaxBytes = 64 << 20
+	// DefaultJSMaxRequests is an optional monotonic request-count backstop for a page
+	// firing many tiny/zero-byte requests the byte budget can't see. 0 = off (the
+	// default); --js-max-bytes + the wall-clock budget are the primary bounds.
+	DefaultJSMaxRequests = 0
 	// DefaultJSMaxLive caps concurrent live (persistent) JS runtimes. Each is a full
 	// goja heap plus an event-loop goroutine; without this cap the only bound was the
 	// 256-session cap — far too much memory. LRU runtimes are torn down (the session
@@ -60,9 +68,9 @@ const (
 	DefaultJSPrewarm  = js.DefaultMaxConcurrent
 	// DefaultRateRPS is 0: the per-host politeness limiter is opt-in
 	// (--rate-limit N), so out of the box unblink runs like-for-like with other
-	// tools, none of which ship a crawl limiter. Live-session JS subrequests
-	// stay bounded regardless by the rolling window in transport.go (300/min ≈
-	// the same 5/s average the old default enforced).
+	// tools, none of which ship a crawl limiter. Live-session JS subrequests stay
+	// bounded regardless by the per-dispatch download budget (transport.go), the
+	// SSRF guard, the session TTL/cap, and the process memory guard.
 	DefaultRateRPS   = 0.0
 	DefaultRateBurst = 10 // burst when a rate is set
 	DefaultRetries   = fetch.DefaultRetries
@@ -97,7 +105,8 @@ type Browser struct {
 	renderer       Renderer     // nil when JavaScript rendering is disabled
 	liveEngine     liveRenderer // non-nil when the renderer supports persistent per-session runtimes
 	jsNetwork      bool         // allow page JS to make network requests
-	jsMaxRequests  int          // per-render JS request budget
+	jsMaxBytes     int64        // per-render/per-dispatch JS download budget (bytes; 0 = off)
+	jsMaxRequests  int          // optional JS request-count backstop (0 = off)
 	jsAllowPrivate bool         // permit JS requests to private/loopback IPs
 	jsReqTimeout   time.Duration
 	jsMaxLive      int               // cap on concurrent live JS runtimes (LRU torn down)
@@ -117,6 +126,7 @@ type options struct {
 	renderer       Renderer
 	js             bool
 	jsNetwork      bool
+	jsMaxBytes     int64
 	jsMaxRequests  int
 	jsAllowPrivate bool
 	jsTimeout      time.Duration
@@ -192,7 +202,14 @@ func DefaultJSConcurrency() int {
 // WithJSNetwork enables/disables page-JS network requests (default enabled).
 func WithJSNetwork(enabled bool) Option { return func(o *options) { o.jsNetwork = enabled } }
 
-// WithJSMaxRequests caps the number of JS-initiated requests per render.
+// WithJSMaxBytes sets the per-render/per-dispatch cumulative download budget for
+// page-JS requests, in bytes. 0 disables the byte budget. This is the primary
+// network bound; the wall-clock render budget is the time bound.
+func WithJSMaxBytes(n int64) Option { return func(o *options) { o.jsMaxBytes = n } }
+
+// WithJSMaxRequests sets an optional monotonic request-count backstop per render
+// (a runaway guard for many tiny/zero-byte requests). 0 disables it — the byte
+// budget (WithJSMaxBytes) is the real bound.
 func WithJSMaxRequests(n int) Option { return func(o *options) { o.jsMaxRequests = n } }
 
 // WithJSAllowPrivate permits JS requests to private/loopback addresses (off by
@@ -254,7 +271,7 @@ func WithSafeOutput(enabled bool) Option { return func(o *options) { o.safeOutpu
 // a session manager. Session clients are built with the same fetch options.
 func New(opts ...Option) (*Browser, error) {
 	o := options{
-		jsNetwork: true, jsMaxRequests: DefaultJSMaxRequests, jsTimeout: DefaultJSTimeout,
+		jsNetwork: true, jsMaxBytes: DefaultJSMaxBytes, jsMaxRequests: DefaultJSMaxRequests, jsTimeout: DefaultJSTimeout,
 		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive, jsMemLimit: DefaultJSMemLimit, jsAssetCache: true,
 		rateRPS: DefaultRateRPS, rateBurst: DefaultRateBurst, retries: DefaultRetries,
 		siteHints: true, safeOutput: true,
@@ -325,6 +342,7 @@ func New(opts ...Option) (*Browser, error) {
 		safeOutput:     o.safeOutput,
 		renderer:       o.renderer,
 		jsNetwork:      o.jsNetwork,
+		jsMaxBytes:     o.jsMaxBytes,
 		jsMaxRequests:  o.jsMaxRequests,
 		jsAllowPrivate: o.jsAllowPrivate,
 		jsReqTimeout:   o.jsTimeout,
@@ -681,6 +699,7 @@ func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 		PendingNavigation: diag.PendingNavigation,
 		NetRequests:       diag.NetRequests,
 		NetFailed:         diag.NetFailed,
+		NetBytes:          diag.NetBytes,
 		NetPending:        diag.NetPending,
 		DeadlineHit:       diag.DeadlineHit,
 		DOMBusy:           diag.DOMBusy,
@@ -769,14 +788,15 @@ type ReadResult struct {
 	// with DOMBusy means the JS budget elapsed while the page was still rendering —
 	// either way the content may be incomplete and a larger wait_timeout (or a
 	// wait_for gate) would capture more. NetDenied > 0 means the page wanted more
-	// network than the per-render request budget (--js-max-requests) allowed.
-	NetRequests     int  `json:"net_requests,omitempty"`
-	NetFailed       int  `json:"net_failed,omitempty"`
-	NetPending      int  `json:"net_pending,omitempty"`
-	NetDenied       int  `json:"net_denied,omitempty"`
-	RenderBudgetHit bool `json:"render_budget_hit,omitempty"`
-	DOMBusy         bool `json:"dom_busy,omitempty"`
-	TimersPending   int  `json:"timers_pending,omitempty"`
+	// network than the per-render download budget (--js-max-bytes) allowed.
+	NetRequests     int   `json:"net_requests,omitempty"`
+	NetFailed       int   `json:"net_failed,omitempty"`
+	NetBytes        int64 `json:"net_bytes,omitempty"`
+	NetPending      int   `json:"net_pending,omitempty"`
+	NetDenied       int   `json:"net_denied,omitempty"`
+	RenderBudgetHit bool  `json:"render_budget_hit,omitempty"`
+	DOMBusy         bool  `json:"dom_busy,omitempty"`
+	TimersPending   int   `json:"timers_pending,omitempty"`
 
 	// ImageBytes/ImageMIME carry the raw image for the MCP layer to base64-encode,
 	// set only when the page is an image and the request asked for include_bytes.
@@ -944,6 +964,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		res.JSErrors = capErrors(d.Errors)
 		res.NetRequests = d.NetRequests
 		res.NetFailed = d.NetFailed
+		res.NetBytes = d.NetBytes
 		res.NetPending = d.NetPending
 		res.NetDenied = d.NetDenied
 		res.RenderBudgetHit = d.DeadlineHit

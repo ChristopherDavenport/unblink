@@ -239,6 +239,10 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// the fetches overlap prelude execution and each other; runScripts blocks
 		// on each body in document order.
 		b.startPrefetch(scripts)
+		// Warm the modulepreload/preload chunk graph concurrently too, so the serial
+		// runtime import() path (dynimport) hits the asset cache instead of fetching
+		// each code-split chunk one at a time.
+		b.startModulePreload(doc)
 		// Timer clamp deadline (one-shot renders only): a wall-clock instant, read
 		// by the prelude timer wrapper, past which a long one-shot timer is pulled
 		// in so its content still materializes. Live sessions leave this unset.
@@ -338,6 +342,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 			if b.netCount != nil {
 				env.Diag.NetRequests = int(b.netCount.total.Load())
 				env.Diag.NetFailed = int(b.netCount.failed.Load())
+				env.Diag.NetBytes = b.netCount.bytesDown.Load()
 			}
 			if b.pendingNav != nil {
 				env.Diag.PendingNavigation = b.pendingNav.String()

@@ -120,8 +120,8 @@ import maps — bundled with esbuild), `window.fetch` + `XMLHttpRequest`, DOM
 `once`/`passive`/`{signal}` options, `AbortController`, typed Event subclasses),
 and `document.cookie` (backed by the session jar). Page-JS network requests are
 guarded — requests to private/loopback/metadata IPs are blocked and a per-render
-request budget applies (`--js-no-network`, `--js-allow-private`,
-`--js-max-requests`). A background pool of fresh runtimes keeps render latency low
+download budget applies (`--js-no-network`, `--js-allow-private`,
+`--js-max-bytes`). A background pool of fresh runtimes keeps render latency low
 (`--js-prewarm`, `0` disables); the per-render budget defaults to 5s (`--js-timeout`).
 With a session, `interact` keeps a **live runtime**
 alive for the page so JS state persists across calls (a true browser-tab session);
@@ -322,7 +322,8 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 | `--js-timeout` | `5s` | Per-render wall-clock budget for JavaScript. |
 | `--js-no-network` | off | Disable page-JS network requests (DOM-only render). |
 | `--js-allow-private` | off | Permit page-JS subrequests to private/loopback IPs. |
-| `--js-max-requests` | `50` | Max page-JS network requests per render. |
+| `--js-max-bytes` | `64` | MiB of page-JS downloads allowed per render / per live-session action (0 disables the download budget). The primary network bound. |
+| `--js-max-requests` | `0` | Optional hard cap on page-JS request count (runaway backstop; 0 disables — the real bound is `--js-max-bytes`). |
 | `--js-prewarm` | `4` | Pre-warmed JS runtimes kept ready (0 disables). |
 | `--js-concurrency` | auto | Max concurrent JS renders (auto = CPU count clamped to 4..16). Same-host fetch pacing stays `--rate-limit`'s job. |
 | `--js-max-live` | `16` | Max concurrent live per-session JS runtimes (LRU torn down over the cap). |

@@ -93,8 +93,9 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   (document order); `window.fetch` + `XMLHttpRequest` routed through a guarded
   transport (one `__unblinkFetch` Go primitive with the race-free inline-keepalive
   pattern); `DOMContentLoaded`/`load` event dispatch. SSRF guard (blocks private/
-  loopback/metadata IPs) + per-render request budget; `--js-no-network`,
-  `--js-allow-private`, `--js-max-requests`.
+  loopback/metadata IPs) + per-render **byte** budget (`--js-max-bytes`, ADR 0009;
+  `--js-max-requests` is an off-by-default count backstop); `--js-no-network`,
+  `--js-allow-private`.
 - **Phase 4c — ES modules.** ✅ `<script type=module>` (inline + src), `import`/
   `export`, dynamic `import()`, and import maps — bundled per module graph with
   esbuild (pure Go) via a network-resolver plugin routed through the guarded
@@ -242,13 +243,14 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
   looked identical to a finished page. `settlePoll` now reports *how* it closed
   (deadline vs. quiescence, in-flight request count, DOM-still-mutating) and a
   `countingTransport` in the bridge tallies every subrequest (fetch/XHR, scripts,
-  modules, dynamic import); the browser adds the request-budget guard's denial
-  count. `read` surfaces these as `net_requests`/`net_failed`/`net_pending`/
-  `net_denied`/`render_budget_hit`/`dom_busy` plus a footer when the snapshot was
-  taken while the page was still working ("budget elapsed with N request(s) in
-  flight / the DOM still mutating") or when the per-render request budget blocked
-  page requests — so an agent can tell a complete snapshot from a starved one and
-  knows which knob (wait_timeout vs. --js-max-requests) would capture more.
+  modules, dynamic import); the browser adds the download-budget guard's denial
+  count. `read` surfaces these as `net_requests`/`net_failed`/`net_bytes`/
+  `net_pending`/`net_denied`/`render_budget_hit`/`dom_busy` plus a footer when the
+  snapshot was taken while the page was still working ("budget elapsed with N
+  request(s) in flight / the DOM still mutating") or when the per-render download
+  budget blocked page requests — so an agent can tell a complete snapshot from a
+  starved one and knows which knob (wait_timeout vs. --js-max-bytes) would capture
+  more.
 
 - **Phase 13 — Agent-browsing security hardening.** ✅ Closes the exploit classes an
   "agent's browser" inherits (indirect prompt injection, data exfiltration, untrusted
@@ -529,8 +531,9 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     at ~200ms (no other benchmarked tool ships one). `--rate-limit` now
     defaults to **off** so unblink runs like-for-like out of the box; set it
     (e.g. `--rate-limit 5`) to crawl politely. Live-session JS subrequests
-    stay bounded regardless: the rolling window (300/min, transport.go) is
-    the same 5/s average the old default enforced.
+    stay bounded regardless: the per-dispatch **byte** budget (`--js-max-bytes`,
+    ADR 0009) caps each agent action, on top of the SSRF guard, session TTL/cap,
+    and the memory guard. (The old 300/min rolling window was removed in ADR 0009.)
   - **`--js-concurrency`**: the one-shot render semaphore (previously pinned at
     4 with no knob) now defaults to GOMAXPROCS clamped to [4, 16] — renders are
     CPU-bound goja interpretation, so it scales with cores while the ceiling
@@ -540,14 +543,19 @@ Dependency direction: `page` → capability packages (`fetch`/`dom`/`reduce`/`em
     inline creation. `MaxIdleConnsPerHost` rises 8 → 16 to match, so a full
     concurrency burst's connections stay reusable. Same-host fetch pacing
     remains `--rate-limit`'s job (opt-in, see below).
-  - **Concurrent script-body prefetch** (`internal/js/prefetch.go`): the
-    initial external `<script src>` bodies previously fetched synchronously on
-    the loop goroutine, one round trip after another. They now prefetch through
-    the same counting/budgeted/SSRF-guarded transport with 4 bounded workers
-    while `runScripts` consumes them in strict document order — sum(RTT)
-    collapses to max(RTT), and since runScripts executes exactly the collected
-    snapshot the prefetch is not speculative (no over-fetch, identical request
-    accounting). Applies to one-shot renders and live session opens.
+  - **Concurrent asset warming** (`internal/js/prefetch.go`): the initial
+    external `<script src>` bodies previously fetched synchronously on the loop
+    goroutine, one round trip after another. They now warm through the same
+    counting/budgeted/SSRF-guarded transport with 16 bounded workers
+    (`warmConcurrent`) while `runScripts` consumes them in strict document order —
+    sum(RTT) collapses to max(RTT), and since runScripts executes exactly the
+    collected snapshot the prefetch is not speculative. The same worker pool also
+    warms the page's `<link rel=modulepreload>` / script-`rel=preload` chunk graph
+    (`startModulePreload`), so a code-split SPA's otherwise-serial runtime
+    `import()` path (dynimport) hits the asset cache — or joins an in-flight warm
+    via `prefetched()` in the module `OnLoad` — instead of fetching each chunk one
+    at a time. This adds no async primitive, so ADR 0004's settle proof is
+    untouched (ADR 0009). Applies to one-shot renders and live session opens.
   - **Content-only compile caches**: `progKey` dropped the script name (page
     position / chunk URL) — identical bytes now share one `goja.Program`
     regardless of which URL or position delivered them, with the first-seen
