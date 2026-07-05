@@ -252,6 +252,10 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		b.allowCrossOrigin = env.AllowCrossOrigin
 		b.sriEnabled = !env.DisableSRI
 		b.respHeaders = env.ResponseHeaders
+		b.cspEnabled = !env.DisableCSP
+		if b.cspEnabled && b.base != nil {
+			b.csp = buildCSP(b.respHeaders, b.doc)
+		}
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()
@@ -284,6 +288,9 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// hiding CSS once, then inject JS at each run_at around the page's own scripts.
 		b.injectContentScriptCSS()
 		b.injectContentScripts(webext.RunAtStart)
+		// CSP unsafe-eval gate installs just before page scripts (after trusted
+		// extension content scripts, which keep eval).
+		b.installCSPEvalGate()
 		b.runScripts(scripts)
 		if len(modules) > 0 {
 			b.runModules(modules, parseImportMap(doc))

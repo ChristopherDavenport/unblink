@@ -49,6 +49,7 @@ func main() {
 	jsAllowPrivate := flag.Bool("js-allow-private", false, "permit page-JS requests to private/loopback IPs (internal/dev use)")
 	jsAllowCrossOrigin := flag.Bool("js-allow-cross-origin", false, "disable browser-parity CORS enforcement over page JS (on by default; requests are always logged in the requests tool regardless)")
 	noSRI := flag.Bool("no-sri", false, "disable Subresource Integrity checks on executed scripts/modules (verification is on by default)")
+	noCSP := flag.Bool("no-csp", false, "disable Content-Security-Policy enforcement over page JS (enforcement is on by default)")
 	jsMaxBytes := flag.Int64("js-max-bytes", browser.DefaultJSMaxBytes/(1024*1024), "MiB of page-JS downloads allowed per render / per live-session action (0 disables the download budget)")
 	jsMaxRequests := flag.Int("js-max-requests", browser.DefaultJSMaxRequests, "optional hard cap on page-JS request count (runaway backstop; 0 disables — the real per-render bound is --js-max-bytes)")
 	jsPrewarm := flag.Int("js-prewarm", browser.DefaultJSPrewarm, "number of pre-warmed JS runtimes kept ready (0 disables)")
@@ -111,6 +112,7 @@ func main() {
 			browser.WithJSAllowPrivate(*jsAllowPrivate),
 			browser.WithJSAllowCrossOrigin(*jsAllowCrossOrigin),
 			browser.WithoutSRI(*noSRI),
+			browser.WithoutCSP(*noCSP),
 			browser.WithJSMaxBytes(*jsMaxBytes*1024*1024),
 			browser.WithJSMaxRequests(*jsMaxRequests),
 			browser.WithJSPrewarm(*jsPrewarm),

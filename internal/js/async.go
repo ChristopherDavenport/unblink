@@ -60,6 +60,13 @@ func (b *bridge) fetchPromise(method, rawURL string, headers map[string]string, 
 		_ = reject(vm.ToValue("fetch: " + err.Error()))
 		return vm.ToValue(promise)
 	}
+	// CSP connect-src gates fetch/XHR on-loop (a pure URL check; recordError is only
+	// loop-safe here, not in the off-loop goroutine below). A browser does not
+	// dispatch a blocked connection; report-only records but proceeds. See csp.go.
+	if !b.cspAllowConnect(abs) {
+		_ = reject(vm.ToValue("fetch: blocked by Content-Security-Policy: connect-src"))
+		return vm.ToValue(promise)
+	}
 
 	b.pending.Add(1) // off-loop request in flight; bracketed by the keepalive window
 	keep := b.acquireKeepalive()

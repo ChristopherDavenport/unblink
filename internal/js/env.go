@@ -25,10 +25,12 @@ type Env struct {
 	Timeout        time.Duration  // per-render budget override; 0 = engine default (hard-capped by the engine)
 	// AllowCrossOrigin disables CORS enforcement over page-JS fetch/XHR (default
 	// false = enforce like a browser). DisableSRI turns off Subresource Integrity
-	// checking (default false = verify). Both are operator escape hatches. See
-	// cors.go / sri.go and ADRs 0011/0012.
+	// checking (default false = verify). DisableCSP turns off Content-Security-Policy
+	// enforcement (default false = enforce). All are operator escape hatches. See
+	// cors.go / sri.go / csp.go and ADRs 0011/0012/0014.
 	AllowCrossOrigin bool
 	DisableSRI       bool
+	DisableCSP       bool
 }
 
 // CookieJar exposes the page's cookies to JavaScript (document.cookie), backed by

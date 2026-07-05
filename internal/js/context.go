@@ -116,6 +116,10 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.allowCrossOrigin = env.AllowCrossOrigin
 		b.sriEnabled = !env.DisableSRI
 		b.respHeaders = env.ResponseHeaders
+		b.cspEnabled = !env.DisableCSP
+		if b.cspEnabled && b.base != nil {
+			b.csp = buildCSP(b.respHeaders, b.doc)
+		}
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()
@@ -129,6 +133,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		// once, then inject JS at each run_at around the page's own scripts.
 		b.injectContentScriptCSS()
 		b.injectContentScripts(webext.RunAtStart)
+		b.installCSPEvalGate() // CSP unsafe-eval gate before page scripts
 		b.runScripts(scripts)
 		if len(modules) > 0 {
 			b.runModules(modules, parseImportMap(doc))

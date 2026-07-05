@@ -181,8 +181,12 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   decoupled from `--tls-mimic`; truthful `window.crossOriginIsolated`/
   `isSecureContext` from COOP/COEP in `internal/js/isolation.go`, no COEP
   enforcement — the document response headers now reach the engine via
-  `Env.ResponseHeaders`). Add a new ADR when a decision would otherwise live only
-  in a PR description.
+  `Env.ResponseHeaders`); 0014 is Content-Security-Policy enforcement over
+  untrusted page JS (default on, `internal/js/csp.go`: header + `<meta>` parsing,
+  script-src nonce/hash/host incl. `strict-dynamic`, connect-src on fetch/XHR,
+  `unsafe-eval` via `EvalError` shims; report-only surfaces without blocking; a
+  resource must satisfy every enforced policy; `--no-csp` opts out). Add a new ADR
+  when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
 - **WebExtensions (opt-in, ADR 0010)**: `--extension <dir|.xpi|.crx|.zip>` /

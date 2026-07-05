@@ -50,6 +50,11 @@ type bridge struct {
 	// document's Content-Security-Policy / Cross-Origin-Opener-Policy /
 	// Cross-Origin-Embedder-Policy. nil when unavailable. See csp.go, isolation.go.
 	respHeaders http.Header
+	// cspEnabled turns on Content-Security-Policy enforcement (default true for page
+	// renders). csp is the parsed policy set (header + <meta>), nil when the document
+	// declared none or enforcement is off. See csp.go and ADR 0014.
+	cspEnabled bool
+	csp        *cspContext
 
 	cache   map[*html.Node]*goja.Object
 	objNode map[*goja.Object]*html.Node

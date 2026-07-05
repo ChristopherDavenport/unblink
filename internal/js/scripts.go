@@ -71,6 +71,13 @@ func (b *bridge) loadInsertedScript(n *html.Node) {
 		return
 	}
 	b.loadedScripts[n] = true
+	// CSP script-src gates the load. Script-inserted (createElement+appendChild), so
+	// strict-dynamic — the common modern-CSP case — lets a trusted-inserted chunk
+	// through. A block fires the error event instead of loading.
+	if abs, err := b.resolveURL(src); err == nil && !b.cspAllowExternalScript(abs, getAttr(n, "nonce"), false) {
+		b.fireScriptEvent(n, "error")
+		return
+	}
 	b.loadExternalScript(n, src)
 }
 
@@ -203,6 +210,11 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 				continue
 			}
 			name = abs
+			// CSP script-src gates the load before any fetch (a browser blocks it).
+			// These are parser-inserted (present in the initial HTML).
+			if !b.cspAllowExternalScript(abs, getAttr(s, "nonce"), true) {
+				continue
+			}
 			integrity := ""
 			if b.sriEnabled {
 				integrity = getAttr(s, "integrity")
@@ -242,6 +254,12 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 			}
 		} else {
 			src = scriptText(s)
+			// CSP script-src gates inline scripts (nonce / hash of the source text /
+			// 'unsafe-inline'). Hash is over the original text, before compileAndRun's
+			// stripSourceMappingURL.
+			if !b.cspAllowInline(src, getAttr(s, "nonce")) {
+				continue
+			}
 		}
 		if strings.TrimSpace(src) == "" {
 			continue
