@@ -113,6 +113,13 @@ func (b *bridge) runModules(modules []*html.Node, importMap map[string]string) {
 			if err != nil {
 				continue
 			}
+			// SRI is enforced only on the top-level module tag (browser parity —
+			// transitive static imports are not integrity-checked).
+			if b.sriEnabled {
+				if integrity := getAttr(m, "integrity"); integrity != "" && !b.verifyModuleIntegrity(abs, integrity) {
+					continue
+				}
+			}
 			entry = "import " + strconv.Quote(abs) + ";"
 		} else {
 			entry = scriptText(m)
@@ -159,6 +166,27 @@ func (b *bridge) runModules(modules []*html.Node, importMap map[string]string) {
 			b.recordError(err)
 		}
 	}
+}
+
+// verifyModuleIntegrity fetches the entry module and checks its integrity against
+// the raw bytes, priming the asset cache with the fetched body so the esbuild
+// loader (modulePlugin OnLoad) reuses it instead of re-fetching. It returns false
+// (and records a diagnostic) only on a real hash mismatch, so the caller skips the
+// module — a browser refusing a tampered module. A fetch failure returns true and
+// lets the normal loader path surface the error, rather than blocking on SRI.
+func (b *bridge) verifyModuleIntegrity(abs, integrity string) bool {
+	ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
+	res, err := b.transport.Do(ctx, "GET", abs, nil, nil)
+	cancel()
+	if err != nil || res == nil || res.Status >= 400 {
+		return true
+	}
+	if ok, enforced := verifySRI(integrity, sriBytes(res)); enforced && !ok {
+		b.recordError(fmt.Errorf("subresource integrity mismatch, module not executed: %s", abs))
+		return false
+	}
+	b.assets.put(assetKey(abs), res.Body)
+	return true
 }
 
 // lowerDynamicImport re-emits src with dynamic import() lowered to a require()-based

@@ -414,9 +414,15 @@ func (c *Client) Jar() http.CookieJar { return c.http.Jar }
 // JavaScript subrequests (external scripts, fetch, XHR) that want bytes rather
 // than a parsed page.
 type Result struct {
-	Status   int
-	Header   http.Header
-	Body     []byte
+	Status int
+	Header http.Header
+	Body   []byte
+	// Raw is the response body after content-encoding decode but BEFORE the
+	// charset→UTF-8 transcode (i.e. the octets the server actually sent). It is
+	// what Subresource Integrity must hash — hashing the transcoded Body would
+	// false-mismatch a legitimate non-UTF-8/BOM'd script. Shares Body's backing
+	// array when no transcode happened (the common case).
+	Raw      []byte
 	FinalURL string
 }
 
@@ -435,7 +441,7 @@ func (c *Client) Fetch(ctx context.Context, method, rawURL string, headers map[s
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	status, header, respBody, finalURL, err := c.roundTrip(req)
+	status, header, respBody, raw, finalURL, err := c.roundTrip(req)
 	if err != nil {
 		return nil, err
 	}
@@ -443,14 +449,14 @@ func (c *Client) Fetch(ctx context.Context, method, rawURL string, headers map[s
 	if finalURL != nil {
 		fu = finalURL.String()
 	}
-	return &Result{Status: status, Header: header, Body: respBody, FinalURL: fu}, nil
+	return &Result{Status: status, Header: header, Body: respBody, Raw: raw, FinalURL: fu}, nil
 }
 
 // do sends req and decodes the response into a *page.Page. The body is
 // charset-decoded to UTF-8 for textual content types and left as raw
 // decompressed bytes otherwise.
 func (c *Client) do(req *http.Request) (*page.Page, error) {
-	status, header, body, finalURL, err := c.roundTrip(req)
+	status, header, body, _, finalURL, err := c.roundTrip(req)
 	if err != nil {
 		return nil, err
 	}
@@ -467,8 +473,9 @@ func (c *Client) do(req *http.Request) (*page.Page, error) {
 
 // roundTrip sets browser-like headers, performs the request (with per-host rate
 // limiting and retry-with-backoff), decompresses (gzip/brotli/deflate), and
-// decodes the body to UTF-8.
-func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, *url.URL, error) {
+// decodes the body to UTF-8. It returns both the decoded body and the raw
+// pre-transcode bytes (the 4th value) — see Result.Raw.
+func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, []byte, *url.URL, error) {
 	c.setHeaders(req)
 	ctx := req.Context()
 	start := time.Now()
@@ -477,7 +484,7 @@ func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, *url.UR
 	var lastErr error
 	for attempt := 0; ; attempt++ {
 		if err := c.limiter.Wait(ctx, req.URL.Hostname()); err != nil {
-			return 0, nil, nil, nil, err
+			return 0, nil, nil, nil, nil, err
 		}
 		if attempt > 0 && req.GetBody != nil {
 			if b, err := req.GetBody(); err == nil {
@@ -496,18 +503,18 @@ func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, *url.UR
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
-			return 0, nil, nil, nil, ctx.Err()
+			return 0, nil, nil, nil, nil, ctx.Err()
 		}
 	}
 	if lastErr != nil {
 		slog.Warn("fetch error", "method", req.Method, "url", redactURL(req.URL), "err", lastErr.Error())
-		return 0, nil, nil, nil, fmt.Errorf("fetch: %s %s: %w", req.Method, redactURL(req.URL), lastErr)
+		return 0, nil, nil, nil, nil, fmt.Errorf("fetch: %s %s: %w", req.Method, redactURL(req.URL), lastErr)
 	}
 	defer resp.Body.Close()
 
 	decoded, err := decodeBody(resp)
 	if err != nil {
-		return 0, nil, nil, nil, fmt.Errorf("fetch: decompress: %w", err)
+		return 0, nil, nil, nil, nil, fmt.Errorf("fetch: decompress: %w", err)
 	}
 	// Read the decompressed body into memory under a hard cap (reading one byte
 	// past the limit lets us detect an over-cap body). Capping here bounds memory
@@ -516,14 +523,14 @@ func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, *url.UR
 	limit := c.maxBytes
 	raw, err := io.ReadAll(io.LimitReader(decoded, limit+1))
 	if err != nil {
-		return 0, nil, nil, nil, fmt.Errorf("fetch: read body: %w", err)
+		return 0, nil, nil, nil, nil, fmt.Errorf("fetch: read body: %w", err)
 	}
 	if int64(len(raw)) > limit {
-		return 0, nil, nil, nil, fmt.Errorf("fetch: response body exceeds max bytes (%d)", limit)
+		return 0, nil, nil, nil, nil, fmt.Errorf("fetch: response body exceeds max bytes (%d)", limit)
 	}
 	if len(raw) == 0 {
 		// Empty body (e.g. a HEAD request or 204 No Content): nothing to decode.
-		return resp.StatusCode, resp.Header, nil, resp.Request.URL, nil
+		return resp.StatusCode, resp.Header, nil, nil, resp.Request.URL, nil
 	}
 	// Only charset-decode textual bodies. Running charset.NewReader over a PDF,
 	// image, or other binary transcodes it as if it were text and corrupts the
@@ -540,7 +547,7 @@ func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, *url.UR
 		// a charset quirk.
 	}
 	slog.Debug("fetch", "method", req.Method, "url", redactURL(req.URL), "status", resp.StatusCode, "bytes", len(body), "dur", time.Since(start))
-	return resp.StatusCode, resp.Header, body, resp.Request.URL, nil
+	return resp.StatusCode, resp.Header, body, raw, resp.Request.URL, nil
 }
 
 func (c *Client) setHeaders(req *http.Request) {
@@ -556,6 +563,7 @@ func (c *Client) setHeaders(req *http.Request) {
 	// fetch cannot decode zstd, so matching Chrome's "gzip, deflate, br, zstd"
 	// would break decoding — correctness beats fingerprint fidelity here.
 	req.Header.Set("Accept-Encoding", "gzip, br")
+	c.setFetchMetadataDefaults(req)
 	c.injectCredentials(req)
 }
 
@@ -574,6 +582,19 @@ func (c *Client) setChromeMimicHeaders(req *http.Request) {
 	req.Header.Set("sec-ch-ua-mobile", "?0")
 	req.Header.Set("sec-ch-ua-platform", `"Linux"`)
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	// Sec-Fetch-* are set by setFetchMetadataDefaults (sent regardless of tls-mimic).
+}
+
+// setFetchMetadataDefaults attaches the Fetch Metadata (Sec-Fetch-*) headers for a
+// top-level navigation. It is sent on every primary document fetch — these are
+// honest request-context metadata, not a fingerprint persona, so they are decoupled
+// from --tls-mimic. It no-ops when Sec-Fetch-Mode is already present: page-JS
+// subrequests get their per-context values from secFetchTransport (internal/js)
+// before reaching here, and this must not overwrite them with the navigation set.
+func (c *Client) setFetchMetadataDefaults(req *http.Request) {
+	if req.Header.Get("Sec-Fetch-Mode") != "" {
+		return
+	}
 	req.Header.Set("Sec-Fetch-Dest", "document")
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
 	req.Header.Set("Sec-Fetch-Site", "none")

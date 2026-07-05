@@ -17,9 +17,14 @@ type Transport interface {
 
 // Response is a raw HTTP response for in-page JavaScript (body already read).
 type Response struct {
-	Status   int
-	Headers  map[string]string
-	Body     []byte
+	Status  int
+	Headers map[string]string
+	Body    []byte
+	// Raw is the body before the charset→UTF-8 transcode (the octets the server
+	// sent), used only for Subresource Integrity hashing (see sri.go). May be nil
+	// for synthesized responses (e.g. extension resources); SRI callers fall back
+	// to Body when it is.
+	Raw      []byte
 	FinalURL string
 }
 

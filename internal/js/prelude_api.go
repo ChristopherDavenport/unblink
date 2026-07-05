@@ -813,8 +813,9 @@ const preludeAPIJS = `
       var signal = req.signal;
       if (signal && signal.aborted) return Promise.reject(signal.reason || new Error('AbortError'));
       var reqURL = req.url;
-      var core = __unblinkFetch(req.method, String(reqURL), headersToPlain(headers), ser.data).then(function (r) {
+      var core = __unblinkFetch(req.method, String(reqURL), headersToPlain(headers), ser.data, req.mode, req.credentials).then(function (r) {
         var resp = new window.Response(null, { status: r.status, headers: r.headers, url: r.url });
+        resp.type = r.type || 'basic';
         resp.__text = r.body;
         resp.__bytes = r.bodyBytes ? new Uint8Array(r.bodyBytes) : null;
         try {
@@ -882,7 +883,7 @@ const preludeAPIJS = `
           for (var k in self._headers) if (String(k).toLowerCase() === 'content-type') { hasCT = true; break; }
           if (!hasCT) self._headers['content-type'] = ser.type;
         }
-        __unblinkFetch(self._method, self._url, self._headers, ser.data)
+        __unblinkFetch(self._method, self._url, self._headers, ser.data, 'cors', self.withCredentials ? 'include' : 'same-origin')
           .then(function (r) {
             self.status = r.status; self.statusText = 'OK';
             self.responseURL = r.url || self._url; self._resHeaders = r.headers || {};
@@ -937,6 +938,12 @@ const preludeAPIJS = `
   window.frameElement = null;
   if (window.name === undefined) window.name = '';
   window.status = '';
+
+  // Cross-origin isolation fidelity (window === self === globalThis, so one
+  // assignment covers all aliases). Resolved Go-side from the document URL + its
+  // COOP/COEP response headers; SharedArrayBuffer stays absent regardless.
+  window.isSecureContext = !!(typeof __unblinkSecureContext !== 'undefined' && __unblinkSecureContext);
+  window.crossOriginIsolated = !!(typeof __unblinkCrossOriginIsolated !== 'undefined' && __unblinkCrossOriginIsolated);
 
   // ---- navigator device / permission stubs ----
   //

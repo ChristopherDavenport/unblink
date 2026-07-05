@@ -106,27 +106,46 @@ func isClassicScriptType(n *html.Node) bool {
 func (b *bridge) loadExternalScript(n *html.Node, src string) {
 	b.pending.Add(1)
 	keep := b.acquireKeepalive()
+	integrity := ""
+	if b.sriEnabled {
+		integrity = getAttr(n, "integrity")
+	}
 	go func() {
 		var (
-			body []byte
-			ok   bool
-			name = src
+			body    []byte
+			ok      bool
+			name    = src
+			sriFail string // set to the URL when SRI blocked the chunk (recorded on-loop)
 		)
 		if abs, err := b.resolveURL(src); err == nil {
 			name = abs
-			if cached, hit := b.assets.get(assetKey(abs)); hit {
+			// SRI-pinned chunks bypass the asset cache (it holds only the transcoded
+			// body, not the raw bytes SRI must hash).
+			if cached, hit := b.assets.get(assetKey(abs)); hit && integrity == "" {
 				body, ok = cached, true
 			} else {
 				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
 				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
 				cancel()
 				if ferr == nil && res != nil && res.Status < 400 {
-					body, ok = res.Body, true
-					b.assets.put(assetKey(abs), res.Body)
+					if integrity != "" {
+						if v, enforced := verifySRI(integrity, sriBytes(res)); enforced && !v {
+							sriFail = abs // block: leave ok=false so the error event fires below
+						} else {
+							body, ok = res.Body, true
+							b.assets.put(assetKey(abs), res.Body)
+						}
+					} else {
+						body, ok = res.Body, true
+						b.assets.put(assetKey(abs), res.Body)
+					}
 				}
 			}
 		}
 		_ = b.loop.RunOnLoop(func(vm *goja.Runtime) {
+			if sriFail != "" {
+				b.recordError(fmt.Errorf("subresource integrity mismatch, script not executed: %s", sriFail))
+			}
 			if ok {
 				b.currentScript = n
 				b.compileAndRun("chunk:"+name, string(body))
@@ -184,7 +203,27 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 				continue
 			}
 			name = abs
-			if body, ok := b.assets.get(assetKey(abs)); ok {
+			integrity := ""
+			if b.sriEnabled {
+				integrity = getAttr(s, "integrity")
+			}
+			if integrity != "" {
+				// SRI-pinned: bypass the asset cache/prefetch (they hold only the
+				// charset-transcoded body, not the raw bytes SRI must hash) and block
+				// on mismatch, like a browser refusing a tampered script.
+				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
+				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
+				cancel()
+				if ferr != nil || res == nil || res.Status >= 400 {
+					continue
+				}
+				if ok, enforced := verifySRI(integrity, sriBytes(res)); enforced && !ok {
+					b.recordError(fmt.Errorf("subresource integrity mismatch, script not executed: %s", abs))
+					continue
+				}
+				src = string(res.Body)
+				b.assets.put(assetKey(abs), res.Body)
+			} else if body, ok := b.assets.get(assetKey(abs)); ok {
 				src = string(body)
 			} else if body, ok, found := b.prefetched(abs); found {
 				if !ok {

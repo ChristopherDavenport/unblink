@@ -86,6 +86,10 @@ func (w *bgWorker) start(memGuard *memGuard) {
 		}
 		b := newBridge(vm, w.loop, doc, base, &bundleTransport{bundle: w.bundle}, nil, nil, nil, w.ctx, bgReqTimeout, w.host)
 		b.bgMode = true
+		// Extension background code is operator-supplied and legitimately fetches
+		// cross-origin, so page-JS CORS enforcement does not apply to it. SRI stays
+		// off (background scripts aren't integrity-pinned page subresources).
+		b.allowCrossOrigin = true
 		b.install()
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)

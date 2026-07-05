@@ -8,10 +8,11 @@ import (
 	"github.com/dop251/goja"
 )
 
-// installAsync exposes __unblinkFetch(method, url, headers, body) -> Promise to
-// JS. window.fetch and XMLHttpRequest are built on top of it in the prelude. It
-// is only installed when a Transport is available; otherwise fetch/XHR keep their
-// rejecting stubs.
+// installAsync exposes __unblinkFetch(method, url, headers, body, mode,
+// credentials) -> Promise to JS. window.fetch and XMLHttpRequest are built on top
+// of it in the prelude, which passes the request's mode/credentials so the Go
+// layer can enforce CORS (see cors.go). It is only installed when a Transport is
+// available; otherwise fetch/XHR keep their rejecting stubs.
 func (b *bridge) installAsync() {
 	if b.transport == nil {
 		return
@@ -33,7 +34,15 @@ func (b *bridge) installAsync() {
 				body = []byte(s)
 			}
 		}
-		return b.fetchPromise(method, rawURL, headers, body)
+		mode := "cors"
+		if a := call.Argument(4); !goja.IsUndefined(a) && !goja.IsNull(a) && a.String() != "" {
+			mode = a.String()
+		}
+		credentials := "same-origin"
+		if a := call.Argument(5); !goja.IsUndefined(a) && !goja.IsNull(a) && a.String() != "" {
+			credentials = a.String()
+		}
+		return b.fetchPromise(method, rawURL, headers, body, mode, credentials)
 	})
 }
 
@@ -42,7 +51,7 @@ func (b *bridge) installAsync() {
 // request is in flight (its jobCount increment is synchronous on-loop, unlike the
 // native SetTimeout). We resolve/reject BEFORE clearing the keepalive so any
 // continuation that starts another fetch acquires its own keepalive first.
-func (b *bridge) fetchPromise(method, rawURL string, headers map[string]string, body []byte) goja.Value {
+func (b *bridge) fetchPromise(method, rawURL string, headers map[string]string, body []byte, mode, credentials string) goja.Value {
 	vm := b.vm
 	promise, resolve, reject := vm.NewPromise()
 
@@ -57,12 +66,16 @@ func (b *bridge) fetchPromise(method, rawURL string, headers map[string]string, 
 	go func() {
 		ctx, cancel := context.WithTimeout(xhrCtx(b.ctx), b.reqTimeout)
 		defer cancel()
-		res, ferr := b.transport.Do(ctx, method, abs, headers, body)
+		// doFetch applies the CORS policy over untrusted page JS and issues the
+		// request(s) through the transport (a cross-origin preflight, when needed,
+		// reuses this same pending/keepalive bracket — no new async primitive, so
+		// the ADR 0004 settle invariant holds).
+		res, respType, ferr := b.doFetch(ctx, method, abs, headers, body, mode, credentials)
 		_ = b.loop.RunOnLoop(func(vm *goja.Runtime) {
 			if ferr != nil {
 				_ = reject(vm.ToValue(ferr.Error()))
 			} else {
-				_ = resolve(b.responseObject(res))
+				_ = resolve(b.responseObject(res, respType))
 			}
 			b.releaseKeepalive(keep)
 			b.pending.Add(-1)
@@ -109,12 +122,15 @@ func (b *bridge) releaseKeepalive(id goja.Value) {
 	_, _ = b.jsClearTimeout(goja.Undefined(), id)
 }
 
-func (b *bridge) responseObject(r *Response) goja.Value {
+func (b *bridge) responseObject(r *Response, respType string) goja.Value {
 	vm := b.vm
 	o := vm.NewObject()
 	_ = o.Set("status", r.Status)
 	_ = o.Set("ok", r.Status >= 200 && r.Status < 300)
 	_ = o.Set("url", r.FinalURL)
+	// type is the Fetch response type ("basic"/"cors"/"opaque"); the prelude copies
+	// it onto Response.type so page code sees an opaque cross-origin read as opaque.
+	_ = o.Set("type", respType)
 	_ = o.Set("body", string(r.Body))
 	// bodyBytes carries the raw bytes for Response.arrayBuffer()/blob(); the
 	// string body above stays the fast path for text()/json().

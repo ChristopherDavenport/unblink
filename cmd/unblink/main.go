@@ -47,6 +47,8 @@ func main() {
 	jsTimeout := flag.Duration("js-timeout", browser.DefaultJSTimeout, "per-render wall-clock budget for JavaScript")
 	jsNoNetwork := flag.Bool("js-no-network", false, "disable page-JS network requests (DOM-only render)")
 	jsAllowPrivate := flag.Bool("js-allow-private", false, "permit page-JS requests to private/loopback IPs (internal/dev use)")
+	jsAllowCrossOrigin := flag.Bool("js-allow-cross-origin", false, "disable browser-parity CORS enforcement over page JS (on by default; requests are always logged in the requests tool regardless)")
+	noSRI := flag.Bool("no-sri", false, "disable Subresource Integrity checks on executed scripts/modules (verification is on by default)")
 	jsMaxBytes := flag.Int64("js-max-bytes", browser.DefaultJSMaxBytes/(1024*1024), "MiB of page-JS downloads allowed per render / per live-session action (0 disables the download budget)")
 	jsMaxRequests := flag.Int("js-max-requests", browser.DefaultJSMaxRequests, "optional hard cap on page-JS request count (runaway backstop; 0 disables — the real per-render bound is --js-max-bytes)")
 	jsPrewarm := flag.Int("js-prewarm", browser.DefaultJSPrewarm, "number of pre-warmed JS runtimes kept ready (0 disables)")
@@ -107,6 +109,8 @@ func main() {
 			browser.WithJS(*jsTimeout),
 			browser.WithJSNetwork(!*jsNoNetwork),
 			browser.WithJSAllowPrivate(*jsAllowPrivate),
+			browser.WithJSAllowCrossOrigin(*jsAllowCrossOrigin),
+			browser.WithoutSRI(*noSRI),
 			browser.WithJSMaxBytes(*jsMaxBytes*1024*1024),
 			browser.WithJSMaxRequests(*jsMaxRequests),
 			browser.WithJSPrewarm(*jsPrewarm),

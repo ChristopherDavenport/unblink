@@ -27,7 +27,11 @@ func (s *stubTransport) Do(_ context.Context, _ string, url string, _ map[string
 	s.mu.Unlock()
 	for k, v := range s.routes {
 		if strings.Contains(url, k) {
-			return &js.Response{Status: 200, Headers: map[string]string{"content-type": "text/plain"}, Body: []byte(v), FinalURL: url}, nil
+			// A permissive ACAO models a CORS-enabled endpoint so cross-origin fetch
+			// tests exercise their subject (e.g. extension blocking) rather than being
+			// blocked by the default CORS enforcement (see cors.go). Same-origin
+			// routes ignore it.
+			return &js.Response{Status: 200, Headers: map[string]string{"content-type": "text/plain", "access-control-allow-origin": "*"}, Body: []byte(v), FinalURL: url}, nil
 		}
 	}
 	return &js.Response{Status: 404, Body: []byte("not found"), FinalURL: url}, nil

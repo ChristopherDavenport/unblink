@@ -9,12 +9,75 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/christopherdavenport/unblink/internal/browser"
 )
+
+// TestRenderSecFetchAndIsolation drives the whole pipeline to confirm PR-1's two
+// fidelity features: truthful Sec-Fetch-* on the primary navigation and on a JS
+// subrequest, and a truthful window.crossOriginIsolated resolved from the
+// document's COOP/COEP response headers (loopback is a secure context).
+func TestRenderSecFetchAndIsolation(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string]http.Header{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got["/api"] = r.Header.Clone()
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"msg":"api-ok"}`)
+	})
+	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got["/page"] = r.Header.Clone()
+		mu.Unlock()
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<!doctype html><html><body><div id="out">loading</div>
+<script>
+fetch('/api').then(function(r){ return r.json(); }).then(function(j){
+  document.getElementById('out').innerHTML = '<article><h1>' + j.msg + '</h1><p>cross-origin-isolated=' +
+    window.crossOriginIsolated + ' secure=' + window.isSecureContext +
+    ', rendered with enough prose for the reducer to keep this content around.</p></article>';
+});
+</script></body></html>`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	b, err := browser.New(browser.WithJS(3*time.Second), browser.WithJSAllowPrivate(true), browser.WithAllowPrivate(true))
+	if err != nil {
+		t.Fatalf("new browser: %v", err)
+	}
+	r, err := b.Read(context.Background(), browser.Request{URL: srv.URL + "/page", Render: true}, "full", 6000, "")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if h := got["/page"]; h == nil {
+		t.Fatal("no /page navigation recorded")
+	} else if h.Get("Sec-Fetch-Mode") != "navigate" || h.Get("Sec-Fetch-Site") != "none" || h.Get("Sec-Fetch-Dest") != "document" {
+		t.Errorf("primary Sec-Fetch = %q/%q/%q, want navigate/none/document",
+			h.Get("Sec-Fetch-Mode"), h.Get("Sec-Fetch-Site"), h.Get("Sec-Fetch-Dest"))
+	}
+	if h := got["/api"]; h == nil {
+		t.Fatal("no /api subrequest recorded")
+	} else if h.Get("Sec-Fetch-Dest") != "empty" || h.Get("Sec-Fetch-Mode") != "cors" || h.Get("Sec-Fetch-Site") != "same-origin" {
+		t.Errorf("subrequest Sec-Fetch = %q/%q/%q, want empty/cors/same-origin",
+			h.Get("Sec-Fetch-Dest"), h.Get("Sec-Fetch-Mode"), h.Get("Sec-Fetch-Site"))
+	}
+	if !strings.Contains(r.Markdown, "cross-origin-isolated=true") {
+		t.Errorf("crossOriginIsolated should be true (secure loopback + COOP + COEP):\n%s", r.Markdown)
+	}
+}
 
 func serveFixture(t *testing.T, name string) (*httptest.Server, *int64) {
 	t.Helper()
@@ -614,6 +677,72 @@ fetch('/api').then(function(r){ return r.json(); }).then(function(j){
 	}
 	if strings.Contains(r2.Markdown, "hello-from-api") {
 		t.Errorf("SSRF guard should have blocked the loopback fetch:\n%s", r2.Markdown)
+	}
+}
+
+// TestRenderJSCrossOriginCORS drives the whole real pipeline (doFetch →
+// guardedTransport → fetch.Client, with real ACAO response headers) to prove CORS
+// enforcement over page JS: a cross-origin fetch lacking Access-Control-Allow-Origin
+// is unreadable by the page (yet still reaches the server — history preservation),
+// while one whose server sends ACAO renders. Two loopback servers = distinct origins.
+func TestRenderJSCrossOriginCORS(t *testing.T) {
+	var apiHits int64
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&apiHits, 1)
+		if r.URL.Query().Get("cors") == "1" {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"msg":"cross-origin-payload"}`)
+	}))
+	defer api.Close()
+
+	page := func(apiURL string) string {
+		return `<!doctype html><html><body><div id="out">loading</div>
+<script>
+fetch('` + apiURL + `').then(function(r){ return r.json(); }).then(function(j){
+  document.getElementById('out').innerHTML = '<article><h1>' + j.msg + '</h1><p>' + j.msg +
+    ' was rendered via a cross-origin fetch, with enough prose for the reducer to keep it.</p></article>';
+}).catch(function(){ document.getElementById('out').textContent = 'the cross-origin read was blocked as this scenario expects, with prose'; });
+</script></body></html>`
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/blocked", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, page(api.URL+"/data")) // no ACAO → CORS-blocked read
+	})
+	mux.HandleFunc("/allowed", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, page(api.URL+"/data?cors=1")) // ACAO:* → readable
+	})
+	pageSrv := httptest.NewServer(mux)
+	defer pageSrv.Close()
+	ctx := context.Background()
+
+	b, err := browser.New(browser.WithJS(3*time.Second), browser.WithJSAllowPrivate(true), browser.WithAllowPrivate(true))
+	if err != nil {
+		t.Fatalf("new browser: %v", err)
+	}
+
+	// Cross-origin WITHOUT ACAO: the page's read is CORS-blocked.
+	rb, err := b.Read(ctx, browser.Request{URL: pageSrv.URL + "/blocked", Render: true}, "full", 6000, "")
+	if err != nil {
+		t.Fatalf("read blocked: %v", err)
+	}
+	if strings.Contains(rb.Markdown, "cross-origin-payload") {
+		t.Errorf("cross-origin read without ACAO should be CORS-blocked:\n%s", rb.Markdown)
+	}
+	if atomic.LoadInt64(&apiHits) == 0 {
+		t.Error("blocked cross-origin request never reached the API (it should still be sent + logged)")
+	}
+
+	// Cross-origin WITH ACAO: the page reads and renders it.
+	ra, err := b.Read(ctx, browser.Request{URL: pageSrv.URL + "/allowed", Render: true}, "full", 6000, "")
+	if err != nil {
+		t.Fatalf("read allowed: %v", err)
+	}
+	if !strings.Contains(ra.Markdown, "cross-origin-payload") {
+		t.Errorf("cross-origin read WITH ACAO should render:\n%s", ra.Markdown)
 	}
 }
 
