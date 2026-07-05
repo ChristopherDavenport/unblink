@@ -318,6 +318,7 @@ func (b *bridge) install() {
 	b.installAsync()
 	b.installDynamicImport()
 	b.installSubtle()
+	b.installURL()
 	b.installIsolationGlobals()
 	if b.extHost != nil {
 		b.installExtensionAPI(win)
