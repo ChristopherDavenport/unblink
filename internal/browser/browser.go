@@ -512,11 +512,14 @@ func originOfURL(rawURL string) string {
 // renderOpts carries a request's JavaScript-render intent down to fetchPage: whether
 // to render at all, an optional wait condition, and a per-render budget override.
 type renderOpts struct {
-	render      bool
-	wait        *js.WaitCondition
-	timeout     time.Duration
-	storage     js.Storage // session-scoped localStorage backing; nil for stateless fetches
-	sessStorage js.Storage // session-scoped sessionStorage backing; nil for stateless fetches
+	render  bool
+	wait    *js.WaitCondition
+	timeout time.Duration
+	// storageFor selects the origin-partitioned local/session storage for the
+	// rendered page's origin (Same-Origin Policy, ADR 0015). nil for stateless
+	// one-shot fetches — those get fresh per-render storage (single origin, so no
+	// partitioning is needed). Resolved in processFetched with the final page origin.
+	storageFor func(origin string) (local, session js.Storage)
 }
 
 // renderOpts derives the render intent from a Request. A wait condition implies a
@@ -555,7 +558,7 @@ func (b *Browser) resolve(ctx context.Context, req Request) (*page.Page, *sessio
 			return cur, sess, nil
 		}
 		ro := req.renderOpts()
-		ro.storage, ro.sessStorage = sess.Storage(), sess.SessionStorage()
+		ro.storageFor = storageProviderFor(sess)
 		p, err := b.fetchPage(ctx, sess.Client(), req.URL, ro)
 		if err != nil {
 			return nil, sess, err
@@ -691,7 +694,12 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 	var renderDur time.Duration
 	if ro.render && b.renderer != nil {
 		var diag js.RenderResult
-		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, SessionStorage: ro.sessStorage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout, AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: p.Header}
+		// Origin-partition session storage by the final page origin (SOP, ADR 0015).
+		var localStore, sessStore js.Storage
+		if ro.storageFor != nil {
+			localStore, sessStore = ro.storageFor(originKey(renderPageURL(p)))
+		}
+		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: localStore, SessionStorage: sessStore, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout, AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: p.Header}
 		if b.jsNetwork {
 			env.Transport = b.newRenderTransport(client, ro.timeout)
 		}
@@ -744,6 +752,24 @@ func renderPageURL(p *page.Page) *url.URL {
 		return p.FinalURL
 	}
 	return p.RequestURL
+}
+
+// originKey is the storage-partition key for a document: its origin
+// "scheme://host[:port]", lowercased (Same-Origin Policy, ADR 0015). A nil or
+// non-web URL yields "null" so those share one opaque-origin bag.
+func originKey(u *url.URL) string {
+	if u == nil || u.Scheme == "" || u.Host == "" {
+		return "null"
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+}
+
+// storageProviderFor returns a renderOpts.storageFor closure that resolves a
+// session's origin-partitioned local/session storage for a document origin.
+func storageProviderFor(sess *session.Session) func(string) (js.Storage, js.Storage) {
+	return func(origin string) (js.Storage, js.Storage) {
+		return sess.Storage(origin), sess.SessionStorage(origin)
+	}
 }
 
 // applyRenderDiag records JS render diagnostics on the page and logs them at debug,
@@ -1487,7 +1513,7 @@ func (b *Browser) Click(ctx context.Context, sessionID string, linkIndex int, ma
 		href = links[linkIndex].Href
 	}
 
-	p, err := b.fetchPage(ctx, sess.Client(), href, renderOpts{render: render, storage: sess.Storage(), sessStorage: sess.SessionStorage()})
+	p, err := b.fetchPage(ctx, sess.Client(), href, renderOpts{render: render, storageFor: storageProviderFor(sess)})
 	if err != nil {
 		return nil, err
 	}
@@ -1540,7 +1566,7 @@ func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := b.processFetched(ctx, sess.Client(), p, renderOpts{render: render, storage: sess.Storage(), sessStorage: sess.SessionStorage()}); err != nil {
+	if _, err := b.processFetched(ctx, sess.Client(), p, renderOpts{render: render, storageFor: storageProviderFor(sess)}); err != nil {
 		return nil, err
 	}
 	sess.Visit(p)
@@ -1649,7 +1675,8 @@ func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.Liv
 	if err := dom.Parse(tmp); err != nil {
 		return nil, err
 	}
-	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(), SessionStorage: sess.SessionStorage(), AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: cur.Header}
+	origin := originKey(renderPageURL(tmp)) // origin-partition storage (SOP, ADR 0015)
+	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(origin), SessionStorage: sess.SessionStorage(origin), AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: cur.Header}
 	if b.jsNetwork {
 		env.Transport = b.newLiveTransport(sess.Client())
 	}

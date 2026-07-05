@@ -185,8 +185,13 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   untrusted page JS (default on, `internal/js/csp.go`: header + `<meta>` parsing,
   script-src nonce/hash/host incl. `strict-dynamic`, connect-src on fetch/XHR,
   `unsafe-eval` via `EvalError` shims; report-only surfaces without blocking; a
-  resource must satisfy every enforced policy; `--no-csp` opts out). Add a new ADR
-  when a decision would otherwise live only in a PR description.
+  resource must satisfy every enforced policy; `--no-csp` opts out); 0015 is the
+  Same-Origin-Policy posture (SOP is the default: network reads via CORS, cookies,
+  and now origin-partitioned Web Storage are isolated; the DOM/window/frame half is
+  moot-by-architecture — single-document, one runtime per render — so it's a
+  deliberate non-goal. The one behavior change was origin-keying localStorage/
+  sessionStorage in `internal/session`). Add a new ADR when a decision would
+  otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
 - **WebExtensions (opt-in, ADR 0010)**: `--extension <dir|.xpi|.crx|.zip>` /

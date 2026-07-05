@@ -3,13 +3,72 @@ package browser_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/christopherdavenport/unblink/internal/browser"
 )
+
+// TestSessionStorageOriginPartitioned proves the Same-Origin Policy for Web
+// Storage (ADR 0015): within one session, a page on origin B cannot read the
+// localStorage a page on origin A wrote, while each origin's storage still
+// persists across navigations back to it. Two loopback ports = two origins.
+func TestSessionStorageOriginPartitioned(t *testing.T) {
+	// Origin A reads any prior value, then writes its own secret.
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<html><body><p id="out"></p><script>
+			var prev = localStorage.getItem('secret');
+			localStorage.setItem('secret', 'from-A');
+			document.getElementById('out').textContent = 'A-prev=' + prev;
+		</script></body></html>`)
+	}))
+	defer srvA.Close()
+	// Origin B reports whatever it can read (must be null — partitioned from A).
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<html><body><p id="out"></p><script>
+			document.getElementById('out').textContent = 'B-sees=' + localStorage.getItem('secret');
+		</script></body></html>`)
+	}))
+	defer srvB.Close()
+
+	b, err := browser.New(browser.WithJS(2*time.Second), browser.WithAllowPrivate(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	ctx := context.Background()
+	const sid = "tab"
+
+	rA, err := b.Read(ctx, browser.Request{SessionID: sid, URL: srvA.URL, Render: true}, "full", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rA.Markdown, "A-prev=null") {
+		t.Errorf("first A visit should see no prior value; got %q", rA.Markdown)
+	}
+	// Same session, different origin: must NOT see A's secret.
+	rB, err := b.Read(ctx, browser.Request{SessionID: sid, URL: srvB.URL, Render: true}, "full", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rB.Markdown, "B-sees=null") {
+		t.Errorf("origin B leaked origin A's localStorage (SOP violation): %q", rB.Markdown)
+	}
+	// Back to A: its own storage persisted across the cross-origin hop.
+	rA2, err := b.Read(ctx, browser.Request{SessionID: sid, URL: srvA.URL, Render: true}, "full", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rA2.Markdown, "A-prev=from-A") {
+		t.Errorf("origin A's own localStorage should persist across navigation; got %q", rA2.Markdown)
+	}
+}
 
 // The live-runtime cap must hold: opening an (N+1)th live context tears down
 // the least-recently-used one; the evicted session keeps its page and interact

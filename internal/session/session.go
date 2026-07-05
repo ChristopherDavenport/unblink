@@ -49,8 +49,12 @@ type Session struct {
 	livePos     int            // history index live is bound to; -1 when none
 	liveSyncVer uint64         // live-DOM version the stored current page was snapshotted at
 	liveSynced  bool           // liveSyncVer is valid (a snapshot has been stored)
-	storage     *js.MemStorage // persistent window.localStorage backing; lazily created
-	sessStorage *js.MemStorage // persistent window.sessionStorage backing; lazily created
+	// storage/sessStorage back window.localStorage / sessionStorage, partitioned by
+	// document origin (Same-Origin Policy): a page on origin A and a later page on
+	// origin B in the same session get separate bags, so B cannot read A's storage.
+	// Lazily created per origin. See ADR 0015.
+	storage     map[string]*js.MemStorage
+	sessStorage map[string]*js.MemStorage
 	lastUsed    time.Time
 }
 
@@ -61,28 +65,41 @@ func newSession(id string, client *fetch.Client, cfg Config) *Session {
 // Client returns the session's fetch client (which owns its cookie jar).
 func (s *Session) Client() *fetch.Client { return s.client }
 
-// Storage returns the session's persistent localStorage backing store, created
-// on first use. It outlives individual renders and live runtimes, so page state
-// (auth tokens, preferences) survives across calls — like a real browser tab.
-func (s *Session) Storage() *js.MemStorage {
+// Storage returns the session's localStorage backing store for the given document
+// origin ("scheme://host[:port]"), created on first use. It outlives individual
+// renders and live runtimes, so page state (auth tokens, preferences) survives
+// across calls — but only for the same origin, like a real browser tab. A
+// different origin gets a separate store (Same-Origin Policy, ADR 0015).
+func (s *Session) Storage(origin string) *js.MemStorage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.storage == nil {
-		s.storage = js.NewMemStorage()
+		s.storage = map[string]*js.MemStorage{}
 	}
-	return s.storage
+	st := s.storage[origin]
+	if st == nil {
+		st = js.NewMemStorage()
+		s.storage[origin] = st
+	}
+	return st
 }
 
-// SessionStorage returns the session's persistent sessionStorage backing store,
-// created on first use. In the browser model a session is a tab: sessionStorage
-// survives navigations within the tab and dies with it (session close/eviction).
-func (s *Session) SessionStorage() *js.MemStorage {
+// SessionStorage returns the session's sessionStorage backing store for the given
+// document origin, created on first use. In the browser model a session is a tab:
+// sessionStorage survives navigations within the tab (for the same origin) and dies
+// with it (session close/eviction). Partitioned by origin like Storage.
+func (s *Session) SessionStorage(origin string) *js.MemStorage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sessStorage == nil {
-		s.sessStorage = js.NewMemStorage()
+		s.sessStorage = map[string]*js.MemStorage{}
 	}
-	return s.sessStorage
+	st := s.sessStorage[origin]
+	if st == nil {
+		st = js.NewMemStorage()
+		s.sessStorage[origin] = st
+	}
+	return st
 }
 
 // Config returns the session's credential configuration (set at creation).
