@@ -167,7 +167,7 @@ func isBareScheme(s string) bool {
 		if i == 0 && !isASCIILetter(r) {
 			return false
 		}
-		if !isASCIILetter(r) && !(r >= '0' && r <= '9') && r != '+' && r != '-' && r != '.' {
+		if !isASCIILetter(r) && (r < '0' || r > '9') && r != '+' && r != '-' && r != '.' {
 			return false
 		}
 	}
