@@ -32,6 +32,35 @@ func makePage(rawURL string) *page.Page {
 	return &page.Page{FinalURL: u}
 }
 
+// TestStorageOriginPartitioned confirms Storage/SessionStorage return a distinct
+// bag per origin and the same bag for a repeated origin (ADR 0015).
+func TestStorageOriginPartitioned(t *testing.T) {
+	m := session.NewManager(0, 0, newClient, nil)
+	s, err := m.GetOrCreate("tab")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	a := "https://a.com"
+	bOrigin := "https://b.com"
+	s.Storage(a).Set("k", "va")
+	s.Storage(bOrigin).Set("k", "vb")
+	if v, _ := s.Storage(a).Get("k"); v != "va" {
+		t.Errorf("origin a storage = %q, want va", v)
+	}
+	if v, _ := s.Storage(bOrigin).Get("k"); v != "vb" {
+		t.Errorf("origin b storage = %q, want vb (must not see a's value)", v)
+	}
+	first := s.Storage(a)
+	if first != s.Storage(a) {
+		t.Error("same origin should return the same store")
+	}
+	// localStorage and sessionStorage are separate areas even for the same origin.
+	s.SessionStorage(a).Set("k", "session-va")
+	if v, _ := s.Storage(a).Get("k"); v != "va" {
+		t.Errorf("sessionStorage bled into localStorage: %q", v)
+	}
+}
+
 func TestGetOrCreateLazy(t *testing.T) {
 	m := session.NewManager(0, 0, newClient, nil)
 	s1, err := m.GetOrCreate("a")
