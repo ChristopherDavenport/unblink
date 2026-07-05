@@ -52,6 +52,45 @@ func TestTextEncoderDecoder(t *testing.T) {
 	}
 }
 
+// TestTextDecoderConformance locks the WHATWG-correctness fixes: fatal mode throws
+// (and is reflected), ignoreBOM/BOM stripping, label normalization (utf-8 aliases
+// canonicalize, valid legacy labels are accepted, invalid labels throw RangeError),
+// and lone-surrogate encoding as U+FFFD (not WTF-8).
+func TestTextDecoderConformance(t *testing.T) {
+	out := render(t, `<html><body><div id="out"></div><script>
+	  var parts = [];
+	  // fatal mode throws on malformed input; non-fatal substitutes.
+	  var fd = new TextDecoder('utf-8', { fatal: true });
+	  parts.push('fatalAttr:' + fd.fatal);
+	  try { fd.decode(new Uint8Array([0xFF])); parts.push('fatalThrew:false'); }
+	  catch (e) { parts.push('fatalThrew:' + (e instanceof TypeError)); }
+	  parts.push('nonFatal:' + (new TextDecoder().decode(new Uint8Array([0xFF])).charCodeAt(0) === 0xFFFD));
+	  // BOM: stripped by default, kept with ignoreBOM.
+	  var bom = new Uint8Array([0xEF, 0xBB, 0xBF, 0x41]);
+	  parts.push('bomStrip:' + (new TextDecoder().decode(bom) === 'A'));
+	  parts.push('bomKeep:' + (new TextDecoder('utf-8', { ignoreBOM: true }).decode(bom).charCodeAt(0) === 0xFEFF));
+	  // label normalization.
+	  parts.push('alias:' + new TextDecoder('unicode-1-1-utf-8').encoding);
+	  parts.push('legacy:' + new TextDecoder('iso-8859-2').encoding);
+	  try { new TextDecoder('utf-7'); parts.push('invalidThrew:false'); }
+	  catch (e) { parts.push('invalidThrew:' + (e instanceof RangeError)); }
+	  // lone surrogate -> U+FFFD (EF BF BD), not WTF-8 (ED ...).
+	  var lone = new TextEncoder().encode('\uD800');
+	  parts.push('surrogate:' + (lone[0] === 0xEF && lone[1] === 0xBF && lone[2] === 0xBD));
+	  document.getElementById('out').textContent = parts.join('|');
+	</script></body></html>`)
+	for _, want := range []string{
+		"fatalAttr:true", "fatalThrew:true", "nonFatal:true",
+		"bomStrip:true", "bomKeep:true",
+		"alias:utf-8", "legacy:iso-8859-2", "invalidThrew:true",
+		"surrogate:true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("TextDecoder conformance missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestPerformanceNow proves performance.now/timeOrigin/mark/measure exist —
 // bundles call performance.now() unguarded, and its absence threw before
 // Phase 21.
