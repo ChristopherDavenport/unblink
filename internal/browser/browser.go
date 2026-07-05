@@ -109,10 +109,12 @@ type Browser struct {
 	jsMaxRequests  int          // optional JS request-count backstop (0 = off)
 	jsAllowPrivate bool         // permit JS requests to private/loopback IPs
 	// jsAllowCrossOrigin disables page-JS CORS enforcement; jsDisableSRI disables
-	// Subresource Integrity checks. Both default false (secure): CORS enforced, SRI
-	// verified. See internal/js/cors.go, sri.go and ADRs 0011/0012.
+	// Subresource Integrity checks; jsDisableCSP disables Content-Security-Policy
+	// enforcement. All default false (secure): CORS enforced, SRI verified, CSP
+	// enforced. See internal/js/cors.go, sri.go, csp.go and ADRs 0011/0012/0014.
 	jsAllowCrossOrigin bool
 	jsDisableSRI       bool
+	jsDisableCSP       bool
 	jsReqTimeout       time.Duration
 	jsMaxLive          int               // cap on concurrent live JS runtimes (LRU torn down)
 	jsRT               http.RoundTripper // shared conn pool for all JS subrequest clients (SSRF guard baked in)
@@ -136,6 +138,7 @@ type options struct {
 	jsAllowPrivate     bool
 	jsAllowCrossOrigin bool
 	jsDisableSRI       bool
+	jsDisableCSP       bool
 	jsTimeout          time.Duration
 	jsPrewarm          int
 	jsConcurrency      int
@@ -250,6 +253,11 @@ func WithJSAllowCrossOrigin(allow bool) Option {
 // verify). An escape hatch; leaving it on blocks integrity-mismatched scripts as
 // a browser does. See ADR 0012.
 func WithoutSRI(disable bool) Option { return func(o *options) { o.jsDisableSRI = disable } }
+
+// WithoutCSP disables Content-Security-Policy enforcement over page JS (off by
+// default = enforce). An escape hatch for renders where a page's own CSP would
+// suppress scripts/eval the extraction needs. See ADR 0014.
+func WithoutCSP(disable bool) Option { return func(o *options) { o.jsDisableCSP = disable } }
 
 // WithJSMaxLive caps how many live (persistent, per-session) JS runtimes may
 // exist at once; the least-recently-used runtime is torn down to make room (its
@@ -395,6 +403,7 @@ func New(opts ...Option) (*Browser, error) {
 		jsAllowPrivate:     o.jsAllowPrivate,
 		jsAllowCrossOrigin: o.jsAllowCrossOrigin,
 		jsDisableSRI:       o.jsDisableSRI,
+		jsDisableCSP:       o.jsDisableCSP,
 		jsReqTimeout:       o.jsTimeout,
 		jsMaxLive:          o.jsMaxLive,
 		// One pool for every render's and live session's subrequest client:
@@ -682,7 +691,7 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 	var renderDur time.Duration
 	if ro.render && b.renderer != nil {
 		var diag js.RenderResult
-		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, SessionStorage: ro.sessStorage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout, AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, ResponseHeaders: p.Header}
+		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: ro.storage, SessionStorage: ro.sessStorage, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout, AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: p.Header}
 		if b.jsNetwork {
 			env.Transport = b.newRenderTransport(client, ro.timeout)
 		}
@@ -1640,7 +1649,7 @@ func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.Liv
 	if err := dom.Parse(tmp); err != nil {
 		return nil, err
 	}
-	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(), SessionStorage: sess.SessionStorage(), AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, ResponseHeaders: cur.Header}
+	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(), SessionStorage: sess.SessionStorage(), AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: cur.Header}
 	if b.jsNetwork {
 		env.Transport = b.newLiveTransport(sess.Client())
 	}

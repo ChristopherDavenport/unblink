@@ -113,6 +113,11 @@ func (b *bridge) runModules(modules []*html.Node, importMap map[string]string) {
 			if err != nil {
 				continue
 			}
+			// CSP script-src gates the top-level module tag (parser-inserted).
+			// Transitive imports inherit this decision (documented approximation).
+			if !b.cspAllowExternalScript(abs, getAttr(m, "nonce"), true) {
+				continue
+			}
 			// SRI is enforced only on the top-level module tag (browser parity —
 			// transitive static imports are not integrity-checked).
 			if b.sriEnabled {
@@ -123,6 +128,10 @@ func (b *bridge) runModules(modules []*html.Node, importMap map[string]string) {
 			entry = "import " + strconv.Quote(abs) + ";"
 		} else {
 			entry = scriptText(m)
+			// CSP script-src gates inline modules (nonce / hash / 'unsafe-inline').
+			if !b.cspAllowInline(entry, getAttr(m, "nonce")) {
+				continue
+			}
 		}
 		if strings.TrimSpace(entry) == "" {
 			continue

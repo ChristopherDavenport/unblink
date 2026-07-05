@@ -746,6 +746,41 @@ fetch('` + apiURL + `').then(function(r){ return r.json(); }).then(function(j){
 	}
 }
 
+// TestRenderCSPEnforcement drives the whole pipeline to confirm the document's
+// Content-Security-Policy header reaches the engine (via Env.ResponseHeaders) and
+// is enforced: a nonce'd inline script runs, a non-nonce'd one is blocked.
+func TestRenderCSPEnforcement(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Security-Policy", "script-src 'nonce-secret123'")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<!doctype html><html><body><div id="out">baseline</div>
+<script nonce="secret123">
+document.getElementById('out').innerHTML =
+  '<article><h1>allowed-nonce-content</h1><p>This nonce-approved script rendered, with enough prose for the reducer to keep it around in the output.</p></article>';
+</script>
+<script>
+document.getElementById('out').innerHTML = '<article><h1>BLOCKED-SHOULD-NOT-APPEAR</h1></article>';
+</script>
+</body></html>`)
+	}))
+	defer srv.Close()
+
+	b, err := browser.New(browser.WithJS(3*time.Second), browser.WithAllowPrivate(true))
+	if err != nil {
+		t.Fatalf("new browser: %v", err)
+	}
+	r, err := b.Read(context.Background(), browser.Request{URL: srv.URL, Render: true}, "full", 6000, "")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(r.Markdown, "allowed-nonce-content") {
+		t.Errorf("nonce'd script content missing:\n%s", r.Markdown)
+	}
+	if strings.Contains(r.Markdown, "BLOCKED-SHOULD-NOT-APPEAR") {
+		t.Errorf("CSP failed to block the non-nonce'd inline script:\n%s", r.Markdown)
+	}
+}
+
 // TestReadWaitForExtendsAndReportsMet proves the read wait_for/wait_timeout path
 // end-to-end: content that lands via a fetch after the engine's (short) default budget
 // is still awaited because wait_timeout extends it, and wait_met reports success.
