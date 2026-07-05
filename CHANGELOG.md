@@ -3,6 +3,19 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## v0.23.1 — 2026-07-05
+
+### Fixed
+
+- **Version reporting is now correct by construction.** The advertised server
+  version (`--version` and the MCP handshake) came from a hardcoded constant
+  overridden only by the release `-ldflags` stamp, so a `go install …@vX.Y.Z`
+  build — which runs no ldflags — reported a stale version. `Version()` now falls
+  back to the module version the Go toolchain embeds (`debug.ReadBuildInfo`), so
+  every build path reports its real version with no constant to hand-maintain.
+  The release workflow also auto-stamps the README Status headline from the tag,
+  matching how `.claude-plugin/plugin.json` is already synced.
+
 ## v0.23.0 — 2026-07-05
 
 ### Added
