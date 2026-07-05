@@ -175,8 +175,14 @@ it — that keeps the engine transport-agnostic and the SDK swappable.
   sent + logged in `requests`, only the page-JS *read* is gated — history
   preservation; `--js-allow-cross-origin` opts out); 0012 is Subresource Integrity
   (default on, `internal/js/sri.go`; hashes the raw pre-transcode bytes — hence the
-  `Raw` field on `fetch.Result`/`js.Response`; `--no-sri` opts out). Add a new ADR
-  when a decision would otherwise live only in a PR description.
+  `Raw` field on `fetch.Result`/`js.Response`; `--no-sri` opts out); 0013 is
+  Fetch-Metadata + cross-origin isolation fidelity (truthful per-context
+  `Sec-Fetch-*` on primary + every subrequest via `internal/js/secfetch.go`,
+  decoupled from `--tls-mimic`; truthful `window.crossOriginIsolated`/
+  `isSecureContext` from COOP/COEP in `internal/js/isolation.go`, no COEP
+  enforcement — the document response headers now reach the engine via
+  `Env.ResponseHeaders`). Add a new ADR when a decision would otherwise live only
+  in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
 - **WebExtensions (opt-in, ADR 0010)**: `--extension <dir|.xpi|.crx|.zip>` /

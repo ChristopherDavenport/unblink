@@ -251,6 +251,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget, e.extHost)
 		b.allowCrossOrigin = env.AllowCrossOrigin
 		b.sriEnabled = !env.DisableSRI
+		b.respHeaders = env.ResponseHeaders
 		b.assets = e.assets
 		b.webdriver = e.webdriver
 		b.install()

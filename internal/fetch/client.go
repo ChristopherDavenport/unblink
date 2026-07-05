@@ -563,6 +563,7 @@ func (c *Client) setHeaders(req *http.Request) {
 	// fetch cannot decode zstd, so matching Chrome's "gzip, deflate, br, zstd"
 	// would break decoding — correctness beats fingerprint fidelity here.
 	req.Header.Set("Accept-Encoding", "gzip, br")
+	c.setFetchMetadataDefaults(req)
 	c.injectCredentials(req)
 }
 
@@ -581,6 +582,19 @@ func (c *Client) setChromeMimicHeaders(req *http.Request) {
 	req.Header.Set("sec-ch-ua-mobile", "?0")
 	req.Header.Set("sec-ch-ua-platform", `"Linux"`)
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	// Sec-Fetch-* are set by setFetchMetadataDefaults (sent regardless of tls-mimic).
+}
+
+// setFetchMetadataDefaults attaches the Fetch Metadata (Sec-Fetch-*) headers for a
+// top-level navigation. It is sent on every primary document fetch — these are
+// honest request-context metadata, not a fingerprint persona, so they are decoupled
+// from --tls-mimic. It no-ops when Sec-Fetch-Mode is already present: page-JS
+// subrequests get their per-context values from secFetchTransport (internal/js)
+// before reaching here, and this must not overwrite them with the navigation set.
+func (c *Client) setFetchMetadataDefaults(req *http.Request) {
+	if req.Header.Get("Sec-Fetch-Mode") != "" {
+		return
+	}
 	req.Header.Set("Sec-Fetch-Dest", "document")
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
 	req.Header.Set("Sec-Fetch-Site", "none")
