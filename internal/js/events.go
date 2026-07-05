@@ -524,6 +524,10 @@ func (b *bridge) dispatchUserEvent(arg goja.Value, target goja.Value, run func(*
 	if o == nil {
 		return false
 	}
+	// A createEvent()'d event dispatched before initEvent() must throw InvalidStateError.
+	if v := o.Get("__uninitialized"); v != nil && v.ToBoolean() {
+		b.throwDOMException("InvalidStateError", "The event has not been initialized.")
+	}
 	return run(b.wrapEvent(o, target))
 }
 

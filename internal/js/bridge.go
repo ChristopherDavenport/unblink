@@ -619,6 +619,15 @@ func (b *bridge) documentFacade(docNode *html.Node) goja.Value {
 	vm := b.vm
 
 	d := vm.NewObject()
+	_ = d.SetPrototype(b.protoDocument) // so `doc instanceof Document/Node` holds; own methods below shadow the node-backed ones
+	b.defineGetter(d, "URL", func() goja.Value { return vm.ToValue("about:blank") })
+	b.defineGetter(d, "documentURI", func() goja.Value { return vm.ToValue("about:blank") })
+	b.defineGetter(d, "characterSet", func() goja.Value { return vm.ToValue("UTF-8") })
+	b.defineGetter(d, "charset", func() goja.Value { return vm.ToValue("UTF-8") })
+	b.defineGetter(d, "inputEncoding", func() goja.Value { return vm.ToValue("UTF-8") })
+	b.defineGetter(d, "contentType", func() goja.Value { return vm.ToValue("text/html") })
+	b.defineGetter(d, "compatMode", func() goja.Value { return vm.ToValue("CSS1Compat") })
+	b.defineGetter(d, "location", func() goja.Value { return goja.Null() })
 	b.defineGetter(d, "documentElement", func() goja.Value { return b.wrap(findTag(docNode, "html")) })
 	b.defineGetter(d, "body", func() goja.Value { return b.wrap(findTag(docNode, "body")) })
 	b.defineGetter(d, "head", func() goja.Value { return b.wrap(findTag(docNode, "head")) })
@@ -682,6 +691,8 @@ func (b *bridge) classListFor(n *html.Node) *goja.Object {
 	}
 	vm := b.vm
 	cl := vm.NewObject()
+	// Brand it so Object.prototype.toString.call(classList) is "[object DOMTokenList]".
+	_ = cl.SetSymbol(goja.SymToStringTag, vm.ToValue("DOMTokenList"))
 	tokens := func() []string { return strings.Fields(getAttr(n, "class")) }
 	write := func(ts []string) { b.setAttrMut(n, "class", strings.Join(ts, " ")) }
 	has := func(c string) bool {

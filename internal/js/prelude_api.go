@@ -2353,8 +2353,9 @@ const preludeAPIJS = `
       if (/mouse/i.test(iface)) ev = new MouseEvent('');
       else if (/custom/i.test(iface)) ev = new CustomEvent('');
       else ev = new Event('');
+      ev.__uninitialized = true; // dispatching before initEvent must throw InvalidStateError
       ev.initEvent = function (type, bubbles, cancelable) {
-        ev.type = type; ev.bubbles = !!bubbles; ev.cancelable = !!cancelable;
+        ev.type = type; ev.bubbles = !!bubbles; ev.cancelable = !!cancelable; ev.__uninitialized = false;
       };
       ev.initCustomEvent = function (type, bubbles, cancelable, detail) {
         ev.initEvent(type, bubbles, cancelable); ev.detail = detail;
