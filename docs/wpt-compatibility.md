@@ -69,17 +69,19 @@ measurable by a client-side harness.
 
 ## Ranked priorities (content-extraction first)
 
-**The full list at a glance:**
+**Progress (branch `feat/wpt-conformance-harness`):** P1–P3 are **implemented** — the
+three deltas below were measured per-directory before/after. P1 also removed the
+per-call interpreter cost behind the `url/` timeouts.
 
-| # | Item | Where | Signal |
+| # | Item | Status | Conformance |
 |---|---|---|---|
-| **P1** | Replace the regex URL parser with a WHATWG one | `internal/js/globals.go` | url suite **times out entirely**; most content-critical API |
-| **P2** | TextDecoder/TextEncoder correctness (fatal, options, labels, surrogates) | `internal/js/prelude_api.go` | encoding **0.504**, 4 concrete gaps |
-| **P3** | DOM fidelity (CharacterData, DOMTokenList, passive listeners, dispatchEvent) | `internal/js/{domapi,events,bridge}.go` | dom **0.488** |
-| **P4** | HTML tree-construction — **maintain only** | `x/net/html` | html/syntax **0.944**, already strong |
-| **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | `internal/js/customelements.go` | reflection/iframe-dominated; smaller real slice |
-| **secondary** | Security-posture edges — **closed** (audit-driven, see below) | `internal/js`, `internal/fetch` | WPT can't measure these; a targeted audit found 6 gaps, all now fixed/locked |
-| *not ranked* | IDL reflection breadth, streams backpressure, legacy encodings, asymmetric crypto | — | by-design or low content-value (excluded) |
+| **P1** | Native WHATWG URL parser (`nlnwa/whatwg-url` via `urlnative.go`) | ✅ done | url **0.115 → 0.979** |
+| **P2** | TextDecoder/TextEncoder correctness (fatal, options, labels, surrogates) | ✅ done | encoding **0.504 → 0.873** |
+| **P3** | DOM fidelity — DOMException + CharacterData + DOMTokenList/createHTMLDocument branding + dispatchEvent (passive-by-default deferred) | ✅ done (cheap subset) | dom **0.488 → 0.648** |
+| **P4** | HTML tree-construction — **maintain only** | already strong | html/syntax **0.944** |
+| **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | not started | reflection/iframe-dominated; smaller real slice |
+| **secondary** | Security-posture edges — audit-driven | ✅ closed | 6 gaps found + fixed/locked (WPT can't measure; see *Secondary*) |
+| *not ranked* | IDL reflection breadth, streams backpressure, legacy encodings, asymmetric crypto | excluded | by-design or low content-value |
 
 Detail for each below.
 
