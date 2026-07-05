@@ -109,6 +109,54 @@ Three load-bearing decisions hold the design together:
 **No MCP types appear below `internal/mcpserver`**, and no browser logic lives in
 it — that keeps the engine transport-agnostic and the SDK swappable.
 
+## Security posture
+
+unblink **executes untrusted page JavaScript**, so it treats the page's own code as
+hostile and applies the browser's security model as **defaults** over it. The
+guiding principle mirrors a browser + its devtools: **gate the page, not the
+operator** — a blocked cross-origin request is still *sent and logged* (visible to
+the agent via the `requests` tool); only the page-JS *read* is denied. The layers
+(each detailed in an ADR; escape hatches are opt-in-to-*less*-secure, default off):
+
+- **SSRF guard** (default on): no fetch — primary, session, one-shot, or page-JS
+  subrequest — reaches a private/loopback/metadata IP (checked on the *resolved*
+  IP). Hatches `--allow-private`, `--js-allow-private`. (Detailed gotcha below.)
+- **Same-Origin Policy** (ADR 0015): SOP is the default. Cross-origin *network
+  reads* go through CORS; cookies are origin/domain-scoped (public-suffix jar,
+  HttpOnly hidden from `document.cookie`); **Web Storage is origin-partitioned** per
+  session (`internal/session`). The cross-*document* half (iframes/`contentWindow`,
+  `window.open`/`opener`/`frames`, `postMessage`, `document.domain`, `window.name`)
+  is **moot by architecture** — single-document, one runtime per render, no
+  reachable foreign document — a deliberate non-goal.
+- **CORS** (ADR 0011, default on): cross-origin `fetch`/XHR over page JS obeys
+  `Access-Control-*` + preflight; non-credentialed cross-origin drops cookies;
+  `no-cors` yields an opaque response. `internal/js/cors.go` (`doFetch`); hatch
+  `--js-allow-cross-origin`.
+- **CSP** (ADR 0014, default on): the document's `Content-Security-Policy` (header +
+  `<meta>`) is enforced over page JS — `script-src` nonce/hash/host + `strict-dynamic`,
+  `connect-src`, `unsafe-eval` (via `EvalError` shims); report-only surfaces without
+  blocking. `internal/js/csp.go`; hatch `--no-csp`.
+- **SRI** (ADR 0012, default on): `integrity`-pinned scripts/modules are hashed over
+  the *raw pre-transcode* bytes and blocked on mismatch. `internal/js/sri.go`; hatch
+  `--no-sri`.
+- **Injected-credential origin scoping** (Phase 10): bearer/basic/custom headers go
+  only to their configured origin, stripped on cross-origin redirect. (Gotcha below.)
+- **Truthful request/isolation signals** (ADR 0013): per-context `Sec-Fetch-*` on
+  every request; truthful `window.crossOriginIsolated`/`isSecureContext` from
+  COOP/COEP (fidelity, not enforcement).
+- **Resource bounds on untrusted JS**: process heap watchdog + `SetMemoryLimit`
+  (ADR 0003, `--js-memory-limit`), per-render/dispatch download-**bytes** budget
+  (ADR 0009, `--js-max-bytes`), wall-clock render budget + timer clamp, live-runtime
+  LRU cap.
+
+Shared implementation pattern for the JS-side policies: an `Env` field
+(`AllowCrossOrigin`/`DisableSRI`/`DisableCSP`/`ResponseHeaders`) → a bridge field →
+the enforcement hook, with violations recorded via `recordError` → render
+diagnostics. **Gotcha: `recordError` appends without a lock — only call it on the
+loop goroutine** (inside `RunOnLoop` or an on-loop native handler), never from an
+off-loop fetch goroutine (this is why `connect-src` is checked in `fetchPromise`,
+not `doFetch`).
+
 ## Conventions & gotchas
 
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr via `slog`
