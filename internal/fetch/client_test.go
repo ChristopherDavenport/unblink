@@ -244,16 +244,20 @@ func TestChromeMimicHeaders(t *testing.T) {
 		return r
 	}
 
-	// Plain path: keeps the minimal legacy header set — no Chrome client hints or
-	// Sec-Fetch metadata, and the older Accept without image/avif.
+	// Plain path: keeps the minimal legacy header set — no Chrome client hints and
+	// the older Accept without image/avif. Sec-Fetch metadata IS sent (it is honest
+	// request context, decoupled from the tls-mimic persona; see ADR 0014).
 	plain, _ := New()
 	rp := newReq()
 	plain.setHeaders(rp)
 	if h := rp.Header.Get("sec-ch-ua"); h != "" {
 		t.Errorf("plain path sent client hint sec-ch-ua = %q, want none", h)
 	}
-	if h := rp.Header.Get("Sec-Fetch-Mode"); h != "" {
-		t.Errorf("plain path sent Sec-Fetch-Mode = %q, want none", h)
+	if h := rp.Header.Get("Sec-Fetch-Mode"); h != "navigate" {
+		t.Errorf("plain path Sec-Fetch-Mode = %q, want navigate (sent by default)", h)
+	}
+	if h := rp.Header.Get("Sec-Fetch-Site"); h != "none" {
+		t.Errorf("plain path Sec-Fetch-Site = %q, want none (top-level navigation)", h)
 	}
 	if h := rp.Header.Get("Accept"); strings.Contains(h, "image/avif") {
 		t.Errorf("plain Accept = %q, want the legacy value", h)

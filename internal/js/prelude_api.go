@@ -939,6 +939,12 @@ const preludeAPIJS = `
   if (window.name === undefined) window.name = '';
   window.status = '';
 
+  // Cross-origin isolation fidelity (window === self === globalThis, so one
+  // assignment covers all aliases). Resolved Go-side from the document URL + its
+  // COOP/COEP response headers; SharedArrayBuffer stays absent regardless.
+  window.isSecureContext = !!(typeof __unblinkSecureContext !== 'undefined' && __unblinkSecureContext);
+  window.crossOriginIsolated = !!(typeof __unblinkCrossOriginIsolated !== 'undefined' && __unblinkCrossOriginIsolated);
+
   // ---- navigator device / permission stubs ----
   //
   // Feature-detected surfaces whose ABSENCE throws when an app reads them at

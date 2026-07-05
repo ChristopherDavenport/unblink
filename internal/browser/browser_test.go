@@ -9,12 +9,75 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/christopherdavenport/unblink/internal/browser"
 )
+
+// TestRenderSecFetchAndIsolation drives the whole pipeline to confirm PR-1's two
+// fidelity features: truthful Sec-Fetch-* on the primary navigation and on a JS
+// subrequest, and a truthful window.crossOriginIsolated resolved from the
+// document's COOP/COEP response headers (loopback is a secure context).
+func TestRenderSecFetchAndIsolation(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string]http.Header{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got["/api"] = r.Header.Clone()
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"msg":"api-ok"}`)
+	})
+	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got["/page"] = r.Header.Clone()
+		mu.Unlock()
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<!doctype html><html><body><div id="out">loading</div>
+<script>
+fetch('/api').then(function(r){ return r.json(); }).then(function(j){
+  document.getElementById('out').innerHTML = '<article><h1>' + j.msg + '</h1><p>cross-origin-isolated=' +
+    window.crossOriginIsolated + ' secure=' + window.isSecureContext +
+    ', rendered with enough prose for the reducer to keep this content around.</p></article>';
+});
+</script></body></html>`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	b, err := browser.New(browser.WithJS(3*time.Second), browser.WithJSAllowPrivate(true), browser.WithAllowPrivate(true))
+	if err != nil {
+		t.Fatalf("new browser: %v", err)
+	}
+	r, err := b.Read(context.Background(), browser.Request{URL: srv.URL + "/page", Render: true}, "full", 6000, "")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if h := got["/page"]; h == nil {
+		t.Fatal("no /page navigation recorded")
+	} else if h.Get("Sec-Fetch-Mode") != "navigate" || h.Get("Sec-Fetch-Site") != "none" || h.Get("Sec-Fetch-Dest") != "document" {
+		t.Errorf("primary Sec-Fetch = %q/%q/%q, want navigate/none/document",
+			h.Get("Sec-Fetch-Mode"), h.Get("Sec-Fetch-Site"), h.Get("Sec-Fetch-Dest"))
+	}
+	if h := got["/api"]; h == nil {
+		t.Fatal("no /api subrequest recorded")
+	} else if h.Get("Sec-Fetch-Dest") != "empty" || h.Get("Sec-Fetch-Mode") != "cors" || h.Get("Sec-Fetch-Site") != "same-origin" {
+		t.Errorf("subrequest Sec-Fetch = %q/%q/%q, want empty/cors/same-origin",
+			h.Get("Sec-Fetch-Dest"), h.Get("Sec-Fetch-Mode"), h.Get("Sec-Fetch-Site"))
+	}
+	if !strings.Contains(r.Markdown, "cross-origin-isolated=true") {
+		t.Errorf("crossOriginIsolated should be true (secure loopback + COOP + COEP):\n%s", r.Markdown)
+	}
+}
 
 func serveFixture(t *testing.T, name string) (*httptest.Server, *int64) {
 	t.Helper()

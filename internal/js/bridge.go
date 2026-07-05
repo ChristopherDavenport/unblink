@@ -3,6 +3,7 @@ package js
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -45,6 +46,10 @@ type bridge struct {
 	// sriEnabled turns on Subresource Integrity verification of the subresources
 	// the engine executes (default true for page renders). See sri.go and ADR 0012.
 	sriEnabled bool
+	// respHeaders is the main document's HTTP response headers, the source of the
+	// document's Content-Security-Policy / Cross-Origin-Opener-Policy /
+	// Cross-Origin-Embedder-Policy. nil when unavailable. See csp.go, isolation.go.
+	respHeaders http.Header
 
 	cache   map[*html.Node]*goja.Object
 	objNode map[*goja.Object]*html.Node
@@ -218,6 +223,9 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 			transport = &blockingTransport{inner: transport, host: extHost, initiator: initiatorHost(base), pageURL: baseURLString(base), tabID: tabID}
 			transport = &extResourceTransport{inner: transport, host: extHost, page: base}
 		}
+		// Attach truthful Sec-Fetch-* to every subrequest, just inside the counting
+		// transport so the request log is unaffected. See secfetch.go / ADR 0014.
+		transport = &secFetchTransport{inner: transport, base: base}
 		nc = &countingTransport{inner: transport}
 		transport = nc
 	}
@@ -304,6 +312,7 @@ func (b *bridge) install() {
 	b.installAsync()
 	b.installDynamicImport()
 	b.installSubtle()
+	b.installIsolationGlobals()
 	if b.extHost != nil {
 		b.installExtensionAPI(win)
 	}

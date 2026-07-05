@@ -1,12 +1,20 @@
 package js
 
-import "time"
+import (
+	"net/http"
+	"time"
+)
 
 // Env bundles the per-render capabilities the browser supplies to the engine, so
 // the Render signature stays small as capabilities grow. Every field is optional.
 type Env struct {
 	Transport Transport // page-JS network (external scripts, fetch/XHR, modules); nil = no JS network
 	Cookies   CookieJar // backs document.cookie; nil = document.cookie is empty/no-op
+	// ResponseHeaders is the main document's HTTP response headers. It carries the
+	// security headers the engine reads — Content-Security-Policy (which may appear
+	// multiple times, each enforced independently), Cross-Origin-Opener-Policy, and
+	// Cross-Origin-Embedder-Policy. nil when unavailable (e.g. a header-less render).
+	ResponseHeaders http.Header
 	// Storage/SessionStorage back window.localStorage and window.sessionStorage.
 	// Both are session-lived (a session is a tab: sessionStorage survives
 	// navigations within it, dies with it). nil = fresh per-render in-memory map.
