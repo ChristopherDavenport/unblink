@@ -6,6 +6,7 @@ package mcpserver
 import (
 	"context"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,13 +14,35 @@ import (
 	"github.com/christopherdavenport/unblink/internal/browser"
 )
 
-// version is the advertised server version. It is a var so release builds can
-// override it with -ldflags "-X .../internal/mcpserver.version=…"; the default
-// is the dev fallback.
-var version = "0.17.1"
+// version, when set, is a release override injected via
+// -ldflags "-X .../internal/mcpserver.version=…" — both the Makefile and
+// goreleaser stamp the git tag this way. When it is empty (e.g. a
+// `go install …@vX.Y.Z` build, which never runs that ldflags step) Version
+// falls back to the module version the Go toolchain embeds in the build, so the
+// reported version is correct by construction with no constant to hand-maintain.
+var version = ""
 
 // Version returns the unblink server version.
-func Version() string { return version }
+func Version() string {
+	info, ok := debug.ReadBuildInfo()
+	return resolveVersion(version, info, ok)
+}
+
+// resolveVersion picks the version to advertise: an explicit ldflags override
+// wins; otherwise the module version from build info (a `go install …@vX.Y.Z`
+// build carries the real tag there, a bare local `go build` carries "(devel)").
+// Split out from Version so the precedence is unit-testable without a real build.
+func resolveVersion(override string, info *debug.BuildInfo, ok bool) string {
+	if override != "" {
+		return override
+	}
+	if ok && info != nil {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return strings.TrimPrefix(v, "v")
+		}
+	}
+	return "(devel)"
+}
 
 // Config controls which tools the server exposes and how results are framed.
 type Config struct {

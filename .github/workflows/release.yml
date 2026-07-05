@@ -53,16 +53,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Keep the Claude Code plugin manifest pinned to the released image. The
+  # Keep the version-bearing docs pinned to the released tag. These are the two
+  # spots a human can't derive at build time: the plugin manifest (the
   # marketplace reads .claude-plugin/plugin.json from HEAD of main, so a bot
-  # commit there is what users actually install.
-  sync-plugin-manifest:
+  # commit there is what users actually install) and the README Status headline.
+  # A bot commit from the tag is the single source of truth for both.
+  sync-release-metadata:
     needs: goreleaser
     runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
-      group: sync-plugin-manifest
+      group: sync-release-metadata
     steps:
       - uses: actions/checkout@v7
         with:
@@ -79,13 +81,21 @@ jobs:
                         else . end))' \
             .claude-plugin/plugin.json > plugin.json.tmp
           mv plugin.json.tmp .claude-plugin/plugin.json
+      - name: Bump README Status headline to ${{ github.ref_name }}
+        run: |
+          # The Status headline tracks full releases only; a prerelease keeps the
+          # last stable version there (the shields Release badge covers the rest).
+          case "$GITHUB_REF_NAME" in
+            *-*) echo "prerelease $GITHUB_REF_NAME — leaving README Status untouched" ;;
+            *)   sed -i -E "s/\*\*v[0-9]+\.[0-9]+\.[0-9]+\.\*\*/**${GITHUB_REF_NAME}.**/" README.md ;;
+          esac
       - name: Commit and push
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .claude-plugin/plugin.json
+          git add .claude-plugin/plugin.json README.md
           git diff --cached --quiet && { echo "already in sync"; exit 0; }
-          git commit -m "chore: sync plugin manifest to ${GITHUB_REF_NAME}"
+          git commit -m "chore: sync release metadata to ${GITHUB_REF_NAME}"
           for i in 1 2 3; do
             git push origin main && exit 0
             git pull --rebase origin main

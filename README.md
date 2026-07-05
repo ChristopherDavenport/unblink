@@ -19,7 +19,7 @@ fetch(url) → parse HTML5 → [optionally execute JS] → semantic reduction �
 
 ## Status
 
-**v0.22.0.** The full pipeline works end to end: 18 MCP tools covering reading,
+**v0.23.0.** The full pipeline works end to end: 18 MCP tools covering reading,
 navigation, sessions, forms, structured data, schema extraction, page inspection,
 site discovery, and search. The
 static read path turns most server-rendered pages into clean Markdown with zero
