@@ -497,6 +497,45 @@ func (b *bridge) cspAllowExternalScript(abs, nonce string, parserInserted bool) 
 	return true
 }
 
+// hideNonces captures every element's CSP nonce into b.nonces and blanks the
+// content attribute in the tree, so untrusted page JS cannot scrape a nonce (via
+// getAttribute or a CSS attribute selector) and reuse it to slip a script past
+// script-src. Enforcement reads the real value through nodeNonce; the DOM unblink
+// hands the agent shows an empty nonce, matching a browser's nonce hiding. Runs on
+// the loop goroutine right after buildCSP, before any page script executes, so an
+// early inline script sees siblings' nonces already blanked. Only invoked when a
+// CSP is present (the sole context where a leaked nonce is a bypass).
+func (b *bridge) hideNonces() {
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			for i := range n.Attr {
+				if n.Attr[i].Key == "nonce" && n.Attr[i].Val != "" {
+					if b.nonces == nil {
+						b.nonces = make(map[*html.Node]string)
+					}
+					b.nonces[n] = n.Attr[i].Val
+					n.Attr[i].Val = "" // blank, don't remove — a browser keeps an empty content attribute
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(b.doc)
+}
+
+// nodeNonce returns an element's real CSP nonce: the value captured by hideNonces
+// (the content attribute is now blank), falling back to the live attribute for
+// nodes created after setup (e.g. script-inserted chunks), which were never hidden.
+func (b *bridge) nodeNonce(n *html.Node) string {
+	if v, ok := b.nonces[n]; ok {
+		return v
+	}
+	return getAttr(n, "nonce")
+}
+
 // installCSPEvalGate replaces eval/Function with EvalError-throwing shims when the
 // document's CSP script-src lacks 'unsafe-eval'. Called after the prelude, just
 // before page scripts run (extension content scripts, which are trusted, keep

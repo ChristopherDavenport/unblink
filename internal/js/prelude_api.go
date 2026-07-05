@@ -25,6 +25,7 @@ const preludeAPIJS = `
     var out = [];
     for (var i = 0; i < s.length; i++) {
       var cp = s.codePointAt(i);
+      if (cp >= 0xD800 && cp <= 0xDFFF) { out.push(0xEF, 0xBF, 0xBD); continue; } // lone surrogate -> U+FFFD (not WTF-8)
       if (cp > 0xFFFF) i++; // surrogate pair consumed two units
       if (cp < 0x80) out.push(cp);
       else if (cp < 0x800) out.push(0xC0 | (cp >> 6), 0x80 | (cp & 63));
@@ -34,25 +35,28 @@ const preludeAPIJS = `
     return new Uint8Array(out);
   }
 
-  function utf8Decode(bytes) {
+  // utf8Decode substitutes U+FFFD on malformed input; when fatal is true it instead
+  // throws a TypeError at the first malformed sequence (WHATWG fatal decoder).
+  function utf8Decode(bytes, fatal) {
     var out = '', i = 0, n = bytes.length;
     function cont(j) { return j < n && (bytes[j] & 0xC0) === 0x80; }
+    function bad() { if (fatal) throw new TypeError('The encoded data was not valid for encoding utf-8.'); out += '�'; }
     while (i < n) {
       var b0 = bytes[i], cp;
       if (b0 < 0x80) { out += String.fromCharCode(b0); i++; continue; }
-      if (b0 < 0xC2) { out += '�'; i++; continue; } // continuation or overlong lead
+      if (b0 < 0xC2) { bad(); i++; continue; } // continuation or overlong lead
       if (b0 < 0xE0) {
-        if (!cont(i + 1)) { out += '�'; i++; continue; }
+        if (!cont(i + 1)) { bad(); i++; continue; }
         cp = ((b0 & 31) << 6) | (bytes[i + 1] & 63); i += 2;
       } else if (b0 < 0xF0) {
-        if (!cont(i + 1) || !cont(i + 2)) { out += '�'; i++; continue; }
+        if (!cont(i + 1) || !cont(i + 2)) { bad(); i++; continue; }
         cp = ((b0 & 15) << 12) | ((bytes[i + 1] & 63) << 6) | (bytes[i + 2] & 63); i += 3;
-        if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) { out += '�'; continue; }
+        if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) { bad(); continue; }
       } else if (b0 < 0xF5) {
-        if (!cont(i + 1) || !cont(i + 2) || !cont(i + 3)) { out += '�'; i++; continue; }
+        if (!cont(i + 1) || !cont(i + 2) || !cont(i + 3)) { bad(); i++; continue; }
         cp = ((b0 & 7) << 18) | ((bytes[i + 1] & 63) << 12) | ((bytes[i + 2] & 63) << 6) | (bytes[i + 3] & 63); i += 4;
-        if (cp < 0x10000 || cp > 0x10FFFF) { out += '�'; continue; }
-      } else { out += '�'; i++; continue; }
+        if (cp < 0x10000 || cp > 0x10FFFF) { bad(); continue; }
+      } else { bad(); i++; continue; }
       out += String.fromCodePoint(cp);
     }
     return out;
@@ -88,10 +92,28 @@ const preludeAPIJS = `
       return { read: String(s).length, written: written };
     };
   }
+  // decoderInit validates+canonicalizes the label (RangeError on an invalid one)
+  // and reads the {fatal, ignoreBOM} options — shared by TextDecoder and
+  // TextDecoderStream. Note bytes are still decoded as UTF-8 (legacy codecs are a
+  // non-goal); only .encoding, validation, fatal, and ignoreBOM are honored.
+  function decoderInit(target, label, options) {
+    var name = __unblinkEncodingName(label === undefined ? 'utf-8' : String(label));
+    if (name === '') throw new RangeError("Failed to construct 'TextDecoder': The encoding label provided ('" + label + "') is invalid.");
+    target.encoding = name;
+    options = options || {};
+    target.fatal = Boolean(options.fatal);
+    target.ignoreBOM = Boolean(options.ignoreBOM);
+  }
+  // stripBOM removes a single leading U+FEFF from decoded output unless ignoreBOM.
+  function decodeUTF8(bytes, fatal, ignoreBOM) {
+    var s = utf8Decode(bytes, fatal);
+    if (!ignoreBOM && s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    return s;
+  }
   if (typeof window.TextDecoder === 'undefined') {
     // UTF-8 only: unblink normalizes page bytes to UTF-8 before JS ever runs.
-    window.TextDecoder = function (label) { this.encoding = String(label || 'utf-8').toLowerCase(); this.fatal = false; this.ignoreBOM = false; };
-    window.TextDecoder.prototype.decode = function (input) { return utf8Decode(toU8(input)); };
+    window.TextDecoder = function (label, options) { decoderInit(this, label, options); };
+    window.TextDecoder.prototype.decode = function (input) { return decodeUTF8(toU8(input), this.fatal, this.ignoreBOM); };
   }
 
   if (typeof window.btoa === 'undefined') {
@@ -1612,10 +1634,15 @@ const preludeAPIJS = `
     };
   }
   if (typeof window.TextDecoderStream === 'undefined') {
-    window.TextDecoderStream = function (label) {
-      var ts = new window.TransformStream({ transform: function (chunk, c) { c.enqueue(utf8Decode(toU8(chunk))); } });
+    window.TextDecoderStream = function (label, options) {
+      decoderInit(this, label, options);
+      var self = this, first = true;
+      var ts = new window.TransformStream({ transform: function (chunk, c) {
+        var s = utf8Decode(toU8(chunk), self.fatal);
+        if (first) { first = false; if (!self.ignoreBOM && s.charCodeAt(0) === 0xFEFF) s = s.slice(1); }
+        c.enqueue(s);
+      } });
       this.readable = ts.readable; this.writable = ts.writable;
-      this.encoding = String(label || 'utf-8').toLowerCase(); this.fatal = false; this.ignoreBOM = false;
     };
   }
 
@@ -2326,8 +2353,9 @@ const preludeAPIJS = `
       if (/mouse/i.test(iface)) ev = new MouseEvent('');
       else if (/custom/i.test(iface)) ev = new CustomEvent('');
       else ev = new Event('');
+      ev.__uninitialized = true; // dispatching before initEvent must throw InvalidStateError
       ev.initEvent = function (type, bubbles, cancelable) {
-        ev.type = type; ev.bubbles = !!bubbles; ev.cancelable = !!cancelable;
+        ev.type = type; ev.bubbles = !!bubbles; ev.cancelable = !!cancelable; ev.__uninitialized = false;
       };
       ev.initCustomEvent = function (type, bubbles, cancelable, detail) {
         ev.initEvent(type, bubbles, cancelable); ev.detail = detail;

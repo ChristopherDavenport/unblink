@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval fuzz bench membench crossbench vet lint fmt tidy clean
+.PHONY: all build run version test eval wpt wpt-sync fuzz bench membench crossbench vet lint fmt tidy clean
 
 all: build
 
@@ -34,6 +34,20 @@ test:
 # stderr and exits nonzero on regression.
 eval:
 	go test -tags eval ./eval -run TestEval -count=1 -v
+
+# Offline web-platform-tests conformance report over the pinned, vendored corpus
+# (testdata/wpt). Gated behind the `wpt` build tag so it never runs in `make test`;
+# runs the in-scope testharness.js subset directly against the JS engine and prints
+# a bucketed per-directory scorecard to stderr + writes wpt/last-run.json. This is
+# an on-demand analysis tool, NOT a CI gate — see docs/decisions/0016-wpt-conformance.md.
+wpt:
+	go test -tags wpt ./wpt -run '^TestWPT$$' -count=1 -v -timeout 50m
+
+# Refresh the vendored WPT subset to the SHA in testdata/wpt/WPT_VERSION. Needs
+# network and is run locally on purpose; never invoked by CI or `make test`. A
+# corpus bump is its own reviewed, re-run-the-report change (ADRs 0001/0002 posture).
+wpt-sync:
+	./scripts/wpt-sync.sh
 
 # Short coverage-guided fuzzing over every parser that consumes untrusted
 # bytes (HTML, reduction, PDF, robots.txt, pagination cursors). The seed

@@ -262,6 +262,21 @@ func (b *bridge) doFetch(ctx context.Context, method, abs string, headers map[st
 		if ferr != nil {
 			return nil, "", ferr
 		}
+		// A same-origin request that REDIRECTED cross-origin (res.FinalURL differs in
+		// origin) must not be read as same-origin — otherwise a same-origin endpoint
+		// that 302s to an attacker origin would launder a cross-origin read past SOP.
+		// Re-validate the final response's CORS (final-hop; per-hop remains a
+		// documented approximation). The cross-origin hop already dropped the session
+		// cookies, matching the credentialed=false validation. Only when enforcement
+		// is on and the initial target was a same-origin HTTP(S) URL.
+		if !b.allowCrossOrigin && b.base != nil && isHTTPScheme(target.Scheme) && res != nil && res.FinalURL != "" {
+			if fin, perr := url.Parse(res.FinalURL); perr == nil && isHTTPScheme(fin.Scheme) && !sameOrigin(fin, b.base) {
+				if !validateActualCORS(res, originString(b.base), false) {
+					return nil, "", fmt.Errorf("fetch: blocked by CORS: request redirected cross-origin to %s without a matching Access-Control-Allow-Origin", res.FinalURL)
+				}
+				return res, "cors", nil
+			}
+		}
 		return res, "basic", nil
 	}
 

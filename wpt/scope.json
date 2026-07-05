@@ -1,0 +1,74 @@
+{
+  "version": "1",
+  "note": "Maps each vendored WPT directory to a scope bucket. Seeded from docs/web-api-priorities.md's coverage map. in-scope: run, count toward conformance. partial: run, but most failures are runner limits (server handlers / multi-origin / iframes) excluded from the denominator. stub-only: run, but genuine conformance failures are out-of-scope-by-design. out-of-scope dirs are never vendored or walked. See docs/decisions/0016-wpt-conformance.md.",
+  "rules": [
+    { "path": "encoding", "bucket": "in-scope" },
+    { "path": "dom", "bucket": "in-scope" },
+    { "path": "domparsing", "bucket": "in-scope" },
+    { "path": "url", "bucket": "in-scope", "note": "pragmatic parser; WHATWG edge cases fail by design" },
+    { "path": "hr-time", "bucket": "in-scope" },
+    { "path": "custom-elements", "bucket": "in-scope" },
+    { "path": "shadow-dom", "bucket": "in-scope", "note": "styling/slotchange-timing fail by design" },
+    { "path": "streams", "bucket": "in-scope", "note": "no real backpressure; byte-streams fail by design" },
+    { "path": "FileAPI", "bucket": "in-scope" },
+    { "path": "WebCryptoAPI", "bucket": "in-scope", "note": "RSA/ECDSA/ECDH/wrap reject by design" },
+    { "path": "html/dom", "bucket": "in-scope" },
+    { "path": "html/semantics", "bucket": "in-scope", "note": "element interfaces/reflection; rendering excluded" },
+    { "path": "html/syntax", "bucket": "in-scope", "note": "html5lib tree construction" },
+    { "path": "html/webappapis", "bucket": "in-scope", "note": "timers, structured-clone, atob/btoa, microtasks" },
+    { "path": "console", "bucket": "in-scope", "note": "no-op console: existence passes, output-assertions fail by design" },
+
+    { "path": "fetch/api", "bucket": "partial", "note": "much needs wptserve .py handlers / multi-origin" },
+    { "path": "fetch/metadata", "bucket": "partial" },
+    { "path": "xhr", "bucket": "partial" },
+    { "path": "webmessaging", "bucket": "partial", "note": "same-realm MessageChannel only; cross-doc/worker excluded" },
+    { "path": "cookies", "bucket": "partial" },
+    { "path": "content-security-policy", "bucket": "partial" },
+    { "path": "subresource-integrity", "bucket": "partial" },
+    { "path": "referrer-policy", "bucket": "partial" },
+
+    { "path": "IndexedDB", "bucket": "stub-only", "note": "in-memory stub; conformance failures are out-of-scope-by-design" }
+  ],
+  "global_skip": {
+    "suffixes": ["-ref.html", "-ref.htm", "-ref.xhtml", "-manual.html", ".py", ".h2.py", ".asis", ".headers", ".ini", ".yml", ".yaml"],
+    "path_segments": ["resources", "support"],
+    "resources": ["/resources/idlharness.js", "idlharness.js"]
+  },
+  "by_design_paths": [
+    "encoding/legacy-mb-japanese",
+    "encoding/legacy-mb-korean",
+    "encoding/legacy-mb-schinese",
+    "encoding/legacy-mb-tchinese",
+    "encoding/single-byte-decoder.html",
+    "encoding/legacy-mb-japanese.html",
+    "content-security-policy/img-src",
+    "content-security-policy/style-src",
+    "content-security-policy/style-src-attr-elem",
+    "content-security-policy/font-src",
+    "content-security-policy/media-src",
+    "content-security-policy/frame-src",
+    "content-security-policy/child-src",
+    "content-security-policy/object-src",
+    "content-security-policy/base-uri",
+    "content-security-policy/form-action",
+    "content-security-policy/frame-ancestors",
+    "content-security-policy/sandbox",
+    "content-security-policy/plugin-types",
+    "content-security-policy/navigation",
+    "content-security-policy/embedded-enforcement",
+    "content-security-policy/inside-worker",
+    "content-security-policy/resource-hints",
+    "content-security-policy/svg",
+    "content-security-policy/reporting",
+    "content-security-policy/reporting-api",
+    "content-security-policy/report-hash",
+    "content-security-policy/securitypolicyviolation"
+  ],
+  "harness_limited_paths": [
+    "fetch/metadata",
+    "referrer-policy"
+  ],
+  "harness_limited_note": "These suites assert on the headers a SERVER RECEIVED (Sec-Fetch-*, Referer) via wptserve .py echo handlers. unblink SENDS spec-correct Sec-Fetch and Referrer headers (ADR 0013), but a single-process client-side harness has no server to observe receipt, so the suites are not measurable here — counted as (d) harness-limited with one descriptor per test rather than run (they would otherwise 404 the .py echo and time out en masse).",
+  "by_design_note": "Two families are counted as out-of-scope-by-design rather than run. (1) Legacy (non-UTF-8) encoding conformance — TextDecoder is UTF-8-first; these are also form/iframe-based and variant-exploded, so running them adds cost not signal. (2) CSP directives unblink deliberately does not enforce (ADR 0014): the resource-type directives (img/style/font/media/frame/child/object-src) it never gates because it only loads scripts, the document directives (base-uri/form-action/frame-ancestors/sandbox/plugin-types), and the reporting surface. unblink enforces script-src(+attr-elem)/connect-src/default-src + nonce/hash/strict-dynamic/unsafe-eval, so those directive subtrees ARE run for real signal."
+
+}

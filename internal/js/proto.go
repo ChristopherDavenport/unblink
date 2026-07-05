@@ -3,6 +3,7 @@ package js
 import (
 	"net/url"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/dop251/goja"
 	"golang.org/x/net/html"
@@ -218,7 +219,7 @@ func (b *bridge) installNodeProto() {
 		},
 		func(n *html.Node, v goja.Value) {
 			if n.Type == html.TextNode || n.Type == html.CommentNode {
-				n.Data = v.String()
+				n.Data = nullToEmptyString(v) // [LegacyNullToEmptyString]
 				b.onMutate(mutationRecord{typ: "characterData", target: n})
 			}
 		})
@@ -748,8 +749,66 @@ func (b *bridge) installCharacterDataProto() {
 	b.protoProp(p, "data",
 		func(n *html.Node) goja.Value { return vm.ToValue(n.Data) },
 		func(n *html.Node, v goja.Value) {
-			n.Data = v.String()
+			n.Data = nullToEmptyString(v) // [LegacyNullToEmptyString]
 			b.onMutate(mutationRecord{typ: "characterData", target: n})
 		})
-	b.protoGetter(p, "length", func(n *html.Node) goja.Value { return vm.ToValue(len(n.Data)) })
+	// length and all offsets are UTF-16 code units (JS string semantics), not Go's
+	// UTF-8 bytes — so a non-ASCII CharacterData reports and edits correctly.
+	b.protoGetter(p, "length", func(n *html.Node) goja.Value { return vm.ToValue(len(utf16.Encode([]rune(n.Data)))) })
+	b.protoMethod(p, "substringData", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		u := utf16.Encode([]rune(n.Data))
+		off, cnt := int(call.Argument(0).ToInteger()), int(call.Argument(1).ToInteger())
+		if off < 0 || off > len(u) {
+			b.throwDOMException("IndexSizeError", "The offset is out of bounds.")
+		}
+		if cnt < 0 || off+cnt > len(u) {
+			cnt = len(u) - off
+		}
+		return vm.ToValue(string(utf16.Decode(u[off : off+cnt])))
+	})
+	b.protoMethod(p, "appendData", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		n.Data += call.Argument(0).String()
+		b.onMutate(mutationRecord{typ: "characterData", target: n})
+		return goja.Undefined()
+	})
+	b.protoMethod(p, "insertData", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		b.charDataReplace(n, int(call.Argument(0).ToInteger()), 0, call.Argument(1).String())
+		return goja.Undefined()
+	})
+	b.protoMethod(p, "deleteData", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		b.charDataReplace(n, int(call.Argument(0).ToInteger()), int(call.Argument(1).ToInteger()), "")
+		return goja.Undefined()
+	})
+	b.protoMethod(p, "replaceData", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		b.charDataReplace(n, int(call.Argument(0).ToInteger()), int(call.Argument(1).ToInteger()), call.Argument(2).String())
+		return goja.Undefined()
+	})
+}
+
+// charDataReplace implements the CharacterData "replace data" primitive over UTF-16
+// code units, throwing IndexSizeError when offset is past the end (a negative count,
+// or one running past the end, deletes to the end — matching the spec's clamp).
+func (b *bridge) charDataReplace(n *html.Node, offset, count int, data string) {
+	u := utf16.Encode([]rune(n.Data))
+	if offset < 0 || offset > len(u) {
+		b.throwDOMException("IndexSizeError", "The offset is out of bounds.")
+	}
+	if count < 0 || offset+count > len(u) {
+		count = len(u) - offset
+	}
+	out := make([]uint16, 0, len(u)-count+len(data))
+	out = append(out, u[:offset]...)
+	out = append(out, utf16.Encode([]rune(data))...)
+	out = append(out, u[offset+count:]...)
+	n.Data = string(utf16.Decode(out))
+	b.onMutate(mutationRecord{typ: "characterData", target: n})
+}
+
+// nullToEmptyString applies WebIDL [LegacyNullToEmptyString]: JS null coerces to ""
+// (not "null"); undefined and other values stringify normally.
+func nullToEmptyString(v goja.Value) string {
+	if goja.IsNull(v) {
+		return ""
+	}
+	return v.String()
 }

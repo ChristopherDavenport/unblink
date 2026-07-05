@@ -51,3 +51,21 @@ func TestCrossOriginIsolatedGlobals(t *testing.T) {
 		t.Errorf("insecure render = %q, want false:false", got)
 	}
 }
+
+// TestSharedArrayBufferAbsentUnderIsolation locks ADR 0013's key safety claim:
+// crossOriginIsolated is a *truthful fidelity signal, not a capability gate*, so
+// SharedArrayBuffer stays undefined even when crossOriginIsolated === true. (No
+// test covered this before; it is the one non-obvious security property in 0013.)
+func TestSharedArrayBufferAbsentUnderIsolation(t *testing.T) {
+	isolated := http.Header{}
+	isolated.Set("Cross-Origin-Opener-Policy", "same-origin")
+	isolated.Set("Cross-Origin-Embedder-Policy", "require-corp")
+	page := `<html><body><div id="out"></div><script>
+		document.getElementById('out').textContent =
+		  String(window.crossOriginIsolated) + ':' + (typeof SharedArrayBuffer);
+	</script></body></html>`
+	doc, _ := renderCSP(t, page, "https://page.com/", isolated, nil)
+	if got := divText(t, doc, "out"); got != "true:undefined" {
+		t.Errorf("#out = %q, want true:undefined (SAB must stay absent even when isolated)", got)
+	}
+}

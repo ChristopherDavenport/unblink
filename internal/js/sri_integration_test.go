@@ -148,6 +148,39 @@ func TestSRIModuleEntryMismatchBlocked(t *testing.T) {
 	}
 }
 
+// TestSRICrossOriginIntegrityIndependentOfCORS documents unblink's deliberate
+// posture on the SRI↔CORS interaction: SRI protects INTEGRITY, not confidentiality.
+// The cross-origin script body is executed, never handed to page JS, so unblink does
+// NOT additionally gate SRI on CORS the way a browser does (no `crossorigin`
+// requirement) — a matching hash runs even with no Access-Control-Allow-Origin, and a
+// tampered one is blocked regardless. (A browser network-errors the no-CORS case;
+// unblink consciously does not, because there is no cross-origin READ to protect.)
+func TestSRICrossOriginIntegrityIndependentOfCORS(t *testing.T) {
+	body := []byte(`document.getElementById('out').textContent='RAN';`)
+	t.Run("matching hash runs without CORS", func(t *testing.T) {
+		tr := &sriTransport{routes: map[string]sriRoute{"lib.js": {body: body}}} // no ACAO in the response
+		page := `<html><body><div id="out">pending</div>` +
+			`<script src="https://cdn.other.com/lib.js" integrity="` + integrityFor(body) + `"></script></body></html>`
+		doc := renderSRI(t, page, js.Env{}, tr)
+		if got := divText(t, doc, "out"); got != "RAN" {
+			t.Errorf("#out=%q want RAN (SRI is integrity, not CORS-gated)", got)
+		}
+	})
+	t.Run("tampered hash blocked without CORS", func(t *testing.T) {
+		tr := &sriTransport{routes: map[string]sriRoute{"lib.js": {body: body}}}
+		page := `<html><body><div id="out">pending</div>` +
+			`<script src="https://cdn.other.com/lib.js" integrity="` + integrityFor([]byte("tampered")) + `"></script></body></html>`
+		diag := &js.RenderResult{}
+		doc := renderSRI(t, page, js.Env{Diag: diag}, tr)
+		if got := divText(t, doc, "out"); got != "pending" {
+			t.Errorf("#out=%q want pending (tampered cross-origin script must be blocked)", got)
+		}
+		if !hasIntegrityError(diag) {
+			t.Errorf("expected an integrity diagnostic, got %v", diag.Errors)
+		}
+	})
+}
+
 func hasIntegrityError(d *js.RenderResult) bool {
 	for _, e := range d.Errors {
 		if strings.Contains(e, "integrity") {

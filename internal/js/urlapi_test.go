@@ -50,3 +50,43 @@ func TestURL(t *testing.T) {
 		}
 	}
 }
+
+// TestURLNativeParser covers the behaviors the native WHATWG parser (urlnative.go)
+// adds over the former regex shim: reparsing setters, canParse/parse statics, a live
+// searchParams link back to url.search, IDNA host normalization, and two-arg
+// has/delete on URLSearchParams.
+func TestURLNativeParser(t *testing.T) {
+	out := render(t, `<html><body><div id="out">?</div><script>
+	  var parts = [];
+	  var u = new URL('https://ex.com/a/b?x=1');
+	  u.pathname = '/c/d'; parts.push('setpath:' + u.href);                 // setter reparses href
+	  u.host = 'other.com:9'; parts.push('sethost:' + u.host);
+	  u.searchParams.append('q', 'v');                                      // live link -> url.search
+	  parts.push('splink:' + (u.search.indexOf('q=v') >= 0) + ',' + (u.href.indexOf('q=v') >= 0));
+	  parts.push('canParse:' + URL.canParse('https://a.b/') + ',' + URL.canParse('http://'));
+	  parts.push('parseNull:' + (URL.parse('http://') === null));
+	  parts.push('parseOk:' + URL.parse('https://a.b/').host);
+	  parts.push('idna:' + new URL('http://xn--r8jz45g.jp/').hostname);     // stays punycode
+	  var sp = new URLSearchParams('a=1&a=2&b=3');
+	  parts.push('has2:' + sp.has('a','1') + ',' + sp.has('a','9'));
+	  sp['delete']('a','1'); parts.push('del2:' + sp.getAll('a').join(','));
+	  parts.push('size:' + new URLSearchParams('a=1&b=2').size);
+	  document.getElementById('out').textContent = parts.join('|');
+	</script></body></html>`)
+	for _, want := range []string{
+		"setpath:https://ex.com/c/d?x=1",
+		"sethost:other.com:9",
+		"splink:true,true",
+		"canParse:true,false",
+		"parseNull:true",
+		"parseOk:a.b",
+		"idna:xn--r8jz45g.jp",
+		"has2:true,false",
+		"del2:2",
+		"size:2",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("URLNativeParser missing %q:\n%s", want, out)
+		}
+	}
+}

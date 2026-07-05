@@ -604,6 +604,24 @@ const preludeJS = `
     ep.removeEventListener = function (t, fn) { if (!this.__l) return; var a = this.__l[t]; if (a) { var i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); } };
     ep.dispatchEvent = function (ev) { if (!this.__l) return true; var a = (this.__l[ev.type] || []).slice(); for (var i = 0; i < a.length; i++) { try { a[i].call(this, ev); } catch (e) {} } return true; };
   }
+  // DOMException: a real exception type so assert_throws_dom / instanceof and the
+  // legacy .code work. Go throws these via bridge.throwDOMException (domexc.go).
+  if (typeof window.DOMException === 'undefined') {
+    var DOMEXC = { IndexSizeError: 1, HierarchyRequestError: 3, WrongDocumentError: 4, InvalidCharacterError: 5, NoModificationAllowedError: 7, NotFoundError: 8, NotSupportedError: 9, InUseAttributeError: 10, InvalidStateError: 11, SyntaxError: 12, InvalidModificationError: 13, NamespaceError: 14, InvalidAccessError: 15, TypeMismatchError: 17, SecurityError: 18, NetworkError: 19, AbortError: 20, URLMismatchError: 21, QuotaExceededError: 22, TimeoutError: 23, InvalidNodeTypeError: 24, DataCloneError: 25 };
+    window.DOMException = function (message, name) {
+      this.message = message === undefined ? '' : String(message);
+      this.name = name === undefined ? 'Error' : String(name);
+      this.code = DOMEXC[this.name] || 0;
+      try { this.stack = Error(this.message).stack; } catch (e) {}
+    };
+    window.DOMException.prototype = Object.create(Error.prototype);
+    window.DOMException.prototype.constructor = window.DOMException;
+    window.DOMException.prototype.name = 'Error';
+    window.DOMException.prototype.message = '';
+    // Legacy numeric constants (DOMException.INDEX_SIZE_ERR, etc.).
+    var LEGACY = { INDEX_SIZE_ERR: 1, DOMSTRING_SIZE_ERR: 2, HIERARCHY_REQUEST_ERR: 3, WRONG_DOCUMENT_ERR: 4, INVALID_CHARACTER_ERR: 5, NO_DATA_ALLOWED_ERR: 6, NO_MODIFICATION_ALLOWED_ERR: 7, NOT_FOUND_ERR: 8, NOT_SUPPORTED_ERR: 9, INUSE_ATTRIBUTE_ERR: 10, INVALID_STATE_ERR: 11, SYNTAX_ERR: 12, INVALID_MODIFICATION_ERR: 13, NAMESPACE_ERR: 14, INVALID_ACCESS_ERR: 15, VALIDATION_ERR: 16, TYPE_MISMATCH_ERR: 17, SECURITY_ERR: 18, NETWORK_ERR: 19, ABORT_ERR: 20, URL_MISMATCH_ERR: 21, QUOTA_EXCEEDED_ERR: 22, TIMEOUT_ERR: 23, INVALID_NODE_TYPE_ERR: 24, DATA_CLONE_ERR: 25 };
+    for (var _lk in LEGACY) { window.DOMException[_lk] = LEGACY[_lk]; window.DOMException.prototype[_lk] = LEGACY[_lk]; }
+  }
   window.AbortSignal = function () { ETShim.call(this); this.aborted = false; this.reason = undefined; this.onabort = null; };
   window.AbortSignal.prototype = Object.create(ETShim.prototype);
   window.AbortSignal.prototype.throwIfAborted = function () { if (this.aborted) throw this.reason; };
@@ -652,9 +670,9 @@ const preludeJS = `
   // URLSearchParams + URL: SPA routers (react-router et al.) construct these at
   // hydration time; their absence throws ReferenceError and aborts routing (mobalytics
   // hit exactly this). Pairs keep insertion order and duplicates; encoding follows
-  // application/x-www-form-urlencoded ('+' <-> space). URL is a pragmatic parser (not a
-  // full WHATWG state machine) that resolves relative refs against a base/location and
-  // exposes the components routers read, including .searchParams.
+  // application/x-www-form-urlencoded ('+' <-> space). URL is backed by the native
+  // WHATWG parser (urlnative.go) via __unblinkURLParse/__unblinkURLSet; this JS layer
+  // is the spec-shaped class (getters/setters, statics, live searchParams).
   function uspDec(s) { try { return decodeURIComponent(String(s).replace(/\+/g, ' ')); } catch (e) { return String(s); } }
   function uspEnc(s) { return encodeURIComponent(String(s)).replace(/%20/g, '+'); }
   function uspParse(init) {
@@ -680,15 +698,30 @@ const preludeJS = `
   window.URLSearchParams = function (init) {
     if (init instanceof window.URLSearchParams) this.__p = init.__p.map(function (p) { return [p[0], p[1]]; });
     else this.__p = uspParse(init);
+    this.__onchange = null; // set by URL.searchParams to push mutations back to url.search
   };
   var USP = window.URLSearchParams.prototype;
-  USP.append = function (k, v) { this.__p.push([String(k), String(v)]); };
-  USP['delete'] = function (k) { k = String(k); this.__p = this.__p.filter(function (p) { return p[0] !== k; }); };
+  // __notify propagates a mutation to a linked URL; __reset re-syncs from url.search
+  // (without notifying, to avoid a loop).
+  USP.__notify = function () { if (this.__onchange) this.__onchange(this.toString()); };
+  USP.__reset = function (qs) { this.__p = uspParse(qs); };
+  USP.append = function (k, v) { this.__p.push([String(k), String(v)]); this.__notify(); };
+  USP['delete'] = function (k, v) {
+    k = String(k);
+    if (arguments.length > 1 && v !== undefined) { v = String(v); this.__p = this.__p.filter(function (p) { return !(p[0] === k && p[1] === v); }); }
+    else this.__p = this.__p.filter(function (p) { return p[0] !== k; });
+    this.__notify();
+  };
   USP.get = function (k) { k = String(k); for (var i = 0; i < this.__p.length; i++) if (this.__p[i][0] === k) return this.__p[i][1]; return null; };
   USP.getAll = function (k) { k = String(k); var r = []; for (var i = 0; i < this.__p.length; i++) if (this.__p[i][0] === k) r.push(this.__p[i][1]); return r; };
-  USP.has = function (k) { return this.get(String(k)) !== null; };
-  USP.set = function (k, v) { k = String(k); v = String(v); var set = false; var out = []; for (var i = 0; i < this.__p.length; i++) { if (this.__p[i][0] === k) { if (!set) { out.push([k, v]); set = true; } } else out.push(this.__p[i]); } if (!set) out.push([k, v]); this.__p = out; };
-  USP.sort = function () { this.__p.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); }); };
+  USP.has = function (k, v) {
+    k = String(k);
+    if (arguments.length > 1 && v !== undefined) { v = String(v); for (var i = 0; i < this.__p.length; i++) if (this.__p[i][0] === k && this.__p[i][1] === v) return true; return false; }
+    return this.get(k) !== null;
+  };
+  USP.set = function (k, v) { k = String(k); v = String(v); var set = false; var out = []; for (var i = 0; i < this.__p.length; i++) { if (this.__p[i][0] === k) { if (!set) { out.push([k, v]); set = true; } } else out.push(this.__p[i]); } if (!set) out.push([k, v]); this.__p = out; this.__notify(); };
+  USP.sort = function () { this.__p.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); }); this.__notify(); };
+  Object.defineProperty(USP, 'size', { get: function () { return this.__p.length; }, enumerable: true, configurable: true });
   USP.forEach = function (cb, thisArg) { for (var i = 0; i < this.__p.length; i++) cb.call(thisArg, this.__p[i][1], this.__p[i][0], this); };
   USP.keys = function () { return this.__p.map(function (p) { return p[0]; })[Symbol.iterator](); };
   USP.values = function () { return this.__p.map(function (p) { return p[1]; })[Symbol.iterator](); };
@@ -696,44 +729,55 @@ const preludeJS = `
   USP.toString = function () { return this.__p.map(function (p) { return uspEnc(p[0]) + '=' + uspEnc(p[1]); }).join('&'); };
   if (typeof Symbol === 'function' && Symbol.iterator) USP[Symbol.iterator] = USP.entries;
 
-  function urlResolve(base, rel) {
-    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(rel)) return rel;
-    var bm = /^([^:\/?#]+:)?(?:\/\/([^\/?#]*))?([^?#]*)(\?[^#]*)?(#.*)?$/.exec(base) || [];
-    var scheme = bm[1] || '', authority = bm[2] || '', path = bm[3] || '';
-    if (rel.indexOf('//') === 0) return scheme + rel;
-    if (rel.charAt(0) === '/') return scheme + '//' + authority + rel;
-    if (rel.charAt(0) === '?') return scheme + '//' + authority + path + rel;
-    if (rel.charAt(0) === '#') return scheme + '//' + authority + path + (bm[4] || '') + rel;
-    if (rel === '') return scheme + '//' + authority + path + (bm[4] || '');
-    var dir = path.slice(0, path.lastIndexOf('/') + 1);
-    var segs = (dir + rel).split('/'), out = [];
-    for (var i = 0; i < segs.length; i++) {
-      if (segs[i] === '.') continue;
-      if (segs[i] === '..') { if (out.length && out[out.length - 1] !== '') out.pop(); continue; }
-      out.push(segs[i]);
-    }
-    return scheme + '//' + authority + out.join('/');
+  // window.URL wraps the native WHATWG parser (__unblinkURLParse/__unblinkURLSet,
+  // urlnative.go). Base resolution, IDNA, percent-encoding, special schemes, and
+  // reparsing setters are all handled natively; when no base is given and the input
+  // is relative, the document's location is the base (routers rely on this).
+  function urlBaseArg(base) {
+    if (base !== undefined && base !== null) return String(base);
+    if (typeof location !== 'undefined' && location && location.href) return location.href;
+    return undefined;
   }
   window.URL = function (url, base) {
-    url = String(url);
-    if (base !== undefined && base !== null) url = urlResolve(String(base), url);
-    else if (url.indexOf('://') < 0 && typeof location !== 'undefined' && location && location.href) url = urlResolve(location.href, url);
-    var m = /^([^:\/?#]+:)?(?:\/\/([^\/?#]*))?([^?#]*)(\?[^#]*)?(#.*)?$/.exec(url) || [];
-    this.href = url;
-    this.protocol = m[1] || '';
-    this.host = m[2] || '';
-    var hp = this.host.split(':');
-    this.hostname = hp[0] || '';
-    this.port = hp[1] || '';
-    this.pathname = m[3] || '';
-    this.search = m[4] || '';
-    this.hash = m[5] || '';
-    this.origin = (this.protocol && this.host) ? this.protocol + '//' + this.host : '';
-    this.username = ''; this.password = '';
-    this.searchParams = new window.URLSearchParams(this.search);
+    var r = __unblinkURLParse(String(url), urlBaseArg(base));
+    if (r.invalid) throw new TypeError("Failed to construct 'URL': Invalid URL");
+    this.__u = r;
+    this.__sp = null;
   };
-  window.URL.prototype.toString = function () { return this.href; };
-  window.URL.prototype.toJSON = function () { return this.href; };
+  (function () {
+    var props = ['href', 'protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash'];
+    function syncSP(u) { if (u.__sp) u.__sp.__reset(u.__u.search); }
+    for (var i = 0; i < props.length; i++) {
+      (function (prop) {
+        Object.defineProperty(window.URL.prototype, prop, {
+          get: function () { return this.__u[prop]; },
+          set: function (v) { var r = __unblinkURLSet(this.__u.href, prop, String(v)); if (!r.invalid) { this.__u = r; syncSP(this); } },
+          enumerable: true, configurable: true
+        });
+      })(props[i]);
+    }
+    Object.defineProperty(window.URL.prototype, 'origin', { get: function () { return this.__u.origin; }, enumerable: true, configurable: true });
+    Object.defineProperty(window.URL.prototype, 'searchParams', {
+      get: function () {
+        if (!this.__sp) {
+          var self = this;
+          this.__sp = new window.URLSearchParams(this.__u.search);
+          this.__sp.__onchange = function (qs) { var r = __unblinkURLSet(self.__u.href, 'search', qs); if (!r.invalid) self.__u = r; };
+        }
+        return this.__sp;
+      }, enumerable: true, configurable: true
+    });
+  })();
+  window.URL.prototype.toString = function () { return this.__u.href; };
+  window.URL.prototype.toJSON = function () { return this.__u.href; };
+  window.URL.canParse = function (url, base) { return !__unblinkURLParse(String(url), urlBaseArg(base)).invalid; };
+  window.URL.parse = function (url, base) {
+    var r = __unblinkURLParse(String(url), urlBaseArg(base));
+    if (r.invalid) return null;
+    var u = Object.create(window.URL.prototype);
+    u.__u = r; u.__sp = null;
+    return u;
+  };
   window.URL.createObjectURL = function () { return 'blob:unblink'; };
   window.URL.revokeObjectURL = function () {};
 

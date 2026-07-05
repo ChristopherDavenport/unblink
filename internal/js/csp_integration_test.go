@@ -240,6 +240,75 @@ func TestCSPFromMetaTag(t *testing.T) {
 	}
 }
 
+// TestCSPNonceHiddenFromPageJS proves nonce hiding: a nonce'd inline script still
+// runs (enforcement reads the captured value) while the nonce is blanked in the DOM
+// the page's own JS — and the agent — sees, exactly as a browser hides it.
+func TestCSPNonceHiddenFromPageJS(t *testing.T) {
+	page := `<html><body><div id="out">pending</div>` +
+		`<script id="s" nonce="secret123">document.getElementById('out').textContent = 'nonce=[' + document.getElementById('s').getAttribute('nonce') + ']';</script></body></html>`
+	doc, _ := renderCSP(t, page, "https://example.com/p", cspHeader("script-src 'nonce-secret123'"), nil)
+	if got := divText(t, doc, "out"); got != "nonce=[]" {
+		t.Errorf("#out = %q, want nonce=[] (script ran via the captured nonce; DOM nonce blanked)", got)
+	}
+}
+
+// TestCSPNonceNotExfiltratable proves untrusted page JS cannot recover ANY nonce
+// from the DOM — closing the DOM-scrape / CSS-attribute-selector reuse channel that
+// would otherwise let a page steal a nonce and slip a script past script-src.
+func TestCSPNonceNotExfiltratable(t *testing.T) {
+	page := `<html><body><div id="out">pending</div>` +
+		`<script nonce="secret">var els=document.querySelectorAll('[nonce]');var leaked=0;` +
+		`for(var i=0;i<els.length;i++){if(els[i].getAttribute('nonce'))leaked++;}` +
+		`document.getElementById('out').textContent='leaked='+leaked+',bySel='+document.querySelectorAll('[nonce="secret"]').length;</script></body></html>`
+	doc, _ := renderCSP(t, page, "https://example.com/p", cspHeader("script-src 'nonce-secret'"), nil)
+	if got := divText(t, doc, "out"); got != "leaked=0,bySel=0" {
+		t.Errorf("#out = %q, want leaked=0,bySel=0 (no nonce readable via getAttribute or a [nonce=…] selector)", got)
+	}
+}
+
+// TestCSPInlineBlockedWithWrongNonce locks the direct nonce-mismatch block (it was
+// previously exercised only indirectly through the multi-policy test).
+func TestCSPInlineBlockedWithWrongNonce(t *testing.T) {
+	page := `<html><body><div id="out">pending</div>` +
+		`<script nonce="wrong">document.getElementById('out').textContent='ran';</script></body></html>`
+	doc, diag := renderCSP(t, page, "https://example.com/p", cspHeader("script-src 'nonce-right'"), nil)
+	if got := divText(t, doc, "out"); got != "pending" {
+		t.Errorf("#out = %q, want pending (nonce mismatch blocks the inline script)", got)
+	}
+	if !hasCSPError(diag) {
+		t.Errorf("expected a CSP diagnostic, got %v", diag.Errors)
+	}
+}
+
+// TestCSPExternalScriptByNonce covers a plain (non-strict-dynamic) external script
+// allowed by a matching nonce, and blocked-and-never-fetched by a wrong one.
+func TestCSPExternalScriptByNonce(t *testing.T) {
+	t.Run("matching nonce allows + loads", func(t *testing.T) {
+		tr := &cspRecordTransport{bodies: map[string]string{"x.js": `document.getElementById('out').textContent='EXT';`}}
+		page := `<html><body><div id="out">pending</div>` +
+			`<script src="https://cdn.other.com/x.js" nonce="extnonce"></script></body></html>`
+		doc, _ := renderCSP(t, page, "https://example.com/p", cspHeader("script-src 'nonce-extnonce'"), tr)
+		if got := divText(t, doc, "out"); got != "EXT" {
+			t.Errorf("#out = %q, want EXT (matching nonce allows the external script)", got)
+		}
+	})
+	t.Run("wrong nonce blocks + never fetched", func(t *testing.T) {
+		tr := &cspRecordTransport{bodies: map[string]string{"x.js": `document.getElementById('out').textContent='EXT';`}}
+		page := `<html><body><div id="out">pending</div>` +
+			`<script src="https://cdn.other.com/x.js" nonce="wrong"></script></body></html>`
+		doc, diag := renderCSP(t, page, "https://example.com/p", cspHeader("script-src 'nonce-extnonce'"), tr)
+		if got := divText(t, doc, "out"); got != "pending" {
+			t.Errorf("#out = %q, want pending (nonce mismatch blocks the external script)", got)
+		}
+		if tr.requested("x.js") {
+			t.Error("CSP-blocked external script was fetched (a browser blocks before the load)")
+		}
+		if !hasCSPError(diag) {
+			t.Errorf("expected a CSP diagnostic, got %v", diag.Errors)
+		}
+	})
+}
+
 func TestCSPDisabledBypass(t *testing.T) {
 	page := `<html><body><div id="out">pending</div>` +
 		`<script>document.getElementById('out').textContent='ran';</script></body></html>`
