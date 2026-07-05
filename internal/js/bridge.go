@@ -127,6 +127,7 @@ type bridge struct {
 	upgraded             map[*html.Node]bool
 	connectedNotified    map[*html.Node]bool
 	loadedScripts        map[*html.Node]bool         // <script src> nodes already fetched+run once
+	nonces               map[*html.Node]string       // CSP nonce captured pre-JS, then blanked in the DOM (hideNonces)
 	shadowRoots          map[*html.Node]*goja.Object // host → ShadowRoot object (whose backing node is a detached DocumentNode)
 	shadowHostOf         map[*html.Node]*html.Node   // shadow-root backing node → host (reverse, for connectivity/retargeting)
 	templateContentCache map[*html.Node]*goja.Object

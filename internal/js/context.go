@@ -119,6 +119,9 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.cspEnabled = !env.DisableCSP
 		if b.cspEnabled && b.base != nil {
 			b.csp = buildCSP(b.respHeaders, b.doc)
+			if b.csp != nil {
+				b.hideNonces() // capture + blank nonces before page JS can read them
+			}
 		}
 		b.assets = e.assets
 		b.webdriver = e.webdriver

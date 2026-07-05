@@ -237,6 +237,46 @@ func TestCORSCredentials(t *testing.T) {
 	})
 }
 
+// TestCORSRedirectCrossOriginNotReadAsBasic locks that a same-origin fetch whose
+// response actually came from a cross-origin URL (a server redirect) is NOT readable
+// as a same-origin "basic" response — otherwise a same-origin endpoint that 302s to
+// an attacker origin would launder a cross-origin read past the Same-Origin Policy.
+// The final response must carry Access-Control-Allow-Origin to be read.
+func TestCORSRedirectCrossOriginNotReadAsBasic(t *testing.T) {
+	t.Run("cross-origin redirect without ACAO is blocked", func(t *testing.T) {
+		tr := &corsRecorder{resp: func(_, _ string) *js.Response {
+			return &js.Response{Status: 200, Headers: map[string]string{}, Body: []byte("SECRET"), FinalURL: "https://evil.com/data"}
+		}}
+		diag := &js.RenderResult{}
+		doc := renderCORS(t, `fetch('/api')`, "https://page.com/here", js.Env{Diag: diag}, tr)
+		if got := divText(t, doc, "out"); got != "err" {
+			t.Errorf("#out=%q want err (same-origin request redirected cross-origin w/o ACAO must not be read as basic)", got)
+		}
+		// History preservation still holds: the request was sent + logged.
+		if n := tr.methodCount("GET"); n != 1 {
+			t.Errorf("redirected request reached transport %d times, want 1 (still logged)", n)
+		}
+	})
+	t.Run("cross-origin redirect with ACAO is readable as cors", func(t *testing.T) {
+		tr := &corsRecorder{resp: func(_, _ string) *js.Response {
+			return &js.Response{Status: 200, Headers: map[string]string{"access-control-allow-origin": "https://page.com"}, Body: []byte("OK"), FinalURL: "https://evil.com/data"}
+		}}
+		doc := renderCORS(t, `fetch('/api')`, "https://page.com/here", js.Env{}, tr)
+		if got := divText(t, doc, "out"); got != "ok:cors:200" {
+			t.Errorf("#out=%q want ok:cors:200 (final response opted in via ACAO)", got)
+		}
+	})
+	t.Run("same-origin redirect stays basic", func(t *testing.T) {
+		tr := &corsRecorder{resp: func(_, _ string) *js.Response {
+			return &js.Response{Status: 200, Headers: map[string]string{}, Body: []byte("OK"), FinalURL: "https://page.com/final"}
+		}}
+		doc := renderCORS(t, `fetch('/api')`, "https://page.com/here", js.Env{}, tr)
+		if got := divText(t, doc, "out"); got != "ok:basic:200" {
+			t.Errorf("#out=%q want ok:basic:200 (same-origin redirect is not gated)", got)
+		}
+	})
+}
+
 func TestCORSAllowCrossOriginBypass(t *testing.T) {
 	tr := &corsRecorder{resp: func(_, _ string) *js.Response { return jsResp(200, nil) }} // no ACAO
 	doc := renderCORS(t, `fetch('https://api.other.com/x')`, "https://page.com/here", js.Env{AllowCrossOrigin: true}, tr)

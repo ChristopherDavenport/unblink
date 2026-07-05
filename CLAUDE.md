@@ -24,6 +24,8 @@ lint locally (needs the golangci-lint binary).
 make build     # go build (version stamped from the nearest v* tag)
 make test      # go test ./... (includes every fuzz target's seed corpus)
 make eval      # offline in-process MCP eval gate (build tag `eval`; scorecard on stderr)
+make wpt       # offline web-platform-tests conformance report (build tag `wpt`; on-demand, not a gate)
+make wpt-sync  # refresh the vendored WPT subset in testdata/wpt/ (needs network; local-only)
 make fuzz      # coverage-guided fuzzing of the untrusted-input parsers (FUZZTIME=15s each)
 make bench     # perf benchmarks over the hot-path packages (narrow: BENCH=regexp, repeat: BENCHCOUNT=N)
 make membench  # unblink vs. headless Chromium footprint/latency (scripts/membench, separate module)
@@ -130,12 +132,16 @@ the agent via the `requests` tool); only the page-JS *read* is denied. The layer
   reachable foreign document — a deliberate non-goal.
 - **CORS** (ADR 0011, default on): cross-origin `fetch`/XHR over page JS obeys
   `Access-Control-*` + preflight; non-credentialed cross-origin drops cookies;
-  `no-cors` yields an opaque response. `internal/js/cors.go` (`doFetch`); hatch
+  `no-cors` yields an opaque response. A same-origin request that *redirects*
+  cross-origin is re-validated against the final response's CORS (so a redirect
+  can't launder a cross-origin read). `internal/js/cors.go` (`doFetch`); hatch
   `--js-allow-cross-origin`.
 - **CSP** (ADR 0014, default on): the document's `Content-Security-Policy` (header +
   `<meta>`) is enforced over page JS — `script-src` nonce/hash/host + `strict-dynamic`,
   `connect-src`, `unsafe-eval` (via `EvalError` shims); report-only surfaces without
-  blocking. `internal/js/csp.go`; hatch `--no-csp`.
+  blocking. Nonces are **hidden** — captured before page JS runs and blanked in the
+  DOM (`hideNonces`), so page code can't scrape and reuse one. `internal/js/csp.go`;
+  hatch `--no-csp`.
 - **SRI** (ADR 0012, default on): `integrity`-pinned scripts/modules are hashed over
   the *raw pre-transcode* bytes and blocked on mismatch. `internal/js/sri.go`; hatch
   `--no-sri`.
@@ -238,8 +244,16 @@ not `doFetch`).
   and now origin-partitioned Web Storage are isolated; the DOM/window/frame half is
   moot-by-architecture — single-document, one runtime per render — so it's a
   deliberate non-goal. The one behavior change was origin-keying localStorage/
-  sessionStorage in `internal/session`). Add a new ADR when a decision would
-  otherwise live only in a PR description.
+  sessionStorage in `internal/session`); 0016 is web-platform-tests as a
+  conformance *measurement* tool (the `wpt/` package + `make wpt`, build tag `wpt`,
+  mirroring `eval/`: runs the in-scope WPT testharness.js corpus directly against
+  the JS engine and buckets every subtest into pass / (a) in-scope-gap / (b)
+  by-design / (c) goja-ceiling / (d) runner-limit so conformance = pass/(pass+a) is
+  honest; a pinned vendored corpus under `testdata/wpt/`; on-demand analysis, not a
+  CI gate. The ranked roadmap it feeds is `docs/wpt-compatibility.md` — headline
+  findings: HTML tree-construction is already strong (html/syntax 0.944), the top
+  content-fidelity gaps are the URL parser and TextDecoder/TextEncoder). Add a new
+  ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
 - **WebExtensions (opt-in, ADR 0010)**: `--extension <dir|.xpi|.crx|.zip>` /
