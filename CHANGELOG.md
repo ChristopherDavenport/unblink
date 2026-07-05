@@ -3,6 +3,47 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## v0.23.0 — 2026-07-05
+
+### Added
+
+- **web-platform-tests conformance harness ([ADR 0016](docs/decisions/0016-wpt-conformance.md)).**
+  `make wpt` runs the in-scope WPT `testharness.js` corpus directly against the JS
+  engine and emits an honest, bucketed scorecard — every subtest is pass, an in-scope
+  gap, by-design, a goja ceiling, or a runner limitation; conformance = pass/(pass+gap)
+  with all exclusions itemized in `wpt/last-run.json`. The corpus is a pinned, vendored
+  subset refreshed by `make wpt-sync` and kept out of the repo (only the upstream SHA
+  is tracked). On-demand analysis, not a CI gate. The ranked roadmap it produces lives
+  in [docs/wpt-compatibility.md](docs/wpt-compatibility.md).
+
+### Changed
+
+- **URL is now a native WHATWG parser.** `window.URL`/`URLSearchParams` are backed by
+  `github.com/nlnwa/whatwg-url` (Go binding in `internal/js/urlnative.go`) with
+  reparsing setters, `canParse`/`parse`, IDNA/punycode, special-scheme rules, and a
+  live `searchParams` — replacing the previous regex shim. WPT `url/` conformance
+  0.11 → 0.98. The Go-side link/fetch pipeline keeps `net/url` and is unaffected.
+- **TextDecoder/TextEncoder correctness.** `fatal` mode throws on malformed input,
+  `{fatal, ignoreBOM}` are reflected + honored (BOM stripping), encoding labels are
+  validated/canonicalized (invalid labels throw `RangeError`; valid legacy labels are
+  accepted), and `TextEncoder` emits U+FFFD for lone surrogates instead of WTF-8. WPT
+  `encoding/` 0.50 → 0.87.
+- **DOM conformance.** A real `DOMException` (legacy `.code`, Go-side throwing),
+  UTF-16-correct `CharacterData` mutation methods (`substringData`/`insertData`/
+  `deleteData`/`replaceData`/`appendData` + `IndexSizeError`), DOMTokenList branding,
+  `createHTMLDocument` Document identity, and `dispatchEvent` `InvalidStateError` for
+  events dispatched before `initEvent`. WPT `dom/` 0.49 → 0.65.
+
+### Security
+
+- **Same-Origin-Policy audit + hardening** (confirmed against unblink's own targeted
+  tests, which WPT structurally cannot reach). CSP **nonce hiding** — page JS can no
+  longer scrape and reuse a nonce past `script-src`. A same-origin fetch **redirected
+  cross-origin** is re-validated against CORS, so a redirect can't launder a
+  cross-origin read past the Same-Origin Policy. Plus regression locks for
+  SharedArrayBuffer-absence-under-isolation, cross-origin SRI, the public-suffix
+  cookie jar, and the moot-by-architecture SOP DOM-isolation stubs.
+
 ## v0.22.0 — 2026-07-04
 
 ### Added
