@@ -3,6 +3,36 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## v0.24.0 — 2026-07-06
+
+### Fixed
+
+- **Astro/React islands now hydrate** ([ADR 0017](docs/decisions/0017-regex-class-hyphen-rewrite.md),
+  [ADR 0018](docs/decisions/0018-module-instance-registry.md)). Two goja-level gaps kept
+  `client:only` islands (e.g. poe.ninja) silently inert:
+  - goja rejects a valid-ECMAScript `-` immediately after a `\s`/`\d`/`\w` shorthand in a
+    character class (the `/[\s-_]/` camelCase/slugify idiom) with "invalid character class
+    range", aborting the whole script/module. `fixClassRangeHyphen`
+    (`internal/js/regexfix.go`) source-rewrites the hyphen to `\-` before compile —
+    value-preserving in every JS context, with an odd-backslash guard for a real
+    `[\\s-z]` range.
+  - Dynamic `import()` duplicated a module shared by two entry chunks (React's dispatcher
+    across an island's component + renderer chunks → "useMemoCache of null"). A per-render
+    module-instance registry (`internal/js/moduleregistry.go`) gives browser module-map
+    semantics — each resolved URL is fetched, transformed, and evaluated once, its live
+    namespace shared across importers.
+
+### Changed
+
+- **`requests` keeps the tail and classifies by resource type.** The network log is now a
+  ring buffer that evicts the oldest record (raised to 4096, sized for a heavy SPA's whole
+  subrequest set) instead of a 256-record head cap that dropped exactly the late-firing
+  data calls the tool exists to surface. Every request carries a devtools-style resource
+  type (`html`/`js`/`xhr`/`css`/`fonts`/`images`/`media`/`websocket`/`other`) from its
+  initiator refined by `Content-Type`; the tool takes `types=[...]` to filter (e.g.
+  `types=["xhr"]` for just the data calls) and reports the pre-filter `total` alongside
+  `count`.
+
 ## v0.23.1 — 2026-07-05
 
 ### Fixed
