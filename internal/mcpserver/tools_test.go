@@ -49,6 +49,26 @@ func TestParseFieldSpecs(t *testing.T) {
 	}
 }
 
+func TestKindSet(t *testing.T) {
+	// No types → nil (keep everything).
+	for _, empty := range [][]string{nil, {}, {"", "  "}} {
+		if got := kindSet(empty); got != nil {
+			t.Errorf("kindSet(%q) = %v, want nil", empty, got)
+		}
+	}
+	// Normalizes case/whitespace and drops blanks.
+	got := kindSet([]string{"XHR", "  Js ", "", "images"})
+	want := map[string]bool{"xhr": true, "js": true, "images": true}
+	if len(got) != len(want) {
+		t.Fatalf("kindSet size = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("kindSet missing %q", k)
+		}
+	}
+}
+
 func TestFilesOf(t *testing.T) {
 	// Happy path: text and base64 content, default filename, MIME carried.
 	parts, err := filesOf([]fileArg{

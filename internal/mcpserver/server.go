@@ -330,10 +330,12 @@ func (s *Server) registerTools() {
 	addTool(s, "requests", &mcp.Tool{
 		Annotations: readOnlyAnn,
 		Description: "List the network requests the page's JavaScript made while rendering (fetch/XHR, " +
-			"scripts, modules, dynamic imports), each with method, url, and status. The escape hatch " +
+			"scripts, modules, dynamic imports), each with method, url, status, and a devtools-style " +
+			"resource type (html, js, xhr, css, fonts, images, media, websocket, other). The escape hatch " +
 			"for data-driven pages: render once, see the JSON/API endpoint the page fetched, then read " +
-			"that endpoint directly instead of scraping the hydrated DOM. Requires JavaScript " +
-			"(not exposed under --disable-js); asset-cache hits are not listed.",
+			"that endpoint directly instead of scraping the hydrated DOM — pass types=[\"xhr\"] to cut the " +
+			"script/module noise and show just the data calls. The most recent 4096 requests are kept. " +
+			"Requires JavaScript (not exposed under --disable-js); asset-cache hits are not listed.",
 	}, s.handleRequests)
 
 	addTool(s, "console", &mcp.Tool{

@@ -74,6 +74,7 @@ type RequestLog struct {
 	Status int    // 0 when the request errored before a response
 	Failed bool   // network error or budget/rate/SSRF denial
 	Err    string // error text when Failed
+	Kind   string // devtools-like resource type (html/js/xhr/css/fonts/images/media/other)
 }
 
 // ConsoleMsg is one captured page console.* call.
@@ -114,7 +115,7 @@ func (b *bridge) fillCaptureLogs(diag *RenderResult) {
 		for i, r := range recs {
 			diag.Requests[i] = RequestLog{
 				Method: r.method, URL: r.url, Status: r.status,
-				Failed: r.errMsg != "", Err: r.errMsg,
+				Failed: r.errMsg != "", Err: r.errMsg, Kind: r.kind,
 			}
 		}
 	}

@@ -110,6 +110,9 @@ type NetRequest struct {
 	Status int    `json:"status,omitempty"` // 0 when the request errored before a response
 	Failed bool   `json:"failed,omitempty"`
 	Err    string `json:"error,omitempty"`
+	// Type is the devtools-style resource kind: one of html, js, xhr, css, fonts,
+	// images, media, websocket, other. Filter the requests tool by it.
+	Type string `json:"type,omitempty"`
 }
 
 // ConsoleMessage is one captured page console.* call (the console tool).
