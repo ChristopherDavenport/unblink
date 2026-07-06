@@ -16,8 +16,9 @@ Run the latest release.
 ## Threat model
 
 unblink's job is to feed the web to an AI agent, so it treats **all fetched
-content as untrusted** and, under `--js`, runs **untrusted page JavaScript**. The
-design assumes the page is adversarial and bounds what it can do:
+content as untrusted** and, with JavaScript enabled (the default; `--disable-js`
+turns it off), runs **untrusted page JavaScript**. The design assumes the page is
+adversarial and bounds what it can do:
 
 - **Untrusted content is fenced by default.** Returned page content is wrapped in
   a provenance/"untrusted content" fence so the model treats it as data, not

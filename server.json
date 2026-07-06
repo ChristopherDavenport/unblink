@@ -1,16 +1,16 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.ChristopherDavenport/unblink",
-  "description": "Pure-Go browser for AI: fetch pages, render JS without Chromium, return clean Markdown over MCP.",
+  "description": "Pure-Go MCP server that turns any web page into clean, token-budgeted Markdown for AI agents — no Chromium, no V8, no Node.",
   "repository": {
     "url": "https://github.com/ChristopherDavenport/unblink",
     "source": "github"
   },
-  "version": "0.22.0",
+  "version": "0.24.0",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/christopherdavenport/unblink:0.22.0",
+      "identifier": "ghcr.io/christopherdavenport/unblink:0.24.0",
       "runtimeHint": "docker",
       "transport": {
         "type": "stdio"
