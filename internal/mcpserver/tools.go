@@ -383,10 +383,12 @@ func (s *Server) handleControls(ctx context.Context, _ *mcp.CallToolRequest, arg
 
 type requestsArgs struct {
 	target
+	Types []string `json:"types,omitempty" jsonschema:"filter to these resource types; any of html, js, xhr, css, fonts, images, media, websocket, other. Omit for all. Use [\"xhr\"] to find a data-driven page's underlying JSON/API calls without the script/module noise"`
 }
 
 type requestsOut struct {
-	Count     int               `json:"count"`
+	Count     int               `json:"count"`           // requests returned (after any type filter)
+	Total     int               `json:"total,omitempty"` // requests captured before the type filter
 	Truncated bool              `json:"truncated,omitempty"`
 	Requests  []page.NetRequest `json:"requests"`
 }
@@ -396,8 +398,33 @@ func (s *Server) handleRequests(ctx context.Context, _ *mcp.CallToolRequest, arg
 	if err != nil {
 		return errorResult(err), requestsOut{}, nil
 	}
-	out := requestsOut{Count: len(reqs), Truncated: truncated, Requests: reqs}
+	total := len(reqs)
+	if want := kindSet(args.Types); want != nil {
+		filtered := make([]page.NetRequest, 0, len(reqs))
+		for _, r := range reqs {
+			if want[r.Type] {
+				filtered = append(filtered, r)
+			}
+		}
+		reqs = filtered
+	}
+	out := requestsOut{Count: len(reqs), Total: total, Truncated: truncated, Requests: reqs}
 	return s.framedJSON(out), out, nil
+}
+
+// kindSet builds a lookup of the requested resource types (lowercased, trimmed),
+// or nil when none were given so the caller keeps every request.
+func kindSet(types []string) map[string]bool {
+	m := make(map[string]bool, len(types))
+	for _, t := range types {
+		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+			m[t] = true
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // --- console ---

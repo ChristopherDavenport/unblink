@@ -800,7 +800,7 @@ func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 	p.RenderDiag.Requests = make([]page.NetRequest, len(diag.Requests))
 	for i, r := range diag.Requests {
 		p.RenderDiag.Requests[i] = page.NetRequest{
-			Method: r.Method, URL: r.URL, Status: r.Status, Failed: r.Failed, Err: r.Err,
+			Method: r.Method, URL: r.URL, Status: r.Status, Failed: r.Failed, Err: r.Err, Type: r.Kind,
 		}
 	}
 	p.RenderDiag.Console = make([]page.ConsoleMessage, len(diag.Console))
