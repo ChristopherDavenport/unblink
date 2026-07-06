@@ -80,7 +80,9 @@ func compileCached(name, src string) (*goja.Program, error) {
 	if e, ok := progCacheGet(key); ok {
 		return e.prog, e.err
 	}
-	prog, err := goja.Compile(name, src, false)
+	// Escape shorthand-then-hyphen in regex classes (/[\s-_]/) that goja would
+	// otherwise reject at compile time; a no-op for source that lacks the pattern.
+	prog, err := goja.Compile(name, fixClassRangeHyphen(src), false)
 	progCachePut(key, progEntry{prog: prog, err: err, size: int64(len(src))})
 	return prog, err
 }

@@ -252,7 +252,22 @@ not `doFetch`).
   honest; a pinned vendored corpus under `testdata/wpt/`; on-demand analysis, not a
   CI gate. The ranked roadmap it feeds is `docs/wpt-compatibility.md` — headline
   findings: HTML tree-construction is already strong (html/syntax 0.944), the top
-  content-fidelity gaps are the URL parser and TextDecoder/TextEncoder). Add a new
+  content-fidelity gaps are the URL parser and TextDecoder/TextEncoder); 0017 is the
+  `[\s-…]` regex-class rewrite (goja rejects a valid-ECMAScript `-` after a
+  `\s`/`\d`/`\w` shorthand — the camelCase/slugify idiom — with "invalid character
+  class range", aborting the whole script/module; `fixClassRangeHyphen` in
+  `internal/js/regexfix.go` escapes the hyphen before compile at compileCached +
+  classicProgram — value-preserving in every JS context, odd-backslash guard for the
+  real `[\\s-z]` range; a targeted goja workaround, not a regex-compat layer); 0018 is
+  the per-render module-instance registry (`internal/js/moduleregistry.go`) giving
+  dynamic `import()` browser module-map semantics — each resolved URL fetched +
+  esbuild-CJS-transformed + evaluated once, its live namespace shared across
+  importers, so a dep shared by two `import()`s (React across an Astro island's
+  component + renderer chunks) isn't duplicated into two singleton copies (the
+  "useMemoCache of null" failure); two-phase (off-loop instantiate/dedup, on-loop
+  post-order evaluate), replaces bundleDynamicChunk, preserves the ADR 0004 settle
+  bracket; scope = the dynamic-import path only (static `<script type=module>` still
+  bundles per entry). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)

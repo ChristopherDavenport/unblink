@@ -203,6 +203,11 @@ type bridge struct {
 	// at once, so a page firing hundreds of concurrent import()s can't spawn an
 	// unbounded number of esbuild builds. Buffered to dynImportConcurrency.
 	dynSem chan struct{}
+
+	// reg is the per-render module-instance registry backing dynamic import(): it
+	// shares one instance of each module URL across all importers (module-map
+	// semantics), so a dependency shared by several import()s isn't duplicated.
+	reg *moduleRegistry
 }
 
 // resetTransportBudget clears the per-dispatch download budget on the counting
@@ -251,6 +256,7 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		ctx:                  ctx,
 		reqTimeout:           reqTimeout,
 		dynSem:               make(chan struct{}, dynImportConcurrency),
+		reg:                  newModuleRegistry(),
 		cache:                make(map[*html.Node]*goja.Object),
 		objNode:              make(map[*goja.Object]*html.Node),
 		classListCache:       make(map[*html.Node]*goja.Object),
