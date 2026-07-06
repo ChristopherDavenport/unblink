@@ -1,6 +1,6 @@
 {
   "name": "unblink",
-  "description": "Pure-Go browser for AI: fetch pages, optionally render JS (no Chromium), get clean token-budgeted Markdown over MCP.",
+  "description": "Pure-Go MCP server that turns any web page into clean, token-budgeted Markdown for AI agents — no Chromium, no V8, no Node.",
   "version": "0.24.0",
   "author": {
     "name": "Christopher Davenport"

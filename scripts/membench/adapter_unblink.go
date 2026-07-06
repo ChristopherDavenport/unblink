@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -25,11 +26,42 @@ func (unblinkAdapter) resolve(cfg toolConfig) (spawn, error) {
 	// when it defaulted to 5 req/s, the single-host cache-busted corpus paced
 	// every render at ~200ms of token waiting and the published numbers measured
 	// that crawl policy, not the engine.
+	// "Binary on disk" must be the *shipped* artifact, so it compares
+	// like-for-like with obscura's/lightpanda's downloaded release binaries. The
+	// harness runs bin/unblink (an unstripped `make build`, ~38 MB) for the
+	// footprint/latency passes — stripping doesn't change runtime cost — but the
+	// size metric measures a stripped release-equivalent build (goreleaser uses
+	// `CGO_ENABLED=0 -ldflags "-s -w"`), which is what a user actually downloads.
+	sizeMB, note := releaseBinaryMB(cfg.root, bin)
 	return spawn{
-		cmd:       bin,
-		args:      []string{"--js", "--allow-private", "--js-allow-private", "--log-level", "error"},
-		installMB: fileMB(bin),
+		cmd:         bin,
+		args:        []string{"--allow-private", "--js-allow-private", "--log-level", "error"},
+		installMB:   sizeMB,
+		installNote: note,
 	}, nil
+}
+
+// releaseBinaryMB builds a stripped release-equivalent binary (matching
+// .goreleaser.yaml: CGO_ENABLED=0, -ldflags "-s -w") to a temp file and returns
+// its size — the artifact a user downloads, not the unstripped dev build the
+// harness runs. On any build failure it falls back to the dev binary's size so
+// the run still reports a number.
+func releaseBinaryMB(root, devBin string) (float64, string) {
+	tmp, err := os.CreateTemp("", "unblink-release-*")
+	if err != nil {
+		return fileMB(devBin), "unstripped dev build (release build failed)"
+	}
+	out := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(out)
+
+	cmd := exec.Command("go", "build", "-ldflags", "-s -w", "-o", out, "./cmd/unblink")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOTOOLCHAIN=auto")
+	if err := cmd.Run(); err != nil {
+		return fileMB(devBin), "unstripped dev build (release build failed)"
+	}
+	return fileMB(out), "stripped release build (goreleaser -s -w)"
 }
 
 func (unblinkAdapter) start(p *mcpProc) error { return requireTools(p, "read", "browse") }
