@@ -296,6 +296,9 @@ func classicProgram(name, src string) (*goja.Program, error) {
 	if e, ok := progCacheGet(key); ok {
 		return e.prog, e.err
 	}
+	// Escape shorthand-then-hyphen in regex classes (/[\s-_]/) that goja would
+	// otherwise reject at compile time; a no-op for source that lacks the pattern.
+	src = fixClassRangeHyphen(src)
 	prog, err := goja.Compile(name, src, false)
 	if err != nil && strings.Contains(src, "import") {
 		// goja can't parse dynamic import(); lower it via esbuild and retry so an SPA
