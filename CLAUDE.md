@@ -254,7 +254,7 @@ not `doFetch`).
   honest; a pinned vendored corpus under `testdata/wpt/`; on-demand analysis, not a
   CI gate. The ranked roadmap it feeds is `docs/wpt-compatibility.md` — headline
   findings: HTML tree-construction is already strong (html/syntax 0.944), the top
-  content-fidelity gaps are the URL parser and TextDecoder/TextEncoder); 0017 is the
+  content-fidelity gaps are the URL parser and TextDecoder/TextEncoder — but those figures predate the 2026-11-27 re-measurement in that doc: a missing `Element.insertAdjacentText` crashed testharness.js's result rendering, hiding ~37k subtests as timeouts, so compare PASS counts across runs, not the older ratios); 0017 is the
   `[\s-…]` regex-class rewrite (goja rejects a valid-ECMAScript `-` after a
   `\s`/`\d`/`\w` shorthand — the camelCase/slugify idiom — with "invalid character
   class range", aborting the whole script/module; `fixClassRangeHyphen` in
@@ -279,7 +279,8 @@ not `doFetch`).
   stamps an `ElementInternals` submission value onto the extraction-bound tree as
   `data-unblink-form-value`/`-invalid` — names in `internal/page` — so `dom` form
   extraction sees design-system controls without reading the JS heap; never visible
-  to page JS). Add a new
+  to page JS; Amendment 1 extends it to default ARIA semantics via
+  `data-unblink-default-*`, `:state()` matching, and `form="id"` ownership). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)

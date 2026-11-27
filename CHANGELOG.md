@@ -27,6 +27,17 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   second call, as browsers do. `form.reset()` is new, and `requestSubmit()` validates
   first unless `novalidate`. Not implemented: `formStateRestoreCallback`, `:state()`,
   `form="id"` association, reflection of `File` values to the `forms` tool.
+- **`form="id"`, `:state()` and default ARIA semantics for custom elements**
+  ([ADR 0019](docs/decisions/0019-form-associated-element-reflection.md), Amendment 1).
+  A control's `form` attribute now decides its form owner, for native and custom
+  controls, in page JS and in the `forms` tool alike; a descendant control that names
+  another form no longer belongs to its ancestor form. `:state(x)` matches
+  `ElementInternals.states` in `matches`/`querySelector`/`closest`. A custom
+  element's `internals.role`, `ariaLabel`, `ariaLabelledByElements` and checked/
+  expanded/pressed/selected/required/invalid/disabled defaults reach the semantic
+  output; an explicit `role`/`aria-*` attribute wins. `adoptedCallback` is still
+  not fired.
+- **`Element.insertAdjacentText`.** It was missing and threw a `TypeError`.
 - **Passive-by-default touch/wheel listeners.** `touchstart`/`touchmove`/`wheel`/
   `mousewheel` listeners on window, document, `<html>` and `<body>` are passive unless
   registered with an explicit `passive: false`, as the DOM Standard specifies, so a
@@ -44,6 +55,14 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 - **Go 1.27 is now the minimum.** The refreshed `golang.org/x/*` dependencies need
   1.26 and `whatwg-url` 0.9 needs 1.27; the `go` directive moved 1.25 → 1.27.
   `GOTOOLCHAIN=auto` (set by the Makefile) still downloads the toolchain automatically.
+- **`--tls-mimic` uses `net/http`'s HTTP/2 client** instead of the deprecated
+  `x/net/http2` client API. The opening HTTP/2 frames are unchanged and are now pinned
+  by a wire-level test.
+- **`whatwg-url` 0.9**, under its new module path
+  `github.com/nationallibraryofnorway/whatwg-url`.
+- **WPT conformance re-measured**; see `docs/wpt-compatibility.md`. Earlier figures
+  undercounted because the missing `insertAdjacentText` crashed the test harness's
+  result rendering.
 - **Dependencies refreshed**, including releases that clear govulncheck findings, and a
   reviewed goja/goja_nodejs bump ([ADR 0002](docs/decisions/0002-dependency-pinning-policy.md))
   that picks up upstream fixes for out-of-bounds access through detached TypedArray

@@ -418,7 +418,7 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     previously dead 304 path in `fetch.decodeBody` is now live.
   - **HTTP/2 connection pooling under `--tls-mimic`**: the utls RoundTripper
     pools one h2 `ClientConn` per host:port and reuses it while the server keeps
-    it open (dead conns are detected via `CanTakeNewRequest`/round-trip failure
+    it open (dead conns are detected via `Available`/round-trip failure
     and redialed, with a single safe retry) — repeat fetches no longer pay a
     TCP+TLS handshake each. HTTP/1.1 stays one-conn-per-request (rare on this
     path).
@@ -936,15 +936,16 @@ TLS-says-Chrome / h2-says-Go mismatch no longer stands out. **Still deferred**
 *order*, `INITIAL_WINDOW_SIZE`, `ENABLE_PUSH`, the connection `WINDOW_UPDATE`, and
 the `:method :authority :scheme :path` pseudo-header order — stock
 `x/net/http2` can't control these, and over HTTP/2 Go still owns header ordering
-(only header presence/values align, not order). **Known limitation:** `x/net` v0.63
-deprecates the `http2.Transport`/`ClientConn` client API this path is built on, in
-favour of `net/http`'s own HTTP/2 client. A migration was investigated and is blocked
-on Go 1.26: `net/http` negotiates h2 only when the connection it holds is a concrete
-`*crypto/tls.Conn` (`net/http/transport.go`), which a utls connection is not, and
-`Transport.NewClientConn` dials its own connection rather than adopting an existing
-`net.Conn`; the investigation found no supported route before Go 1.27. Until then the
-deprecated API stays, under a staticcheck exclusion scoped to `internal/fetch/tls.go`
-in `.golangci.yml`. Cloudflare-Turnstile / interactive
+(only header presence/values align, not order). The path runs on `net/http`'s own HTTP/2 client
+(`Transport.NewClientConn`), not the `x/net/http2` client API that `x/net` v0.63
+deprecated. That needed Go 1.27, where `Transport.DialTLSContext` accepts any
+connection exposing a `crypto/tls` `ConnectionState`; a small adapter around the utls
+connection provides it, and utls still performs the handshake. One internal detail is
+relied on: `http.HTTP2Config` has no `MaxHeaderListSize`, so the Chrome value is
+reached through `Transport.MaxResponseHeaderBytes` minus the 320 bytes net/http adds.
+`TestTLSMimicH2Settings` pins the full opening frames on the wire (SETTINGS order and
+values, the connection `WINDOW_UPDATE`, pseudo-header order) and fails if a toolchain
+bump changes any of it. Cloudflare-Turnstile / interactive
 JS challenges remain a non-goal (would need a `chromedp` escape hatch, which breaks
 the pure-Go / no-Chromium constraint).
 

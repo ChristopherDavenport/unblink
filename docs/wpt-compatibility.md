@@ -35,6 +35,74 @@ exclusions are auditable, not hand-waved. A
 static source-scan pre-filter assigns (d) *before* running, so runner limits never
 inflate or deflate the score.
 
+## Re-measurement (2026-11-27, wpt `b86e7702`, 24 directories, 8,250 test variants)
+
+Two full `make wpt` runs on the same machine and corpus: `main` at v0.24.0
+(`d8372b8`) and the tip of the dependency/fidelity stack that followed it (Go 1.27,
+the goja bump, XHR, Range, passive listeners, import-map scopes, ElementInternals,
+and `Element.insertAdjacentText`). The last two columns pair each directory's
+v0.24.0 figure with the new one.
+
+| Directory | Subtests | PASS | FIX | TMO | Conformance | Subtests (v0.24.0 → now) | PASS (v0.24.0 → now) | Conformance at v0.24.0 |
+|---|---|---|---|---|---|---|---|---|
+| `FileAPI` | 604 | 326 | 278 | 1 | 0.540 | 282 → 604 | 143 → 326 | 0.507 |
+| `IndexedDB` | 1209 | 155 | 0 | 9 | 1.000 | 307 → 1209 | 35 → 155 | 1.000 |
+| `WebCryptoAPI` | 9435 | 400 | 1807 | 21 | 0.181 | 4853 → 9435 | 25 → 400 | 0.321 |
+| `console` | 23 | 7 | 16 | 0 | 0.304 | 11 → 23 | 5 → 7 | 0.455 |
+| `content-security-policy` | 2826 | 542 | 2140 | 154 | 0.202 | 115 → 2826 | 18 → 542 | 0.165 |
+| `cookies` | 254 | 1 | 245 | 8 | 0.004 | 92 → 254 | 1 → 1 | 0.011 |
+| `custom-elements` | 1617 | 269 | 1282 | 32 | 0.173 | 578 → 1617 | 44 → 269 | 0.077 |
+| `dom` | 5473 | 1748 | 3673 | 61 | 0.322 | 882 → 5473 | 568 → 1748 | 0.648 |
+| `domparsing` | 1031 | 89 | 942 | 0 | 0.086 | 85 → 1031 | 46 → 89 | 0.541 |
+| `encoding` | 1150 | 449 | 170 | 0 | 0.725 | 978 → 1150 | 419 → 449 | 0.873 |
+| `fetch/api` | 1290 | 393 | 897 | 0 | 0.305 | 487 → 1290 | 202 → 393 | 0.415 |
+| `fetch/metadata` | 0 | 0 | 0 | 0 | n/a | 0 → 0 | 0 → 0 | n/a |
+| `hr-time` | 10 | 6 | 2 | 4 | 0.750 | 6 → 10 | 2 → 6 | 0.667 |
+| `html/dom` | 33084 | 2992 | 30085 | 10 | 0.090 | 32780 → 33084 | 2949 → 2992 | 0.090 |
+| `html/semantics` | 9394 | 1436 | 7636 | 320 | 0.158 | 5123 → 9394 | 984 → 1436 | 0.193 |
+| `html/syntax` | 7750 | 2294 | 5093 | 363 | 0.311 | 2423 → 7750 | 2287 → 2294 | 0.944 |
+| `html/webappapis` | 1079 | 484 | 562 | 34 | 0.463 | 196 → 1079 | 49 → 484 | 0.251 |
+| `referrer-policy` | 0 | 0 | 0 | 0 | n/a | 0 → 0 | 0 → 0 | n/a |
+| `shadow-dom` | 678 | 80 | 507 | 8 | 0.136 | 178 → 678 | 47 → 80 | 0.331 |
+| `streams` | 1130 | 256 | 868 | 6 | 0.228 | 61 → 1130 | 36 → 256 | 0.590 |
+| `subresource-integrity` | 269 | 90 | 179 | 0 | 0.335 | 4 → 269 | 0 → 90 | 0.000 |
+| `url` | 8717 | 5444 | 3272 | 1 | 0.625 | 366 → 8717 | 351 → 5444 | 0.959 |
+| `webmessaging` | 133 | 67 | 60 | 6 | 0.528 | 66 → 133 | 39 → 67 | 0.591 |
+| `xhr` | 1047 | 151 | 878 | 18 | 0.147 | 773 → 1047 | 89 → 151 | 0.116 |
+| **TOTAL** | 88203 | 17679 | 60592 | 1056 | 0.226 | 50646 → 88203 | 8339 → 17679 | 0.185 |
+
+**Read this table before any earlier figure in this document.** Every measurement
+made before this one undercounted, for one reason: the engine had no
+`Element.insertAdjacentText`. testharness.js calls it while rendering its results
+whenever a test finished without running an assert. The call threw, the results
+never appeared, and the runner filed the whole test file under TMO, which is
+excluded from the score. Implementing the method cut timed-out test variants from
+2,398 to 1,056 and brought 37,557 more subtests into view (50,646 → 88,203).
+
+Consequences:
+
+- **PASS counts are comparable; conformance ratios are not.** Passing subtests went
+  8,339 → 17,679. Ratios fell in several directories (`url` 0.959 → 0.625,
+  `html/syntax` 0.944 → 0.311, `dom` 0.648 → 0.322) because failing subtests that
+  were hidden are now counted, not because anything that passed stopped passing.
+- **The earlier headline figures were measured over the visible subset only.** That
+  includes the baseline table below, P1's "url 0.115 → 0.979" and P4's
+  "html/syntax 0.944". They are kept as the record of what was measured then.
+- `url`: the 366 subtests visible at v0.24.0 are now 8,717 (the large
+  `urltestdata`-driven files report), 5,444 passing.
+- `html/syntax` timeouts rose from 182 to 363 variants while its subtests went from
+  2,423 to 7,750. The cause was not investigated; one untested possibility is that
+  the harness now renders much larger result tables inside the per-test budget.
+- Two files time out now that did not at v0.24.0:
+  `FileAPI/reading-data-section/FileReader-multiple-reads.any.js` and
+  `hr-time/timing-attack.html`. Not investigated.
+- Timeouts depend on machine load. A first run of this stack made while other test
+  suites were running timed out two large `html/dom` reflection files that pass in
+  isolation. Compare runs made on an idle machine.
+
+The priorities below were ranked from the old, truncated data and have not been
+re-ranked against this table.
+
 ## Baseline (wpt `b86e7702`, 16 directories, 3,215 test variants)
 
 **This table is the pre-P1 baseline**, recorded 2026-07-05 with the harness itself
@@ -98,7 +166,7 @@ The post-fix 0.979 has no such conflict.
 | **P2** | TextDecoder/TextEncoder correctness (fatal, options, labels, surrogates) | ✅ done | encoding **0.504 → 0.873** |
 | **P3** | DOM fidelity — DOMException + CharacterData + DOMTokenList/createHTMLDocument branding + dispatchEvent; passive-by-default added later (reflected token lists still open) | ✅ done | dom **0.488 → 0.648** (measured before passive-by-default; not re-run since) |
 | **P4** | HTML tree-construction — **maintain only** | already strong | html/syntax **0.944** |
-| **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | partly done: `ElementInternals` form participation shipped ([ADR 0019](decisions/0019-form-associated-element-reflection.md)); the rest not started | not re-measured; reflection/iframe-dominated; smaller real slice |
+| **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | mostly done: `ElementInternals` form participation, `form="id"`, `:state()` and ARIA defaults shipped ([ADR 0019](decisions/0019-form-associated-element-reflection.md)); `adoptedCallback` open | custom-elements PASS 44 → 269 (see *Re-measurement*) |
 | **secondary** | Security-posture edges — audit-driven | ✅ closed | 6 gaps found + fixed/locked (WPT can't measure; see *Secondary*) |
 | *not ranked* | IDL reflection breadth, streams backpressure, legacy encodings, asymmetric crypto | excluded | by-design or low content-value |
 
@@ -199,10 +267,13 @@ promising item. Medium value (component-heavy sites).
 the validity API, `formAssociatedCallback`/`formDisabledCallback`/`formResetCallback`,
 and participation in `form.elements`, `new FormData(form)` and submission. The value
 also reaches unblink's own `forms`/`submit_form` tools by tree reflection (ADR 0019).
-The custom-elements score has not been re-run since. Still open in P5: the ARIA
-reflection properties are stored state only (they do not feed accessible names),
-`:state()`, `form="id"` association, `formStateRestoreCallback` (never called), and
-`adoptedCallback`.
+`form="id"` association, `:state()`, and default ARIA semantics from
+`ElementInternals` reaching extraction followed (ADR 0019, Amendment 1).
+`custom-elements` passes went 44 → 269 between v0.24.0 and the 2026-11-27
+re-measurement (see the table above for why its ratio is not comparable). Still open
+in P5: `adoptedCallback` (every node's `ownerDocument` is the main document, so
+there is no adoption to observe; making it truthful is its own change), and
+`formStateRestoreCallback`, which nothing in the engine would trigger.
 
 ### Secondary — security-posture parity (measured: largely *not* client-side-measurable)
 
