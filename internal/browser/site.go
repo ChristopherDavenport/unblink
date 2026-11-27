@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,8 +20,9 @@ import (
 const maxRulePatterns = 20
 
 // SiteResult is the agent-facing metadata for a host's origin: its robots.txt
-// rules and its llms.txt guide. It is context only — unblink never blocks a fetch
-// based on robots.txt.
+// rules and its llms.txt guide. It is context only unless the operator enabled
+// --respect-robots, in which case Robots.Enforced is set and a path reported as
+// not allowed_for_us will be refused.
 type SiteResult struct {
 	Origin            string         `json:"origin"`
 	Robots            *RobotsSummary `json:"robots,omitempty"`
@@ -32,9 +34,10 @@ type SiteResult struct {
 // RobotsSummary is the parsed, exposed view of a host's robots.txt for a standard
 // browser user-agent (the "*" group).
 type RobotsSummary struct {
-	Status       int      `json:"status"`         // HTTP status of /robots.txt (0 = fetch error)
-	Present      bool     `json:"present"`        // a usable robots.txt was found
-	AllowedForUs bool     `json:"allowed_for_us"` // is the requested path allowed for "*"
+	Status       int      `json:"status"`             // HTTP status of /robots.txt (0 = fetch error)
+	Present      bool     `json:"present"`            // a usable robots.txt was found
+	AllowedForUs bool     `json:"allowed_for_us"`     // is the requested path allowed for "*"
+	Enforced     bool     `json:"enforced,omitempty"` // --respect-robots: a disallowed path is refused, not just reported
 	CrawlDelay   float64  `json:"crawl_delay,omitempty"`
 	Sitemaps     []string `json:"sitemaps,omitempty"`
 	Disallow     []string `json:"disallow,omitempty"`
@@ -54,12 +57,14 @@ type LLMsTxt struct {
 // RobotsHint is the lightweight robots summary folded into Browse output.
 type RobotsHint struct {
 	AllowedForUs bool     `json:"allowed_for_us"`
+	Enforced     bool     `json:"enforced,omitempty"` // --respect-robots is on
 	CrawlDelay   float64  `json:"crawl_delay,omitempty"`
 	Sitemaps     []string `json:"sitemaps,omitempty"`
 }
 
 // siteInfo is the cached, path-independent metadata for one origin. The
 // path-specific allowed_for_us is computed per call from policy, not stored.
+// A stored siteInfo is never mutated (gather copies it to add the llms half).
 type siteInfo struct {
 	origin string
 
@@ -69,7 +74,13 @@ type siteInfo struct {
 	policy        *robots.Policy
 	crawlDelay    float64
 	sitemaps      []string
+	// robotsUnreachable records a 5xx answer or a failed fetch (robotsErr), the
+	// outcome RFC 9309 section 2.3.1.4 reads as disallow-all. It only changes a
+	// verdict under --respect-robots; reporting otherwise stays allow-all.
+	robotsUnreachable bool
+	robotsErr         error
 
+	llmsProbed  bool // the llms.txt/llms-full.txt half has been probed
 	llmsPresent bool
 	llmsURL     string
 	llmsTitle   string
@@ -90,7 +101,7 @@ func (b *Browser) Site(ctx context.Context, req Request) (*SiteResult, error) {
 		return nil, err
 	}
 	info := b.gatherSite(ctx, origin)
-	return siteResultFrom(info, path), nil
+	return b.siteResultFrom(info, path), nil
 }
 
 // originForSite resolves the origin (scheme://host) and request path for a Site
@@ -111,10 +122,22 @@ func (b *Browser) originForSite(ctx context.Context, req Request) (*url.URL, str
 	case req.URL != "":
 		// Redirect-aware origin without touching a session's jar or history.
 		p, err := b.fetchStateless(ctx, req.URL, renderOpts{})
-		if err != nil {
+		var refused *RobotsError
+		switch {
+		case errors.As(err, &refused):
+			// Under --respect-robots the page itself may not be fetched, but the
+			// agent still needs the rules that refused it: report on the refused
+			// URL (the request, or the redirect hop that was stopped) unfetched.
+			u, perr := url.Parse(refused.URL)
+			if perr != nil {
+				return nil, "", err
+			}
+			final = u
+		case err != nil:
 			return nil, "", err
+		default:
+			final = p.FinalURL
 		}
-		final = p.FinalURL
 	default:
 		return nil, "", errf(ErrBadInput, "a url or a session with a current page is required")
 	}
@@ -141,18 +164,44 @@ func requestPath(u *url.URL) string {
 // /llms.txt, and /llms-full.txt concurrently on a miss. Probes are best-effort;
 // negative results are cached too.
 func (b *Browser) gatherSite(ctx context.Context, origin *url.URL) *siteInfo {
+	return b.gather(ctx, origin, true)
+}
+
+// gather is the one path into the site cache. withLLMs=false is the robots.txt
+// enforcement gate's lookup: it needs only the robots half, so a miss costs one
+// request (not three) per origin; a later site/browse lookup adds the llms half
+// to that same entry rather than re-probing robots.txt. Every probe goes through
+// the anonymous default client — never a session's — so no session cookies or
+// injected credentials reach an origin-root file, and the SSRF guard applies.
+func (b *Browser) gather(ctx context.Context, origin *url.URL, withLLMs bool) *siteInfo {
 	key := origin.Scheme + "://" + origin.Host
-	if info, ok := b.siteCache.get(key); ok {
-		return info
+	cached, hit := b.siteCache.get(key)
+	if hit && (cached.llmsProbed || !withLLMs) {
+		return cached
 	}
 	info := &siteInfo{origin: key}
 	var wg sync.WaitGroup
-	wg.Add(3)
-	go func() { defer wg.Done(); b.probeRobots(ctx, key, info) }()
-	go func() { defer wg.Done(); b.probeLLMs(ctx, key, info) }()
-	go func() { defer wg.Done(); b.probeLLMsFull(ctx, key, info) }()
+	if hit {
+		*info = *cached // robots half already known; only the llms half is missing
+	} else {
+		wg.Go(func() { b.probeRobots(ctx, key, info) })
+	}
+	if withLLMs {
+		info.llmsProbed = true
+		wg.Go(func() { b.probeLLMs(ctx, key, info) })
+		wg.Go(func() { b.probeLLMsFull(ctx, key, info) })
+	}
 	wg.Wait()
-	b.siteCache.put(key, info)
+	switch {
+	case ctx.Err() != nil:
+		// A cancelled call says nothing about the host; do not cache its failures.
+	case hit:
+		b.siteCache.replace(key, info)
+	case b.respectRobots && info.robotsUnreachable:
+		b.siteCache.put(key, info, robotsUnreachableTTL)
+	default:
+		b.siteCache.put(key, info, 0)
+	}
 	return info
 }
 
@@ -160,12 +209,17 @@ func (b *Browser) probeRobots(ctx context.Context, origin string, info *siteInfo
 	res, err := b.client.Fetch(ctx, http.MethodGet, origin+"/robots.txt", nil, nil)
 	if err != nil {
 		slog.Debug("site: robots.txt probe failed", "origin", origin, "err", err.Error())
+		info.robotsUnreachable, info.robotsErr = true, err
 		info.robotsNote = "robots.txt could not be fetched (treating as allow-all)"
+		if b.respectRobots {
+			info.robotsNote = "robots.txt could not be fetched; treated as disallow-all while --respect-robots is on (RFC 9309)"
+		}
 		return
 	}
 	info.robotsStatus = res.Status
+	info.robotsUnreachable = res.Status >= 500
 	if res.Status != http.StatusOK || !looksLikeRobots(res.Header.Get("Content-Type"), res.Body) {
-		info.robotsNote = robotsAbsentNote(res.Status)
+		info.robotsNote = robotsAbsentNote(res.Status, b.respectRobots)
 		return
 	}
 	pol := robots.Parse(res.Body)
@@ -213,22 +267,22 @@ func (b *Browser) probeLLMsFull(ctx context.Context, origin string, info *siteIn
 
 // siteResultFrom builds the public SiteResult, computing the path-specific
 // allowed_for_us from the cached policy.
-func siteResultFrom(info *siteInfo, path string) *SiteResult {
+func (b *Browser) siteResultFrom(info *siteInfo, path string) *SiteResult {
 	res := &SiteResult{
 		Origin:            info.origin,
 		LLMsFullAvailable: info.llmsFull,
 		LLMsFullURL:       info.llmsFullURL,
 	}
 	rs := &RobotsSummary{
-		Status:       info.robotsStatus,
-		Present:      info.robotsPresent,
-		AllowedForUs: true,
-		CrawlDelay:   info.crawlDelay,
-		Sitemaps:     info.sitemaps,
-		Note:         info.robotsNote,
+		Status:     info.robotsStatus,
+		Present:    info.robotsPresent,
+		Enforced:   b.respectRobots,
+		CrawlDelay: info.crawlDelay,
+		Sitemaps:   info.sitemaps,
+		Note:       info.robotsNote,
 	}
+	_, rs.AllowedForUs = b.robotsVerdict(info, path)
 	if g := info.policy.StarGroup(); g != nil {
-		rs.AllowedForUs = g.Allowed(path)
 		for _, r := range g.Rules {
 			if r.Pattern == "" {
 				continue
@@ -261,8 +315,10 @@ func (b *Browser) siteHint(ctx context.Context, final *url.URL) (bool, *RobotsHi
 	}
 	origin := &url.URL{Scheme: final.Scheme, Host: final.Host}
 	info := b.gatherSite(ctx, origin)
+	_, allowed := b.robotsVerdict(info, requestPath(final))
 	hint := &RobotsHint{
-		AllowedForUs: info.policy.StarGroup().Allowed(requestPath(final)),
+		AllowedForUs: allowed,
+		Enforced:     b.respectRobots,
 		CrawlDelay:   info.crawlDelay,
 		Sitemaps:     capStrings(info.sitemaps, 3),
 	}
@@ -355,10 +411,12 @@ func llmsTitle(s string) string {
 	return ""
 }
 
-func robotsAbsentNote(status int) string {
+func robotsAbsentNote(status int, enforced bool) string {
 	switch {
 	case status == http.StatusNotFound:
 		return "no robots.txt (allow-all)"
+	case status >= 500 && enforced:
+		return fmt.Sprintf("robots.txt returned %d; treated as disallow-all while --respect-robots is on (RFC 9309)", status)
 	case status >= 500:
 		return fmt.Sprintf("robots.txt returned %d; treating as allow-all", status)
 	default:

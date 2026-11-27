@@ -292,7 +292,7 @@ results rather than logged away.
 | `links`       | `{ url?, session?, use_current?, filter?, internal_only?, limit? }` | The page's links (text + absolute href), optionally filtered. `limit` defaults to 200 (cap 1000); `total`/`truncated` report the rest. |
 | `forms`       | `{ url?, session?, use_current? }`                 | The page's forms and their fields (name, type, required, options).      |
 | `find`        | `{ url?, session?, use_current?, query, max_hits? }` | Matching text snippets with the heading path locating each.           |
-| `site`        | `{ url?, session?, use_current? }`                 | A host's agent-facing metadata: robots.txt summary (allow/disallow for a browser agent, crawl-delay, sitemaps) + llms.txt content + whether llms-full.txt exists. Context only — never blocks a fetch. |
+| `site`        | `{ url?, session?, use_current? }`                 | A host's agent-facing metadata: robots.txt summary (allow/disallow for a browser agent, crawl-delay, sitemaps) + llms.txt content + whether llms-full.txt exists. Context only unless the server runs with `--respect-robots`, when `robots.enforced` is `true` and a disallowed URL is refused. |
 | `click`       | `{ session, link_index? \| match?, render? }`      | Follows a link from the session's current page (cookies carried); returns a summary. The destination's JavaScript runs by default; pass `render=false` to skip it. |
 | `submit_form` | `{ session, form?, values?, files?, render? }`     | Submits a form from the current page (cookies carried); returns a summary. Forms declaring `enctype=multipart/form-data` are encoded as multipart automatically; `files` attaches uploads (`{field, filename?, mime?, content \| content_base64}`, capped 8 files / 4 MiB — content is supplied inline, never read from disk; needs a POST form). The result page's JavaScript runs by default; pass `render=false` to skip it. |
 | `controls`    | `{ url?, session?, use_current? }`                 | Non-link interactive controls (buttons, `role=button`, `onclick`/`tabindex`, submit/reset inputs, tabs, summaries), each with a stable CSS selector for `interact`. |
@@ -303,7 +303,7 @@ results rather than logged away.
 | `console`     | `{ url?, session?, use_current?, level? }`         | The page's captured console output (log/info/warn/error/debug) from its JavaScript render, in order — for debugging why a page rendered as it did (boot errors, failed data loads, framework warnings). `level` filters to one severity. Requires JavaScript (not exposed under `--disable-js`). |
 | `cookies`     | `{ session, action?, url?, cookies? }`             | Inspect or change a session's cookies, scoped to an origin (`url`, else the session's current page). `action=list` (default) returns the jar's cookies as name/value; `set` adds/updates the cookies you pass; `clear` expires them. Requires a session. |
 | `session`     | `{ action: new\|list\|state\|history\|back\|forward\|close, session?, url?, headers?, cookies?, auth? }` | Manage a session's lifecycle and navigation. `new` accepts `url` + `headers`/`cookies`/`auth` to attach credentials for that origin (see [Authentication](#authentication)); re-creating a live id with new credentials errors (close it first). `list` returns every live session's state (including `live_js`, whether a persistent runtime is attached). |
-| `map`         | `{ url, max_urls?, max_depth? }`                   | Discover a site's URLs: harvests sitemap.xml (robots.txt + `/sitemap.xml`, following sitemap indexes) and crawls same-origin links breadth-first from the seed. Returns a bounded, de-duplicated list tagged `source=sitemap\|crawl` with depth. Exposure-grade — surfaces robots.txt but never gates on it. Send an MCP progress token (`_meta.progressToken`) to stream progress while the walk (up to 60s) runs. |
+| `map`         | `{ url, max_urls?, max_depth? }`                   | Discover a site's URLs: harvests sitemap.xml (robots.txt + `/sitemap.xml`, following sitemap indexes) and crawls same-origin links breadth-first from the seed. Returns a bounded, de-duplicated list tagged `source=sitemap\|crawl` with depth. Exposure-grade by default — surfaces robots.txt but does not gate on it; under `--respect-robots` it skips disallowed URLs and reports `skipped_by_robots`. Send an MCP progress token (`_meta.progressToken`) to stream progress while the walk (up to 60s) runs. |
 | `search`      | `{ query, count?, site? }`                         | Web search via the configured provider (SearXNG or Brave): ranked results (title, url, snippet). `site` restricts to one domain. Requires `--search-provider` (see [Search](#search)); not exposed otherwise. |
 
 ### Tool selection
@@ -398,11 +398,28 @@ covered in [Safety: the content boundary](#safety-the-content-boundary). Page
 JavaScript additionally cannot read host files (`require` is disabled) or read
 HttpOnly cookies via `document.cookie`.
 
-robots.txt and llms.txt are **surfaced as context, never enforced** — unblink
-reports a host's crawl rules (and `allowed_for_us` for the path) but never blocks
-a fetch on them. `browse` folds in lightweight presence hints (host-cached, so
-repeat browses are free); `--no-site-hints` disables that probe while the `site`
-tool stays available.
+robots.txt and llms.txt are **surfaced as context, not enforced, by default** —
+unblink reports a host's crawl rules (and `allowed_for_us` for the path) but does
+not block a fetch on them: it acts as a browser for a user, which is not what
+robots.txt addresses. `browse` folds in lightweight presence hints (host-cached,
+so repeat browses are free); `--no-site-hints` disables that probe while the
+`site` tool stays available.
+
+An operator running unblink as an automated crawler can make it comply with
+**`--respect-robots`** ([ADR 0020](docs/decisions/0020-opt-in-robots-enforcement.md)).
+Every agent-directed navigation is then checked against the target origin's
+robots.txt (the `*` group, path plus query) before the request is sent: the page
+fetch of every page tool (cached or not, with or without a session), `click`,
+`submit_form`, each page and sitemap file `map` fetches, and every redirect hop
+of those. A disallowed URL is refused with a `robots_disallowed` tool error and
+is never requested; `map` skips it and reports `skipped_by_robots`. Following
+RFC 9309, a robots.txt that answers 4xx means no restrictions, and one that
+answers 5xx or cannot be fetched means the whole origin is disallowed (re-checked
+after 30 seconds). `site` and the `browse` hint report `enforced: true`, so
+`allowed_for_us: false` reads as "will be refused". Not gated: a page's own
+subresources and page-JS requests, the robots.txt/llms.txt/`/sitemap.xml`
+discovery probes, and `search` provider calls. `Crawl-delay` is reported but not
+enforced; use `--rate-limit` for pacing.
 
 ### Extensions (ad-blocking)
 
@@ -472,6 +489,7 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 | `--tls-mimic` | off | Present a Chrome TLS/h2 fingerprint (utls) to get past naive anti-bot blocks; also sets `navigator.webdriver=false`. |
 | `--allow-private` | off | Permit page fetches to private/loopback/metadata IPs (needed for localhost/internal targets). |
 | `--no-site-hints` | off | Omit robots.txt/llms.txt presence hints from `browse`. |
+| `--respect-robots` | off | Obey robots.txt: refuse agent-directed navigations (page tools, `click`, `submit_form`, `map`, and their redirects) that the target origin's robots.txt disallows for `*`. Off by default: robots.txt is reported, not enforced. See [ADR 0020](docs/decisions/0020-opt-in-robots-enforcement.md). |
 | `--no-safe-output` | off | Disable the untrusted-content safety pass (fence, hidden-text strip, image-beacon defang) — return raw reduction. |
 | `--disable-js` | off | Disable JavaScript rendering entirely (JS is **on by default**; reads render unless the caller passes `render=false`). |
 | `--js` | — | Deprecated no-op, accepted so older client configs still start: JavaScript is on by default (use `--disable-js` to turn it off). |

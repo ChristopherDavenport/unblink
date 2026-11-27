@@ -38,6 +38,7 @@ func main() {
 	tlsMimic := flag.Bool("tls-mimic", false, "present a Chrome fingerprint (utls ClientHello + tuned h2 SETTINGS/headers) to evade anti-bot blocks")
 	allowPrivate := flag.Bool("allow-private", false, "permit page fetches to private/loopback/metadata IPs (off by default; needed for localhost/internal targets)")
 	noSiteHints := flag.Bool("no-site-hints", false, "omit robots.txt/llms.txt presence hints from browse output")
+	respectRobots := flag.Bool("respect-robots", false, "obey robots.txt: refuse agent-directed navigations (page tools, click, submit_form, map) the target site's robots.txt disallows (off by default: robots.txt is reported, not enforced)")
 	noSafeOutput := flag.Bool("no-safe-output", false, "disable untrusted-content safety on returned content: keep raw output (no provenance fence, no hidden-text stripping, no image-beacon defanging)")
 	disableJS := flag.Bool("disable-js", false, "disable JavaScript rendering entirely (JS is on by default; reads render unless the caller passes render=false)")
 	// Deprecated: JS is on by default now, so --js is a no-op kept for backward
@@ -86,6 +87,7 @@ func main() {
 		browser.WithTLSMimic(*tlsMimic),
 		browser.WithAllowPrivate(*allowPrivate),
 		browser.WithSiteHints(!*noSiteHints),
+		browser.WithRespectRobots(*respectRobots),
 		browser.WithSafeOutput(!*noSafeOutput),
 		browser.WithSessionLimits(*sessionTTL, *sessionCap),
 	}

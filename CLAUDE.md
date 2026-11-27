@@ -101,7 +101,7 @@ Three load-bearing decisions hold the design together:
 - `internal/tokens` — token estimation + Markdown cursor pagination.
 - `internal/session` — per-session cookie jar + navigation history + a live `js.LiveContext` (persistent JS runtime) bound to the current page; navigation/eviction/close tears it down (manager `onEvict` hook).
 - `internal/js` — quarantined goja + eventloop DOM bridge (scripts, ESM, fetch/XHR, events, cookies). One-shot `Render` *and* persistent `Context`/`LiveContext` (true sessions). Opt-in. Defines its own `Transport`/`CookieJar` interfaces and **never imports `internal/fetch`**; the browser supplies adapters (`internal/browser/transport.go`).
-- `internal/robots` — exposure-grade robots.txt (REP) parser: groups, `*`, Allow/Disallow (`*`/`$`), Crawl-delay, Sitemaps. Pure stdlib, **no enforcement** — unblink surfaces rules as context, never gates a fetch.
+- `internal/robots` — robots.txt (REP) parser + matcher: groups, `*`, Allow/Disallow (`*`/`$`), Crawl-delay, Sitemaps, RFC 9309 percent-encoding normalization (`MatchNormalized`). Pure stdlib, no fetching, and it never decides — by default unblink surfaces rules as context; with `--respect-robots` (ADR 0020, off by default) `internal/browser/robotsgate.go` refuses disallowed agent-directed navigations.
 - `internal/sitemap` — pure-stdlib sitemaps.org XML decoder (`<urlset>`/`<sitemapindex>`, gzip-aware) behind the `map` tool. No fetch, no `x/net/html`.
 - `internal/search` — optional web search behind a `Provider` interface (SearXNG + Brave adapters); off unless `--search-provider` is set, injected into `browser`.
 - `internal/webext` — models MV2/MV3 WebExtensions (manifest, match patterns, a tokenized no-ReDoS Adblock `urlFilter` matcher, dir/archive loaders with traversal + zip-bomb guards) so unblink can runtime-load one (e.g. uBlock Origin Lite). Pure Go; imports neither `js` nor `browser` — the direction is `browser → js → webext`. The JS-side surface lives in `internal/js/ext*.go`.
@@ -283,7 +283,16 @@ not `doFetch`).
   `data-unblink-form-value`/`-invalid` — names in `internal/page` — so `dom` form
   extraction sees design-system controls without reading the JS heap; never visible
   to page JS; Amendment 1 extends it to default ARIA semantics via
-  `data-unblink-default-*`, `:state()` matching, and `form="id"` ownership). Add a new
+  `data-unblink-default-*`, `:state()` matching, and `form="id"` ownership); 0020 is
+  opt-in robots.txt enforcement (`--respect-robots`, default off so browsing for a
+  user is unchanged: `internal/browser/robotsgate.go` checks every agent-directed
+  navigation — the `fetchPage`/`fetchStateless`/`Submit`/`map` funnels plus each
+  redirect hop via the context-carried `fetch.WithRedirectCheck` — against the
+  target origin's `*` group before the request is sent, refusing with
+  `ErrRobotsDisallowed` → `robots_disallowed`; a 4xx robots.txt allows, 5xx or
+  unreachable disallows for a 30s TTL per RFC 9309; subresources, page-JS
+  subrequests, the robots/llms/`/sitemap.xml` probes, `search` and Crawl-delay are
+  deliberately not gated). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)

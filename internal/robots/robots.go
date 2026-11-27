@@ -1,13 +1,17 @@
-// Package robots parses robots.txt (the Robots Exclusion Protocol) for the
-// purpose of *exposing* a site's crawl rules to an agent — not enforcing them.
-// unblink never blocks a fetch based on robots.txt; it surfaces the rules as
-// context so the agent (or its user) can decide.
+// Package robots parses robots.txt (the Robots Exclusion Protocol) and matches
+// paths against it. It is pure: it never fetches and never decides what to do
+// with a verdict. By default unblink only *exposes* the rules to the agent as
+// context; an operator can opt in to enforcement (--respect-robots, ADR 0020),
+// in which case internal/browser refuses navigations this package reports as
+// disallowed.
 //
-// The parser is deliberately exposure-grade: it understands groups, the "*"
-// user-agent, Allow/Disallow with '*' and trailing '$' wildcards, Crawl-delay,
-// and global Sitemap directives. It uses pattern length as the match-specificity
-// tie-breaker, a documented simplification of Google's matched-length rule that
-// is adequate when the result is informational rather than gating.
+// The parser understands groups, the "*" user-agent, Allow/Disallow with '*'
+// and trailing '$' wildcards, Crawl-delay, and global Sitemap directives. The
+// most specific rule is the one with the longest pattern (RFC 9309 section
+// 2.2.2), Allow winning a tie. Allowed/Match compare the path as given;
+// MatchNormalized first normalizes percent-encoding on both sides, which is what
+// the enforcing path uses so an equivalent spelling of a path cannot slip past a
+// rule.
 package robots
 
 import (
@@ -126,29 +130,108 @@ func (p *Policy) StarGroup() *Group {
 // longest-matching-pattern-wins with Allow winning ties. A nil group (no rules
 // apply) allows everything. Empty-pattern rules have no effect.
 func (g *Group) Allowed(path string) bool {
+	_, allowed := g.match(path, false)
+	return allowed
+}
+
+// Match is Allowed plus the rule that decided: rule is the winning Allow or
+// Disallow directive, or nil when no rule matched (the path is then allowed).
+func (g *Group) Match(path string) (rule *Rule, allowed bool) {
+	return g.match(path, false)
+}
+
+// MatchNormalized is Match after normalizing percent-encoding in both the path
+// and each pattern (see Normalize), as RFC 9309 section 2.2.2 requires before
+// comparison. The returned rule carries the pattern as written in robots.txt.
+func (g *Group) MatchNormalized(path string) (rule *Rule, allowed bool) {
+	return g.match(Normalize(path), true)
+}
+
+func (g *Group) match(path string, normalize bool) (*Rule, bool) {
 	if g == nil {
-		return true
+		return nil, true
 	}
 	bestLen := -1
-	bestAllow := true
-	for _, r := range g.Rules {
+	var best *Rule
+	for i := range g.Rules {
+		r := &g.Rules[i]
 		if r.Pattern == "" {
 			continue
 		}
-		if !pathMatch(r.Pattern, path) {
+		pattern := r.Pattern
+		if normalize {
+			pattern = Normalize(pattern)
+		}
+		if !pathMatch(pattern, path) {
 			continue
 		}
 		switch {
-		case len(r.Pattern) > bestLen:
-			bestLen, bestAllow = len(r.Pattern), r.Allow
-		case len(r.Pattern) == bestLen && r.Allow:
-			bestAllow = true // Allow wins a specificity tie
+		case len(pattern) > bestLen:
+			bestLen, best = len(pattern), r
+		case len(pattern) == bestLen && r.Allow && !best.Allow:
+			best = r // Allow wins a specificity tie
 		}
 	}
-	if bestLen < 0 {
-		return true // nothing matched
+	if best == nil {
+		return nil, true // nothing matched
 	}
-	return bestAllow
+	return best, best.Allow
+}
+
+// Normalize puts a URL path (with optional query) or a robots.txt pattern into
+// the canonical form RFC 9309 section 2.2.2 compares in: bytes outside
+// printable US-ASCII are percent-encoded, a percent-encoded unreserved
+// character (ALPHA / DIGIT / "-" / "." / "_" / "~") is decoded, and the hex
+// digits of every other escape are uppercased. Reserved characters are left
+// exactly as written ("/a%2Fb" and "/a/b" stay distinct), as are the pattern
+// metacharacters '*' and '$'. A '%' that does not start an escape becomes
+// "%25", which keeps the result stable under a second pass.
+func Normalize(s string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]):
+			v := unhex(s[i+1])<<4 | unhex(s[i+2])
+			if isUnreserved(v) {
+				b.WriteByte(v)
+			} else {
+				b.WriteByte('%')
+				b.WriteByte(hex[v>>4])
+				b.WriteByte(hex[v&0x0F])
+			}
+			i += 2
+		case c <= 0x20 || c >= 0x7F || c == '%':
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0F])
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+func unhex(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
+	}
+}
+
+func isUnreserved(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+		c == '-' || c == '.' || c == '_' || c == '~'
 }
 
 // pathMatch reports whether a robots path pattern matches path. '*' matches any

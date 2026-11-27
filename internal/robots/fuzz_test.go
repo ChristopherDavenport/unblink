@@ -24,6 +24,12 @@ func FuzzParse(f *testing.F) {
 			_ = g.Allowed("/")
 			_ = g.Allowed("/a/b.gif?q=1")
 			_ = g.Allowed("")
+			_, _ = g.MatchNormalized("/a/%62.gif?q=%zz%")
+		}
+		// Normalizing is idempotent on any input (the enforcing path relies on it
+		// to compare a path and a pattern in one canonical form).
+		if n := robots.Normalize(string(data)); robots.Normalize(n) != n {
+			t.Fatalf("Normalize is not idempotent on %q", data)
 		}
 	})
 }

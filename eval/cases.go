@@ -870,6 +870,26 @@ func cases() []Case {
 			MustPass: true,
 		},
 		{
+			// --respect-robots (ADR 0020): siteHost disallows /private and allows
+			// /private/public. The disallowed read is a robots refusal naming the
+			// operator setting; the allowed read still returns the page.
+			Name:    "robots-enforced",
+			Host:    siteHost(),
+			Browser: []browser.Option{browser.WithRespectRobots(true)},
+			Steps: []Step{
+				{Tool: "read", Path: "/private/doc", Args: map[string]any{"mode": "full", "render": false}},
+				{Tool: "read", Path: "/private/public/doc", Args: map[string]any{"mode": "full", "render": false}},
+			},
+			Scorers: []Scorer{
+				IsErrorIs(0, true),
+				Recall(0, "error [robots_disallowed]", "disallowed by the site's robots.txt", "--respect-robots", "retrying will not help"),
+				IsErrorIs(1, false),
+				Recall(1, "A real page with enough prose"),
+			},
+			Floor:    1.0,
+			MustPass: true,
+		},
+		{
 			Name:    "js-render-content",
 			Host:    htmlHost(fxJSRender),
 			Browser: []browser.Option{browser.WithJS(2 * time.Second)},

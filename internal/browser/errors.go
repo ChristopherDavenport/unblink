@@ -16,17 +16,18 @@ import (
 type ErrorCode string
 
 const (
-	ErrBadInput       ErrorCode = "bad_input"       // caller error: fix the arguments
-	ErrUnknownSession ErrorCode = "unknown_session" // id never existed (or was closed)
-	ErrSessionExpired ErrorCode = "session_expired" // id was evicted; state and credentials are gone
-	ErrNoCurrentPage  ErrorCode = "no_current_page" // session exists but has never navigated
-	ErrJSRequired     ErrorCode = "js_required"     // needs the server started with --js
-	ErrNotConfigured  ErrorCode = "not_configured"  // feature needs server-side configuration
-	ErrBlocked        ErrorCode = "blocked"         // SSRF guard denied the target address
-	ErrCursorExpired  ErrorCode = "cursor_expired"  // page content changed; restart without a cursor
-	ErrTimeout        ErrorCode = "timeout"         // the operation ran out of time
-	ErrFetchFailed    ErrorCode = "fetch_failed"    // network-level fetch failure
-	ErrInternal       ErrorCode = "internal"        // unexpected failure inside unblink
+	ErrBadInput       ErrorCode = "bad_input"         // caller error: fix the arguments
+	ErrUnknownSession ErrorCode = "unknown_session"   // id never existed (or was closed)
+	ErrSessionExpired ErrorCode = "session_expired"   // id was evicted; state and credentials are gone
+	ErrNoCurrentPage  ErrorCode = "no_current_page"   // session exists but has never navigated
+	ErrJSRequired     ErrorCode = "js_required"       // needs the server started with --js
+	ErrNotConfigured  ErrorCode = "not_configured"    // feature needs server-side configuration
+	ErrBlocked        ErrorCode = "blocked"           // SSRF guard denied the target address
+	ErrRobots         ErrorCode = "robots_disallowed" // --respect-robots: the site's robots.txt disallows the URL
+	ErrCursorExpired  ErrorCode = "cursor_expired"    // page content changed; restart without a cursor
+	ErrTimeout        ErrorCode = "timeout"           // the operation ran out of time
+	ErrFetchFailed    ErrorCode = "fetch_failed"      // network-level fetch failure
+	ErrInternal       ErrorCode = "internal"          // unexpected failure inside unblink
 )
 
 // Error is a classified browser error. Message is agent-facing and actionable;
@@ -62,6 +63,13 @@ func Classify(err error) *Error {
 	var be *Error
 	if errors.As(err, &be) {
 		return be
+	}
+
+	// Before the network classes below: a refused redirect hop arrives wrapped in
+	// a *url.Error, which is a net.Error and would read as a fetch failure.
+	var refused *RobotsError
+	if errors.As(err, &refused) {
+		return &Error{Code: ErrRobots, Message: refused.agentMessage(), Err: err}
 	}
 
 	var expired *session.ExpiredError

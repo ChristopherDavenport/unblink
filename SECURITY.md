@@ -49,8 +49,11 @@ adversarial and bounds what it can do:
 
 ## Out of scope
 
-- unblink is **not a compliant crawler**: robots.txt is surfaced as context, never
-  enforced. Operating it against a site is the operator's responsibility.
+- unblink is **not a compliant crawler by default**: robots.txt is surfaced as
+  context and not enforced unless the operator starts it with `--respect-robots`
+  (ADR 0020), which gates agent-directed navigations but not a page's own
+  subresources or `Crawl-delay`. Operating it against a site is the operator's
+  responsibility.
 - The safe-output pass reduces, but cannot eliminate, prompt-injection risk. Treat
   agent actions taken on web-derived content accordingly.
 - unblink has no layout engine, so CSS-only attacks that depend on the full cascade

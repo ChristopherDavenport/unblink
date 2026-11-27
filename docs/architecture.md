@@ -50,7 +50,7 @@ re-fetch or re-parse. See `internal/page/page.go`.
 | `internal/reduce`    | Semantic reduction: readability extraction + bluemonday sanitize. Full mode also drops repeated link-dense blocks (`dom.StripDuplicateBlocks` — desktop nav + its mobile-drawer twin emit once). |
 | `internal/emit`      | Serialize reduced content to Markdown + heading outline.              |
 | `internal/session`   | Per-session cookie jar (own `fetch.Client`) + navigation history + per-page interaction replay log (imports `js` for `js.Action`). |
-| `internal/robots`    | Exposure-grade robots.txt (REP) parser: groups, `*`, Allow/Disallow (`*`/`$`), Crawl-delay, Sitemaps. No external deps; **never enforces**. |
+| `internal/robots`    | robots.txt (REP) parser + path matcher: groups, `*`, Allow/Disallow (`*`/`$`), Crawl-delay, Sitemaps. No external deps, no fetching; it only reports a verdict. `internal/browser` acts on it when `--respect-robots` is set (ADR 0020). |
 | `internal/sitemap`   | Pure-stdlib sitemaps.org XML decoder (`<urlset>`/`<sitemapindex>`, gzip-aware). No fetch, no `x/net/html`. |
 | `internal/search`    | Optional web-search behind a `Provider` interface (SearXNG + Brave JSON adapters). Off by default; injected into `browser`. |
 | `internal/webext`    | Models MV2/MV3 WebExtensions (manifest, match patterns, tokenized no-ReDoS Adblock `urlFilter`, dir/archive loaders) so one can be runtime-loaded (uBO Lite). Pure Go; the JS-side surface is `internal/js/ext*.go`. Direction: `browser → js → webext`.|
@@ -130,6 +130,15 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   hints. Both share a host-scoped TTL cache (`sitecache.go`) so repeat lookups are
   free. Because unblink presents a standard browser User-Agent (no bot token), the
   governing robots group is always `*`. `--no-site-hints` disables the browse probe.
+  Enforcement is opt-in and came later: `--respect-robots`
+  ([ADR 0020](decisions/0020-opt-in-robots-enforcement.md),
+  `internal/browser/robotsgate.go`) refuses agent-directed navigations the target
+  origin's robots.txt disallows. The gate sits at the navigation funnels
+  (`fetchPage`, `fetchStateless` for cache hits, `Submit`, `map`'s sitemap
+  fetches) plus a per-hop redirect check carried on the request context
+  (`fetch.WithRedirectCheck`); it reuses the same parser and site cache, treats an
+  unreachable robots.txt as disallow-all for 30 seconds (RFC 9309), and leaves
+  subresources, page-JS requests, the discovery probes and Crawl-delay ungated.
 - **Phase 7 — Generic DOM interaction + true sessions.** ✅ An `interact` tool
   dispatches a real DOM event (`click`/`input`/`change`/`keydown`/`submit`) at a
   CSS-selector-addressed element and runs the page's JavaScript so handlers fire and
@@ -206,8 +215,10 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   links breadth-first from a seed, returning a bounded, de-duplicated list tagged
   `source=sitemap|crawl` with crawl depth (`Browser.Map` in
   `internal/browser/discover.go`; a new pure-stdlib `internal/sitemap` XML decoder
-  that gunzips a static `.xml.gz` itself). It is **exposure-grade** — it surfaces
-  robots.txt as context but never skips disallowed paths — and same-origin is
+  that gunzips a static `.xml.gz` itself). It is **exposure-grade** by default — it
+  surfaces robots.txt as context but never skips disallowed paths (under
+  `--respect-robots` it skips them and reports `skipped_by_robots`, ADR 0020) —
+  and same-origin is
   strict scheme+host (`originOfURL`, *not* `Link.Internal`'s registrable-domain).
   Bounds (`max_urls`/`max_depth`, sitemap fetch/depth caps, a 60s wall-clock) yield
   a partial result with `Truncated` set rather than an error; an off-origin

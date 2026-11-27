@@ -3,6 +3,26 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## Unreleased
+
+### Added
+
+- **Opt-in robots.txt enforcement (`--respect-robots`).** Off by default, so
+  nothing changes unless an operator sets it. With it on, every agent-directed
+  navigation is checked against the target origin's robots.txt (`*` group, path
+  plus query) before the request is sent: the page fetch of every page tool
+  (cached or not, with or without a session), `click`, `submit_form`, each page
+  and declared sitemap file `map` fetches, and every redirect hop of those. A
+  disallowed URL is never requested; the tool returns a non-retryable
+  `robots_disallowed` error naming the URL and the matching rule, and `map`
+  skips it and reports `skipped_by_robots`. A robots.txt answering 4xx means no
+  restrictions; 5xx or a failed fetch means the origin is disallowed, re-checked
+  after 30 seconds (RFC 9309 section 2.3.1). `site` and the `browse` robots hint
+  gain `enforced`. Not gated: a page's own subresources and page-JS requests,
+  the robots.txt/llms.txt/`/sitemap.xml` discovery probes, and `search` provider
+  calls. `Crawl-delay` is still only reported; pace with `--rate-limit`. See
+  [ADR 0020](docs/decisions/0020-opt-in-robots-enforcement.md).
+
 ## v0.25.0 — 2026-11-27
 
 ### Added
