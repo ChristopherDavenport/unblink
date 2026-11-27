@@ -81,7 +81,6 @@ type bridge struct {
 	// keys off the same sink (onMutate).
 	domVersion      uint64
 	observers       []*mutationObserver
-	pendingRecords  []mutationRecord
 	flushScheduled  bool
 	resolvedPromise *goja.Object  // a pre-resolved Promise, reused to schedule microtask flushes
 	promiseThen     goja.Callable // resolvedPromise.then
@@ -132,6 +131,20 @@ type bridge struct {
 	shadowHostOf         map[*html.Node]*html.Node   // shadow-root backing node → host (reverse, for connectivity/retargeting)
 	templateContentCache map[*html.Node]*goja.Object
 	upgradingStack       []*html.Node
+	// Form-associated custom elements (forminternals.go): the definitions that
+	// declared `static formAssociated` / disabled internals, and per-element state.
+	formAssoc         map[string]bool
+	internalsDisabled map[string]bool
+	faces             map[*html.Node]*faceState
+	faceOrder         []*html.Node // the keys of faces in creation order (deterministic iteration)
+	// Form-associated custom elements carrying a form attribute, by the id it names,
+	// so an id change re-resolves only the elements that name it (syncFormRefs).
+	faceFormRefs map[string][]*html.Node
+	formRefEpoch uint64 // bumped by every mutation that can change what an id names
+	// ElementInternals state every custom element can hold (internalsstate.go): its
+	// default ARIA semantics and its CustomStateSet. Both maps are created on first use.
+	ariaDefaults         map[*html.Node]*ariaDefaults
+	customStates         map[*html.Node][]string
 	upgradeCount         int // total custom-element upgrades; bounds re-entrant upgrade blowup
 	whenDefinedResolvers map[string][]func(interface{}) error
 	reflectConstructFn   goja.Callable
@@ -208,6 +221,13 @@ type bridge struct {
 	// shares one instance of each module URL across all importers (module-map
 	// semantics), so a dependency shared by several import()s isn't duplicated.
 	reg *moduleRegistry
+
+	// importMap is the document's parsed <script type="importmap"> (nil when it has
+	// none). acquireImportMap sets it once, on the loop, when module loading begins
+	// (importMapAcquired); it is immutable after, so the off-loop module instantiate,
+	// which only starts later, may read it.
+	importMap         *importMap
+	importMapAcquired bool
 }
 
 // resetTransportBudget clears the per-dispatch download budget on the counting
@@ -270,6 +290,9 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		shadowRoots:          make(map[*html.Node]*goja.Object),
 		shadowHostOf:         make(map[*html.Node]*html.Node),
 		templateContentCache: make(map[*html.Node]*goja.Object),
+		formAssoc:            make(map[string]bool),
+		internalsDisabled:    make(map[string]bool),
+		faces:                make(map[*html.Node]*faceState),
 		whenDefinedResolvers: make(map[string][]func(interface{}) error),
 		winListeners:         make(map[string][]listenerEntry),
 		docListeners:         make(map[string][]listenerEntry),
@@ -320,6 +343,7 @@ func (b *bridge) install() {
 	b.installNodeFilter()
 	b.installMutationObserver()
 	b.installCustomElements(win)
+	b.installFormInternals()
 	b.installParsers()
 	b.installAsync()
 	b.installDynamicImport()
@@ -433,6 +457,9 @@ func (b *bridge) documentObject() *goja.Object {
 	b.defineGetter(d, "readyState", func() goja.Value { return vm.ToValue("complete") })
 	b.defineGetter(d, "hidden", func() goja.Value { return vm.ToValue(false) })
 	b.defineGetter(d, "visibilityState", func() goja.Value { return vm.ToValue("visible") })
+	// The one document is always the focused, visible one (visibilityState above),
+	// so hasFocus is true. Routers and data libraries gate refetch/prefetch on it.
+	_ = d.Set("hasFocus", func(goja.FunctionCall) goja.Value { return vm.ToValue(true) })
 	// title reads/writes the live <title> element so a SPA's document.title
 	// assignment lands in the tree extraction sees. The write goes through the
 	// mutation sink: domVersion is the settle/staleness signal.
@@ -501,10 +528,10 @@ func (b *bridge) documentObject() *goja.Object {
 		return b.wrap(findByID(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("querySelector", func(call goja.FunctionCall) goja.Value {
-		return b.wrap(query(b.doc, call.Argument(0).String()))
+		return b.wrap(b.pageQuery(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("querySelectorAll", func(call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(b.doc, call.Argument(0).String()))
+		return b.nodeList(b.pageQueryAll(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("getElementsByTagName", func(call goja.FunctionCall) goja.Value {
 		return b.nodeList(queryAll(b.doc, call.Argument(0).String()))
@@ -551,7 +578,7 @@ func (b *bridge) documentObject() *goja.Object {
 		return b.createTreeWalker(root, whatToShow, call.Argument(2))
 	})
 	_ = d.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
-		b.addListener(b.docListeners, call)
+		b.addListener(b.docListeners, call, true)
 		return goja.Undefined()
 	})
 	_ = d.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
@@ -665,10 +692,10 @@ func (b *bridge) documentFacade(docNode *html.Node) goja.Value {
 		return b.wrap(findByID(docNode, call.Argument(0).String()))
 	})
 	_ = d.Set("querySelector", func(call goja.FunctionCall) goja.Value {
-		return b.wrap(query(docNode, call.Argument(0).String()))
+		return b.wrap(b.pageQuery(docNode, call.Argument(0).String()))
 	})
 	_ = d.Set("querySelectorAll", func(call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(docNode, call.Argument(0).String()))
+		return b.nodeList(b.pageQueryAll(docNode, call.Argument(0).String()))
 	})
 	_ = d.Set("appendChild", func(call goja.FunctionCall) goja.Value {
 		if n := b.unwrap(call.Argument(0)); n != nil && n.Parent == nil {

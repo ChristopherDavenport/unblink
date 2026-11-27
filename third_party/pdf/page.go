@@ -289,12 +289,15 @@ type cmap struct {
 	space   [4][]byteRange // codespace range
 	bfrange []bfrange
 	bfchar  []bfchar
+	r       *Reader // unblink patch: for the cancellation checkpoint in Decode (see cancel.go)
 }
 
 func (m *cmap) Decode(raw string) (text string) {
 	var r []rune
 Parse:
 	for len(raw) > 0 {
+		// unblink patch: this loop is quadratic and resolves nothing.
+		m.r.checkCanceled()
 		for n := 1; n <= 4 && n <= len(raw); n++ { // number of digits in character replacement (1-4 possible)
 			for _, space := range m.space[n-1] { // find matching codespace Ranges for number of digits
 				if space.low <= raw[:n] && raw[:n] <= space.high { // see if value is in range
@@ -347,6 +350,7 @@ Parse:
 func readCmap(toUnicode Value) *cmap {
 	n := -1
 	var m cmap
+	m.r = toUnicode.r // unblink patch: see cmap.r
 	ok := true
 	Interpret(toUnicode, func(stk *Stack, op string) {
 		if !ok {

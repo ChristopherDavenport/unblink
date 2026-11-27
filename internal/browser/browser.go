@@ -1544,10 +1544,24 @@ func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values 
 		return nil, errf(ErrBadInput, "no form matching %q (%d forms on page; list them with the forms tool)", formRef, len(cur.Meta.Forms))
 	}
 
+	// The defaults are the form's entry list as the forms tool showed it: fields
+	// sharing a name (checkboxes, a custom element's FormData entries, repeated
+	// inputs) each contribute, in order, and an unchecked checkbox/radio contributes
+	// nothing. A caller's value for a name then replaces every entry of that name.
 	vals := url.Values{}
 	for _, f := range form.Fields {
-		if f.Name != "" && f.Value != "" {
-			vals.Set(f.Name, f.Value)
+		value := f.Value
+		switch strings.ToLower(f.Type) {
+		case "checkbox", "radio":
+			if f.Checked != "true" {
+				continue
+			}
+			if value == "" {
+				value = "on"
+			}
+		}
+		if f.Name != "" && value != "" {
+			vals.Add(f.Name, value)
 		}
 	}
 	for k, v := range values {

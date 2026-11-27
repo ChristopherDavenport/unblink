@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"golang.org/x/net/html"
+
+	"github.com/christopherdavenport/unblink/internal/page"
 )
 
 const (
@@ -96,7 +98,7 @@ func accessibleName(n *html.Node, res *idResolver) string {
 	if name := labelledbyText(n, res); name != "" {
 		return name
 	}
-	if l := strings.TrimSpace(attr(n, "aria-label")); l != "" {
+	if l := strings.TrimSpace(ariaAttr(n, "aria-label")); l != "" {
 		return l
 	}
 	if n.Data == "input" {
@@ -129,7 +131,7 @@ func explicitName(n *html.Node, res *idResolver) string {
 	if t := labelledbyText(n, res); t != "" {
 		return t
 	}
-	if l := strings.TrimSpace(attr(n, "aria-label")); l != "" {
+	if l := strings.TrimSpace(ariaAttr(n, "aria-label")); l != "" {
 		return l
 	}
 	return strings.TrimSpace(attr(n, "title"))
@@ -141,8 +143,13 @@ func explicitName(n *html.Node, res *idResolver) string {
 // self-references, so a malformed cyclic/self reference can neither loop nor
 // recurse.
 func labelledbyText(n *html.Node, res *idResolver) string {
-	refs := strings.TrimSpace(attr(n, "aria-labelledby"))
-	if refs == "" || res == nil {
+	refs, explicit := lookupAttr(n, "aria-labelledby")
+	if !explicit {
+		// ElementInternals.ariaLabelledByElements refers to elements, not ids, so
+		// the engine reflects the text those elements resolve to.
+		return strings.TrimSpace(internalsDefault(n, page.AriaDefaultLabelledByAttr))
+	}
+	if refs = strings.TrimSpace(refs); refs == "" || res == nil {
 		return ""
 	}
 	var parts []string
@@ -151,7 +158,7 @@ func labelledbyText(n *html.Node, res *idResolver) string {
 		if target == nil || target == n {
 			continue
 		}
-		if l := strings.TrimSpace(attr(target, "aria-label")); l != "" {
+		if l := strings.TrimSpace(ariaAttr(target, "aria-label")); l != "" {
 			parts = append(parts, l)
 		} else if t := collapsedText(target); t != "" {
 			parts = append(parts, t)
@@ -193,7 +200,7 @@ func normTristate(ariaVal string, allowMixed, native bool) string {
 // ariaInvalid reports whether aria-invalid marks the element invalid: present and
 // any value other than "false" (true/grammar/spelling all mean invalid).
 func ariaInvalid(n *html.Node) bool {
-	v, ok := lookupAttr(n, "aria-invalid")
+	v, ok := lookupARIA(n, "aria-invalid")
 	if !ok {
 		return false
 	}
@@ -208,6 +215,42 @@ func lookupAttr(n *html.Node, key string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// lookupARIA reads the role or an aria-* state of n the way the ARIA-in-HTML rules
+// order it: the explicit attribute when present, else the default semantics a custom
+// element declared through ElementInternals (internals.role, internals.ariaLabel, …).
+// The engine reflects those defaults onto the extraction-bound tree under
+// page.AriaDefaultPrefix; extraction never reads the JS heap.
+func lookupARIA(n *html.Node, key string) (string, bool) {
+	if v, ok := lookupAttr(n, key); ok {
+		return v, true
+	}
+	if !isCustomTag(n) {
+		return "", false
+	}
+	return lookupAttr(n, page.AriaDefaultPrefix+key)
+}
+
+// ariaAttr is lookupARIA without the presence flag.
+func ariaAttr(n *html.Node, key string) string {
+	v, _ := lookupARIA(n, key)
+	return v
+}
+
+// internalsDefault reads one reflected ElementInternals attribute by its full name.
+// Only a custom element can carry one.
+func internalsDefault(n *html.Node, key string) string {
+	if !isCustomTag(n) {
+		return ""
+	}
+	return attr(n, key)
+}
+
+// isCustomTag reports whether n's tag is a custom element name (which always
+// contains a hyphen): the only elements that can have ElementInternals.
+func isCustomTag(n *html.Node) bool {
+	return strings.IndexByte(n.Data, '-') > 0
 }
 
 // idMinter assigns stable content-hash ids for one Extract pass and guarantees

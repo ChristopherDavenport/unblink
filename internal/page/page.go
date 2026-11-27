@@ -165,6 +165,38 @@ type Image struct {
 	Src string `json:"src"`
 }
 
+// The JS engine reflects a form-associated custom element's state onto the node tree
+// with these attributes so form extraction — which reads only the tree, never the JS
+// heap — sees the control. They exist only on the tree handed to extraction (stamped
+// after page JS has finished, or on the snapshot of a live session), never in the DOM
+// page JS observes.
+const (
+	// FormValueAttr marks a form-associated custom element and carries what it
+	// currently contributes to its form's entry list (ElementInternals.setFormValue),
+	// as an application/x-www-form-urlencoded string in entry order. Empty when the
+	// element submits nothing: no value set, no name, or disabled.
+	FormValueAttr = "data-unblink-form-value"
+	// FormInvalidAttr is present when the element fails constraint validation
+	// (ElementInternals.setValidity).
+	FormInvalidAttr = "data-unblink-form-invalid"
+	// FormOwnerAttr carries the element's form owner as the engine resolved it: the
+	// FormKeyAttr value of that <form>, or empty when it has none. Extraction takes
+	// it over ancestry and form="id", which stop describing the owner once shadow
+	// trees have been flattened into the light tree.
+	FormOwnerAttr = "data-unblink-form-owner"
+	// FormKeyAttr names a <form> for FormOwnerAttr.
+	FormKeyAttr = "data-unblink-form-key"
+	// AriaDefaultPrefix prefixes a custom element's default ARIA semantics, set
+	// through ElementInternals (internals.role, internals.ariaLabel, …): the prefix
+	// plus "role" or the aria-* attribute name, e.g. data-unblink-default-aria-label.
+	// A default applies only where the element has no such attribute of its own.
+	AriaDefaultPrefix = "data-unblink-default-"
+	// AriaDefaultLabelledByAttr carries the text of the elements named by
+	// internals.ariaLabelledByElements, which are object references rather than ids
+	// and so have no aria-labelledby spelling.
+	AriaDefaultLabelledByAttr = "data-unblink-default-labelledby-text"
+)
+
 // Form is an HTML form and its fields.
 type Form struct {
 	ID      string  `json:"id,omitempty"`

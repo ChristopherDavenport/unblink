@@ -4,8 +4,10 @@ This is unblink's ranked roadmap for web-standards conformance, measured against
 [web-platform-tests](https://github.com/web-platform-tests/wpt) suite. It is
 *generated from data*: the `make wpt` harness runs the in-scope WPT testharness.js
 corpus directly against the JS engine and buckets every result (see
-[ADR 0016](decisions/0016-wpt-conformance.md) for the how and why, and
-`wpt/last-run.json` for the full machine-readable output).
+[ADR 0016](decisions/0016-wpt-conformance.md) for the how and why). The full
+machine-readable output is `wpt/last-run.json`, a local artifact that `make wpt`
+writes; it is gitignored and not in the repository, so auditing a run means
+producing it.
 
 The ranking metric is unblink's own (`docs/web-api-priorities.md`): **does closing
 this gap materialize more real page content in the extracted Markdown?** So
@@ -28,11 +30,91 @@ us**:
 | **TMO** | Never produced results within the render budget (a hung async test or an engine-level busy loop) — excluded, but reported so a slow/hanging API is visible | No |
 
 **Reported conformance = PASS / (PASS + FIX).** (b)/(c)/(d)/TMO are excluded *and*
-itemized in `last-run.json` so the exclusions are auditable, not hand-waved. A
+itemized in `wpt/last-run.json` (written locally by `make wpt`, not committed) so the
+exclusions are auditable, not hand-waved. A
 static source-scan pre-filter assigns (d) *before* running, so runner limits never
 inflate or deflate the score.
 
+## Re-measurement (2026-11-27, wpt `b86e7702`, 24 directories, 8,250 test variants)
+
+Two full `make wpt` runs on the same machine and corpus: `main` at v0.24.0
+(`d8372b8`) and the tip of the dependency/fidelity stack that followed it (Go 1.27,
+the goja bump, XHR, Range, passive listeners, import-map scopes, ElementInternals,
+and `Element.insertAdjacentText`). The last two columns pair each directory's
+v0.24.0 figure with the new one.
+
+| Directory | Subtests | PASS | FIX | TMO | Conformance | Subtests (v0.24.0 → now) | PASS (v0.24.0 → now) | Conformance at v0.24.0 |
+|---|---|---|---|---|---|---|---|---|
+| `FileAPI` | 604 | 326 | 278 | 1 | 0.540 | 282 → 604 | 143 → 326 | 0.507 |
+| `IndexedDB` | 1209 | 155 | 0 | 9 | 1.000 | 307 → 1209 | 35 → 155 | 1.000 |
+| `WebCryptoAPI` | 9435 | 400 | 1807 | 21 | 0.181 | 4853 → 9435 | 25 → 400 | 0.321 |
+| `console` | 23 | 7 | 16 | 0 | 0.304 | 11 → 23 | 5 → 7 | 0.455 |
+| `content-security-policy` | 2826 | 542 | 2140 | 154 | 0.202 | 115 → 2826 | 18 → 542 | 0.165 |
+| `cookies` | 254 | 1 | 245 | 8 | 0.004 | 92 → 254 | 1 → 1 | 0.011 |
+| `custom-elements` | 1617 | 269 | 1282 | 32 | 0.173 | 578 → 1617 | 44 → 269 | 0.077 |
+| `dom` | 5473 | 1748 | 3673 | 61 | 0.322 | 882 → 5473 | 568 → 1748 | 0.648 |
+| `domparsing` | 1031 | 89 | 942 | 0 | 0.086 | 85 → 1031 | 46 → 89 | 0.541 |
+| `encoding` | 1150 | 449 | 170 | 0 | 0.725 | 978 → 1150 | 419 → 449 | 0.873 |
+| `fetch/api` | 1290 | 393 | 897 | 0 | 0.305 | 487 → 1290 | 202 → 393 | 0.415 |
+| `fetch/metadata` | 0 | 0 | 0 | 0 | n/a | 0 → 0 | 0 → 0 | n/a |
+| `hr-time` | 10 | 6 | 2 | 4 | 0.750 | 6 → 10 | 2 → 6 | 0.667 |
+| `html/dom` | 33084 | 2992 | 30085 | 10 | 0.090 | 32780 → 33084 | 2949 → 2992 | 0.090 |
+| `html/semantics` | 9394 | 1436 | 7636 | 320 | 0.158 | 5123 → 9394 | 984 → 1436 | 0.193 |
+| `html/syntax` | 7750 | 2294 | 5093 | 363 | 0.311 | 2423 → 7750 | 2287 → 2294 | 0.944 |
+| `html/webappapis` | 1079 | 484 | 562 | 34 | 0.463 | 196 → 1079 | 49 → 484 | 0.251 |
+| `referrer-policy` | 0 | 0 | 0 | 0 | n/a | 0 → 0 | 0 → 0 | n/a |
+| `shadow-dom` | 678 | 80 | 507 | 8 | 0.136 | 178 → 678 | 47 → 80 | 0.331 |
+| `streams` | 1130 | 256 | 868 | 6 | 0.228 | 61 → 1130 | 36 → 256 | 0.590 |
+| `subresource-integrity` | 269 | 90 | 179 | 0 | 0.335 | 4 → 269 | 0 → 90 | 0.000 |
+| `url` | 8717 | 5444 | 3272 | 1 | 0.625 | 366 → 8717 | 351 → 5444 | 0.959 |
+| `webmessaging` | 133 | 67 | 60 | 6 | 0.528 | 66 → 133 | 39 → 67 | 0.591 |
+| `xhr` | 1047 | 151 | 878 | 18 | 0.147 | 773 → 1047 | 89 → 151 | 0.116 |
+| **TOTAL** | 88203 | 17679 | 60592 | 1056 | 0.226 | 50646 → 88203 | 8339 → 17679 | 0.185 |
+
+The stack-tip run predates the review fixes that followed it (per-observer
+`MutationObserver` queues, `isEqualNode`, the XHR handler isolation, `innerHTML`
+custom-element upgrades); those have not been re-measured.
+
+**Read this table before any earlier figure in this document.** Every measurement
+made before this one undercounted, for one reason: the engine had no
+`Element.insertAdjacentText`. testharness.js calls it while rendering its results
+whenever a test finished without running an assert. The call threw, the results
+never appeared, and the runner filed the whole test file under TMO, which is
+excluded from the score. Implementing the method cut timed-out test variants from
+2,398 to 1,056 and brought 37,557 more subtests into view (50,646 → 88,203).
+
+Consequences:
+
+- **PASS counts are comparable; conformance ratios are not.** Passing subtests went
+  8,339 → 17,679. Ratios fell in several directories (`url` 0.959 → 0.625,
+  `html/syntax` 0.944 → 0.311, `dom` 0.648 → 0.322) because failing subtests that
+  were hidden are now counted, not because anything that passed stopped passing.
+- **The earlier headline figures were measured over the visible subset only.** That
+  includes the baseline table below, P1's "url 0.115 → 0.979" and P4's
+  "html/syntax 0.944". They are kept as the record of what was measured then.
+- `url`: the 366 subtests visible at v0.24.0 are now 8,717 (the large
+  `urltestdata`-driven files report), 5,444 passing.
+- `html/syntax` timeouts rose from 182 to 363 variants while its subtests went from
+  2,423 to 7,750. The cause was not investigated; one untested possibility is that
+  the harness now renders much larger result tables inside the per-test budget.
+- Two files time out now that did not at v0.24.0:
+  `FileAPI/reading-data-section/FileReader-multiple-reads.any.js` and
+  `hr-time/timing-attack.html`. Not investigated.
+- Timeouts depend on machine load. A first run of this stack made while other test
+  suites were running timed out two large `html/dom` reflection files that pass in
+  isolation. Compare runs made on an idle machine.
+
+The priorities below were ranked from the old, truncated data and have not been
+re-ranked against this table.
+
 ## Baseline (wpt `b86e7702`, 16 directories, 3,215 test variants)
+
+**This table is the pre-P1 baseline**, recorded 2026-07-05 with the harness itself
+(commit `945abbf`), before any of the P1–P3 fixes below landed. It has not been
+regenerated since: the `url`, `encoding` and `dom` rows, and the `TOTAL`, describe
+the engine as it was then. The post-fix figures for those three directories are in
+the [priorities table](#ranked-priorities-content-extraction-first); every other row
+has not been re-measured.
 
 | Directory | Tests | Subtests | PASS | FIX (a) | OOS (b) | HARN (d) | TMO | Conformance |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
@@ -58,7 +140,7 @@ conformance ratio is computed over only the handful that complete; read the TMO
 column, not the ratio. ‡ **reflection-dominated** — the FIX count is almost
 entirely exhaustive IDL attribute/ARIA reflection (see the low-priority note).
 
-**The `TOTAL` (0.139) is not a meaningful headline** — it is swamped by html/dom's
+**The baseline `TOTAL` (0.139) is not a meaningful headline** — it is swamped by html/dom's
 54,404 IDL-reflection assertions. Across the **content-extraction core** (dom,
 encoding, domparsing, FileAPI, html/syntax), conformance is **≈0.78**, and HTML
 tree-construction alone is **0.944**. The real story is in the per-directory rows.
@@ -69,30 +151,42 @@ measurable by a client-side harness.
 
 ## Ranked priorities (content-extraction first)
 
-**Progress (branch `feat/wpt-conformance-harness`):** P1–P3 are **implemented** — the
-three deltas below were measured per-directory before/after. P1 also removed the
-per-call interpreter cost behind the `url/` timeouts.
+**Progress:** P1–P3 are **implemented** (merged in PR #48, shipped in v0.23.0) — the
+three deltas below were measured per-directory before/after on 2026-07-05. P1 also
+removed the per-call interpreter cost behind the `url/` timeouts.
+
+The two "before" figures for `url/` disagree: the baseline table above reports
+**0.407** (11 pass / 16 fix over the 27 subtests that completed, with 41 outcomes
+timed out), while the P1 row reports **0.115** as its starting point. Both come
+from the repository history (the table from `945abbf`, the delta from the P1 commit
+`efba4d1` and `32f0775`), which records the two numbers but not the run parameters
+that explain the difference. The baseline row is dagger-marked as timeout-dominated,
+so its ratio is the less reliable of the two; treat neither as a precise "before".
+The post-fix 0.979 has no such conflict.
 
 | # | Item | Status | Conformance |
 |---|---|---|---|
-| **P1** | Native WHATWG URL parser (`nlnwa/whatwg-url` via `urlnative.go`) | ✅ done | url **0.115 → 0.979** |
+| **P1** | Native WHATWG URL parser (`nationallibraryofnorway/whatwg-url` via `urlnative.go`) | ✅ done | url **0.115 → 0.979** |
 | **P2** | TextDecoder/TextEncoder correctness (fatal, options, labels, surrogates) | ✅ done | encoding **0.504 → 0.873** |
-| **P3** | DOM fidelity — DOMException + CharacterData + DOMTokenList/createHTMLDocument branding + dispatchEvent (passive-by-default deferred) | ✅ done (cheap subset) | dom **0.488 → 0.648** |
+| **P3** | DOM fidelity — DOMException + CharacterData + DOMTokenList/createHTMLDocument branding + dispatchEvent; passive-by-default added later (reflected token lists still open) | ✅ done | dom **0.488 → 0.648** (measured before passive-by-default; not re-run since) |
 | **P4** | HTML tree-construction — **maintain only** | already strong | html/syntax **0.944** |
-| **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | not started | reflection/iframe-dominated; smaller real slice |
+| **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | mostly done: `ElementInternals` form participation, `form="id"`, `:state()` and ARIA defaults shipped ([ADR 0019](decisions/0019-form-associated-element-reflection.md)); `adoptedCallback` open | custom-elements PASS 44 → 269 (see *Re-measurement*) |
 | **secondary** | Security-posture edges — audit-driven | ✅ closed | 6 gaps found + fixed/locked (WPT can't measure; see *Secondary*) |
 | *not ranked* | IDL reflection breadth, streams backpressure, legacy encodings, asymmetric crypto | excluded | by-design or low content-value |
 
-Detail for each below.
+Detail for each below. The **Evidence** paragraphs for P1–P3 are the 2026-07-05
+baseline findings that motivated the work, kept as written: the gaps they list in the
+present tense ("unblink always substitutes U+FFFD", "missing") were closed by the
+P1–P3 commits unless a line says otherwise.
 
 ### P1 — Replace the URL parser with a WHATWG-conformant one (`url/`)
 
 **Evidence:** every flagship WHATWG URL test **times out** — `a-element.html`,
 `a-element-origin.html`, `url-constructor.any.js`, `url-setters`, `IdnaTestV2.any.js`,
 `toascii.window.js`, `javascript-urls.window.js` (41 of url/'s outcomes are TMO,
-leaving only 27 subtests that complete at all). unblink's `URL` is a *pragmatic
-regex parser* (`internal/js/globals.go`), and it is too slow — or catastrophically
-backtracks — to get through the standard URL corpus within the render budget.
+leaving only 27 subtests that complete at all). At the time of the baseline unblink's `URL` was a *pragmatic
+regex parser* (`internal/js/globals.go`), and it was too slow — or catastrophically
+backtracked — to get through the standard URL corpus within the render budget.
 
 **Why it's #1:** URL correctness is the most content-bearing API there is — it
 governs link resolution, `<base>` handling, and every fetch target, and agents act
@@ -100,6 +194,11 @@ on the links unblink extracts. A conformant parser both fixes the failures and
 removes a real slow-path (a URL input that hangs the parser is a latent DoS on any
 page that constructs it). The fix is self-contained: swap the regex `URL`/`URLSearchParams`
 for a WHATWG state-machine implementation.
+
+**Shipped (v0.23.0):** `window.URL` is now a thin class over a native Go WHATWG
+parser (`github.com/nationallibraryofnorway/whatwg-url`, bound in `internal/js/urlnative.go`), and
+`URLSearchParams` is linked live to `url.search`. The Go-side link/fetch pipeline
+still uses `net/url`.
 
 ### P2 — TextDecoder / TextEncoder correctness (`encoding/`)
 
@@ -133,7 +232,11 @@ gaps, not layout:
 - **`DOMTokenList` coverage** (`DOMTokenList-coverage-for-attributes.html`, 54) —
   `classList`-style reflected token lists (`relList`, `sandbox`, …) missing.
 - **Passive event-listener defaults** (`passive-by-default.html`, 32) — `wheel`/
-  `touchstart` should default to `passive`.
+  `touchstart` should default to `passive`. **Implemented after the P3 batch**
+  (`internal/js/events.go`): a listener for `touchstart`/`touchmove`/`wheel`/
+  `mousewheel` on window, document, `<html>` or `<body>` is passive unless it passes
+  an explicit `passive: false`, and re-adding the same (type, callback, capture)
+  listener is a no-op. The `dom/` figure above predates this and has not been re-run.
 - **`dispatchEvent` edge cases** (`EventTarget-dispatchEvent.html`, 23) and
   `DOMImplementation.createHTMLDocument` (13).
 
@@ -162,6 +265,19 @@ dominated by **ARIA/`ElementInternals` IDL reflection** (`AriaMixin-string-attri
 (correctly excluded as (d)). The genuinely fixable, content-relevant slice is
 smaller and needs per-test triage; `ElementInternals` form participation is the most
 promising item. Medium value (component-heavy sites).
+
+**Progress:** form participation is implemented (`internal/js/forminternals.go`):
+`static formAssociated`, a real `attachInternals()`, `setFormValue`, `form`/`labels`,
+the validity API, `formAssociatedCallback`/`formDisabledCallback`/`formResetCallback`,
+and participation in `form.elements`, `new FormData(form)` and submission. The value
+also reaches unblink's own `forms`/`submit_form` tools by tree reflection (ADR 0019).
+`form="id"` association, `:state()`, and default ARIA semantics from
+`ElementInternals` reaching extraction followed (ADR 0019, Amendment 1).
+`custom-elements` passes went 44 → 269 between v0.24.0 and the 2026-11-27
+re-measurement (see the table above for why its ratio is not comparable). Still open
+in P5: `adoptedCallback` (every node's `ownerDocument` is the main document, so
+there is no adoption to observe; making it truthful is its own change), and
+`formStateRestoreCallback`, which nothing in the engine would trigger.
 
 ### Secondary — security-posture parity (measured: largely *not* client-side-measurable)
 
@@ -237,7 +353,7 @@ rendering*, with no layout engine ([ADR 0007](decisions/0007-semantic-structured
 ## Reproducing this report
 
 ```sh
-make wpt          # offline: run the pinned corpus, print the scorecard, write wpt/last-run.json
+make wpt          # offline: run the pinned corpus, print the scorecard, write wpt/last-run.json (gitignored)
 make wpt-sync     # refresh testdata/wpt/ to the SHA in testdata/wpt/WPT_VERSION (needs network)
 ```
 

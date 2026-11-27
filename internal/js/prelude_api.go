@@ -405,6 +405,9 @@ const preludeAPIJS = `
       for (var i = 0; i < els.length; i++) {
         var el = els.item ? els.item(i) : els[i];
         if (!el || !el.getAttribute) continue;
+        // A form-associated custom element contributes its setFormValue entries.
+        var face = faceEntriesOf ? faceEntriesOf(el) : null;
+        if (face) { for (var j = 0; j < face.length; j++) this.__e.push(face[j]); continue; }
         var name = el.getAttribute('name');
         if (!name || el.disabled) continue;
         var tag = String(el.tagName || '').toLowerCase();
@@ -823,6 +826,10 @@ const preludeAPIJS = `
 
   var hasNet = (typeof __unblinkFetch === 'function');
 
+  // The engine's own console.error, captured before page code can replace it:
+  // it feeds the render diagnostics and the console tool, and never throws.
+  var engineConsoleError = (window.console && typeof window.console.error === 'function') ? window.console.error : noop;
+
   if (hasNet) {
     window.fetch = function (input, opts) {
       var req;
@@ -836,7 +843,7 @@ const preludeAPIJS = `
       if (signal && signal.aborted) return Promise.reject(signal.reason || new Error('AbortError'));
       var reqURL = req.url;
       var core = __unblinkFetch(req.method, String(reqURL), headersToPlain(headers), ser.data, req.mode, req.credentials).then(function (r) {
-        var resp = new window.Response(null, { status: r.status, headers: r.headers, url: r.url });
+        var resp = new window.Response(null, { status: r.status, statusText: r.statusText || '', headers: r.headers, url: r.url });
         resp.type = r.type || 'basic';
         resp.__text = r.body;
         resp.__bytes = r.bodyBytes ? new Uint8Array(r.bodyBytes) : null;
@@ -860,76 +867,222 @@ const preludeAPIJS = `
     // makes the response silently undeliverable. responseType='json' parses like
     // a real browser (null on bad JSON, never a throw); 'arraybuffer'/'blob'
     // read the binary body.
+    //
+    // The state machine follows the XHR Standard: open() -> OPENED, send() fires
+    // loadstart, the response walks HEADERS_RECEIVED -> LOADING -> DONE with a
+    // readystatechange at each step, then progress/load/loadend. The body arrives
+    // whole from the Go side, so those steps run back to back in one task. A
+    // failure runs the "request error steps": DONE with an empty response,
+    // readystatechange, then error/timeout/abort, then loadend.
     window.XMLHttpRequest = function () {
       var self = this;
       this.readyState = 0; this.status = 0; this.statusText = '';
       this.responseText = ''; this.response = ''; this.responseType = '';
       this.responseURL = ''; this.withCredentials = false; this.timeout = 0;
-      this._method = 'GET'; this._url = ''; this._headers = {}; this._resHeaders = null;
+      this._method = 'GET'; this._url = ''; this._headers = {};
       this._listeners = {};
-      this.onreadystatechange = null; this.onload = null; this.onerror = null;
+      this.onreadystatechange = null; this.onloadstart = null; this.onprogress = null;
+      this.onload = null; this.onerror = null; this.onabort = null; this.ontimeout = null;
+      this.onloadend = null;
       this.upload = { addEventListener: noop, removeEventListener: noop };
-      this.open = function (m, u) { self._method = m; self._url = u; self.readyState = 1; };
+      // gen identifies the current request: open(), abort() and a failure bump it,
+      // so a late settlement (or a later step of a delivery whose handler aborted
+      // or re-opened the object) sees a stale token and does nothing.
+      var gen = 0, sendFlag = false, inflight = null, mimeOverride = null;
+      var xmlText = null, xmlDoc; // responseXML source text and its parsed-once cache
+      // Response headers live in this closure, not on the object: page code reads
+      // them only through getResponseHeader/getAllResponseHeaders.
+      var resHeaders = null;
+      function invalidState(method, why) {
+        return new window.DOMException("Failed to execute '" + method + "' on 'XMLHttpRequest': " + why, 'InvalidStateError');
+      }
+      function clearResponse() {
+        self.status = 0; self.statusText = ''; self.responseURL = '';
+        self.responseText = ''; resHeaders = null;
+        self.response = (self.responseType === '' || self.responseType === 'text') ? '' : null;
+        xmlText = null; xmlDoc = undefined;
+      }
+      // cancel drops the in-flight request: its settlement is ignored (stale gen)
+      // and the Go side cancels the underlying transport call.
+      function cancel() {
+        var p = inflight; inflight = null; gen++;
+        if (p && typeof p.abort === 'function') p.abort();
+      }
+      // finalMime is the response MIME type: the overrideMimeType value when set,
+      // else the Content-Type header.
+      function finalMime() {
+        if (mimeOverride !== null) return mimeOverride;
+        return (resHeaders && resHeaders['content-type']) || '';
+      }
+      function essence(m) { return String(m).split(';')[0].trim().toLowerCase(); }
+      function progressEvent(type, size, message) {
+        return { type: type, target: self, currentTarget: self, lengthComputable: size > 0, loaded: size, total: size, message: message };
+      }
+      this.open = function (m, u) {
+        cancel();
+        self._method = m; self._url = u; self._headers = {};
+        sendFlag = false; clearResponse();
+        if (self.readyState !== 1) { self.readyState = 1; fire('readystatechange'); }
+      };
       this.setRequestHeader = function (k, v) { self._headers[k] = v; };
+      // Set-Cookie is a forbidden response-header name: page JS never reads it
+      // (it would expose HttpOnly cookies). The Go side already drops it from the
+      // response object (responseObject in async.go); this is the second guard.
+      function hiddenHeader(k) { return k === 'set-cookie' || k === 'set-cookie2'; }
       this.getResponseHeader = function (k) {
-        if (!self._resHeaders) return null;
-        var v = self._resHeaders[String(k).toLowerCase()];
+        if (!resHeaders) return null;
+        k = String(k).toLowerCase();
+        if (hiddenHeader(k)) return null;
+        var v = resHeaders[k];
         return v == null ? null : v;
       };
       this.getAllResponseHeaders = function () {
-        if (!self._resHeaders) return '';
-        var out = '';
-        for (var k in self._resHeaders) out += k + ': ' + self._resHeaders[k] + '\r\n';
+        if (!resHeaders) return '';
+        var names = Object.keys(resHeaders).sort(), out = '';
+        for (var i = 0; i < names.length; i++) {
+          if (!hiddenHeader(names[i])) out += names[i] + ': ' + resHeaders[names[i]] + '\r\n';
+        }
         return out;
       };
-      this.overrideMimeType = noop;
+      this.overrideMimeType = function (mime) {
+        if (self.readyState === 3 || self.readyState === 4) throw invalidState('overrideMimeType', 'MimeType cannot be overridden when the state is LOADING or DONE.');
+        mimeOverride = String(mime);
+      };
       this.addEventListener = function (t, fn) { (self._listeners[t] || (self._listeners[t] = [])).push(fn); };
       this.removeEventListener = function (t, fn) {
         var a = self._listeners[t]; if (!a) return;
         var i = a.indexOf(fn); if (i >= 0) a.splice(i, 1);
       };
-      this.abort = noop;
-      // Handler exceptions propagate (they surface as unhandled rejections in the
-      // render diagnostics rather than vanishing).
+      // responseXML parses on first read. Per the standard it is a document only
+      // for an XML final MIME type (or HTML when responseType is 'document'); a
+      // response without a Content-Type counts as text/xml. overrideMimeType
+      // changes that final MIME type. DOMParser parses XML with the HTML parser.
+      Object.defineProperty(this, 'responseXML', { configurable: true, enumerable: true, get: function () {
+        if (self.readyState !== 4 || xmlText === null || xmlText === '') return null;
+        if (xmlDoc !== undefined) return xmlDoc;
+        var mime = essence(finalMime()) || 'text/xml';
+        var isXML = mime === 'text/xml' || mime === 'application/xml' || /\+xml$/.test(mime);
+        xmlDoc = null;
+        if (isXML || (mime === 'text/html' && self.responseType === 'document')) {
+          try { xmlDoc = new window.DOMParser().parseFromString(xmlText, mime); } catch (e) { xmlDoc = null; }
+        }
+        return xmlDoc;
+      } });
+      // Each handler/listener runs isolated, as in a browser: an exception from
+      // one is reported through the engine's console.error and the remaining
+      // listeners and delivery steps still run. Without this a handler that
+      // throws at HEADERS_RECEIVED would strand the request short of DONE.
+      function invoke(fn, type, evt) {
+        try {
+          if (typeof fn === 'function') fn.call(self, evt);
+          else if (fn && typeof fn.handleEvent === 'function') fn.handleEvent(evt);
+        } catch (e) {
+          try { engineConsoleError('Uncaught (in XMLHttpRequest ' + type + ' handler)', e); } catch (e2) {}
+        }
+      }
       function fire(type, evt) {
-        evt = evt || { type: type, target: self };
-        var h = self['on' + type];
-        if (h) h.call(self, evt);
+        evt = evt || progressEvent(type, 0);
+        invoke(self['on' + type], type, evt);
         var a = (self._listeners[type] || []).slice();
-        for (var i = 0; i < a.length; i++) a[i].call(self, evt);
+        for (var i = 0; i < a.length; i++) invoke(a[i], type, evt);
+      }
+      // fail runs the standard's request error steps for error/timeout/abort.
+      function fail(type, message) {
+        cancel();
+        self.readyState = 4; sendFlag = false; clearResponse();
+        fire('readystatechange');
+        fire(type, progressEvent(type, 0, message));
+        fire('loadend');
+      }
+      this.abort = function () {
+        cancel();
+        if ((self.readyState === 1 && sendFlag) || self.readyState === 2 || self.readyState === 3) fail('abort');
+        // A finished request (including the one just failed above) returns to
+        // UNSENT without a further readystatechange.
+        if (self.readyState === 4) { self.readyState = 0; sendFlag = false; clearResponse(); }
+      };
+      // bodyText decodes the response body for responseText. Bodies reach JS
+      // already transcoded to UTF-8, so the charset of an overridden MIME type is
+      // honoured only for x-user-defined (the binary-as-text idiom: each byte
+      // >= 0x80 maps to U+F700 + byte, read back with "& 0xff"). That decode
+      // needs the octets the server sent: rawBytes() when the body was
+      // transcoded, else bodyBytes (which then are those octets).
+      function bodyText(r) {
+        var cs = /charset\s*=\s*"?([^";\s]+)/i.exec(mimeOverride === null ? '' : mimeOverride);
+        if (!cs || cs[1].toLowerCase() !== 'x-user-defined' || !r.bodyBytes) return r.body;
+        var octets = typeof r.rawBytes === 'function' ? r.rawBytes() : r.bodyBytes;
+        var u8 = new Uint8Array(octets), parts = [];
+        for (var i = 0; i < u8.length; i += 8192) {
+          var codes = [], end = Math.min(i + 8192, u8.length);
+          for (var j = i; j < end; j++) codes.push(u8[j] < 0x80 ? u8[j] : 0xF700 + u8[j]);
+          parts.push(String.fromCharCode.apply(null, codes));
+        }
+        return parts.join('');
+      }
+      function deliver(r, token) {
+        var type = self.responseType;
+        var textual = type === '' || type === 'text';
+        var size = r.bodyBytes ? r.bodyBytes.byteLength : 0;
+        self.status = r.status; self.statusText = r.statusText || '';
+        self.responseURL = r.url || self._url; resHeaders = r.headers || {};
+        self.readyState = 2; fire('readystatechange');
+        if (token !== gen) return;
+        var text = bodyText(r);
+        if (size > 0) {
+          if (textual) { self.responseText = text; self.response = text; }
+          self.readyState = 3; fire('readystatechange');
+          if (token !== gen) return;
+        }
+        fire('progress', progressEvent('progress', size));
+        if (token !== gen) return;
+        inflight = null; sendFlag = false;
+        self.readyState = 4;
+        if (textual) {
+          self.responseText = text; self.response = text; xmlText = text;
+        } else if (type === 'json') {
+          try { self.response = r.body === '' ? null : JSON.parse(r.body); } catch (e) { self.response = null; }
+        } else if (type === 'arraybuffer') {
+          self.response = r.bodyBytes || new ArrayBuffer(0);
+        } else if (type === 'blob') {
+          self.response = new window.Blob([r.bodyBytes ? new Uint8Array(r.bodyBytes) : new Uint8Array(0)], { type: essence(finalMime()) });
+        } else if (type === 'document') {
+          xmlText = text; self.response = self.responseXML;
+        } else {
+          self.response = text;
+        }
+        fire('readystatechange');
+        if (token !== gen) return;
+        fire('load', progressEvent('load', size));
+        fire('loadend', progressEvent('loadend', size));
       }
       this.send = function (body) {
+        if (self.readyState !== 1 || sendFlag) throw invalidState('send', "The object's state must be OPENED.");
         var ser = serializeBody(body);
         if (ser.type) {
           var hasCT = false;
           for (var k in self._headers) if (String(k).toLowerCase() === 'content-type') { hasCT = true; break; }
           if (!hasCT) self._headers['content-type'] = ser.type;
         }
-        __unblinkFetch(self._method, self._url, self._headers, ser.data, 'cors', self.withCredentials ? 'include' : 'same-origin')
-          .then(function (r) {
-            self.status = r.status; self.statusText = 'OK';
-            self.responseURL = r.url || self._url; self._resHeaders = r.headers || {};
-            self.responseText = r.body;
-            if (self.responseType === 'json') {
-              try { self.response = r.body === '' ? null : JSON.parse(r.body); } catch (e) { self.response = null; }
-            } else if (self.responseType === 'arraybuffer') {
-              self.response = r.bodyBytes || new ArrayBuffer(0);
-            } else if (self.responseType === 'blob') {
-              self.response = new window.Blob([r.bodyBytes ? new Uint8Array(r.bodyBytes) : new Uint8Array(0)]);
-            } else {
-              self.response = r.body;
-            }
-            self.readyState = 4;
-            if (self.onreadystatechange) self.onreadystatechange();
-            fire('load'); fire('loadend');
-          }, function (e) {
-            self.status = 0; self.readyState = 4;
-            if (self.onreadystatechange) self.onreadystatechange();
-            fire('error', { type: 'error', target: self, message: String(e) });
-            fire('loadend');
-          });
+        sendFlag = true;
+        var token = ++gen;
+        // The timeout is enforced by the Go side as a deadline on this request
+        // (it rejects with 'fetch: timeout'), so no timer is armed here.
+        var ms = Number(self.timeout) > 0 ? Number(self.timeout) : 0;
+        var p = __unblinkFetch(self._method, self._url, self._headers, ser.data, 'cors', self.withCredentials ? 'include' : 'same-origin', ms);
+        inflight = p;
+        // Settlement is always handled (even for a request cancelled later) so a
+        // discarded result never surfaces as an unhandled rejection.
+        p.then(function (r) {
+          if (token === gen) deliver(r, token);
+        }, function (e) {
+          if (token !== gen) return;
+          if (e === 'fetch: timeout') fail('timeout'); else fail('error', String(e));
+        });
+        fire('loadstart');
       };
     };
+    var XHR_STATES = { UNSENT: 0, OPENED: 1, HEADERS_RECEIVED: 2, LOADING: 3, DONE: 4 };
+    for (var xs in XHR_STATES) { window.XMLHttpRequest[xs] = XHR_STATES[xs]; window.XMLHttpRequest.prototype[xs] = XHR_STATES[xs]; }
   } else {
     window.fetch = function () { return Promise.reject(new Error('unblink: network is disabled in render')); };
     window.XMLHttpRequest = function () {
@@ -1188,33 +1341,258 @@ const preludeAPIJS = `
     return { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: function () { return this; } };
   }
 
-  // Range: enough shape for libraries that create one defensively. No editing
-  // model — mutation methods are inert — but createContextualFragment really
-  // parses (it's what several template engines use).
+  // Range: the DOM Standard's Range over the node tree — boundary points,
+  // comparison, stringification, and the content mutations (delete / extract /
+  // clone / insert / surround, including text splitting and partially contained
+  // nodes). All of it is tree work; only the geometry methods stay zero stubs
+  // (no layout engine). Ranges are not live: a later DOM mutation made outside
+  // the range's own methods does not move its boundary points.
+  function rangeErr(name, msg) { return new DOMException(msg, name); }
+  function rangeIsCharData(n) { var t = n.nodeType; return t === 3 || t === 4 || t === 7 || t === 8; }
+  function rangeIsText(n) { return n.nodeType === 3 || n.nodeType === 4; }
+  function rangeLen(n) {
+    if (n.nodeType === 10) return 0;
+    if (rangeIsCharData(n)) return n.length;
+    var c = 0;
+    for (var k = n.firstChild; k; k = k.nextSibling) c++;
+    return c;
+  }
+  function rangeIndex(n) { var i = 0; while ((n = n.previousSibling)) i++; return i; }
+  function rangeRoot(n) { while (n.parentNode) n = n.parentNode; return n; }
+  function rangeChildAt(n, i) { var k = n.firstChild; while (k && i-- > 0) k = k.nextSibling; return k || null; }
+  // rangeHas: a is an inclusive ancestor of n.
+  function rangeHas(a, n) { for (; n; n = n.parentNode) { if (n === a) return true; } return false; }
+  // rangeNextSkip: the first node after n's subtree in tree order.
+  function rangeNextSkip(n) { for (; n; n = n.parentNode) { if (n.nextSibling) return n.nextSibling; } return null; }
+  // rangeCmp: position of boundary point (na, oa) relative to (nb, ob) in the
+  // same tree: -1 before, 0 equal, 1 after.
+  function rangeCmp(na, oa, nb, ob) {
+    if (na === nb) return oa === ob ? 0 : (oa < ob ? -1 : 1);
+    var c;
+    if (rangeHas(na, nb)) { c = nb; while (c.parentNode !== na) c = c.parentNode; return rangeIndex(c) < oa ? 1 : -1; }
+    if (rangeHas(nb, na)) { c = na; while (c.parentNode !== nb) c = c.parentNode; return rangeIndex(c) < ob ? -1 : 1; }
+    return (na.compareDocumentPosition(nb) & 4) ? -1 : 1;
+  }
+  function rangeNode(n, method) {
+    if (!n || typeof n !== 'object' || typeof n.nodeType !== 'number') throw new TypeError("Failed to execute '" + method + "': parameter 1 is not of type 'Node'.");
+    return n;
+  }
+  function rangePoint(n, o, method) {
+    rangeNode(n, method);
+    if (n.nodeType === 10) throw rangeErr('InvalidNodeTypeError', 'The node provided is a DocumentType.');
+    o = o >>> 0;
+    if (o > rangeLen(n)) throw rangeErr('IndexSizeError', 'The offset ' + o + ' is larger than the node length.');
+    return o;
+  }
+  function rangeParent(n, method) {
+    var p = rangeNode(n, method).parentNode;
+    if (!p) throw rangeErr('InvalidNodeTypeError', 'The node provided has no parent.');
+    return p;
+  }
+  // rangeContents clones (extract=false) or extracts (extract=true) the nodes
+  // between two boundary points into a fragment — the DOM Standard's "clone /
+  // extract the contents" algorithms, which differ only in whether the tree is
+  // mutated. Fully contained children move (or deep-clone) whole; the partially
+  // contained first/last children are shallow-cloned and recursed into.
+  function rangeContents(sc, so, ec, eo, extract) {
+    var frag = document.createDocumentFragment();
+    if (sc === ec && so === eo) return frag;
+    var c, k, i;
+    if (sc === ec && rangeIsCharData(sc)) {
+      c = sc.cloneNode(false); c.data = sc.substringData(so, eo - so); frag.appendChild(c);
+      if (extract) sc.replaceData(so, eo - so, '');
+      return frag;
+    }
+    var common = sc;
+    while (!rangeHas(common, ec)) common = common.parentNode;
+    var first = null, last = null;
+    if (!rangeHas(sc, ec)) { first = sc; while (first.parentNode !== common) first = first.parentNode; }
+    if (!rangeHas(ec, sc)) { last = ec; while (last.parentNode !== common) last = last.parentNode; }
+    var contained = [];
+    var stop = last || rangeChildAt(common, eo);
+    for (k = first ? first.nextSibling : rangeChildAt(common, so); k && k !== stop; k = k.nextSibling) {
+      if (k.nodeType === 10) throw rangeErr('HierarchyRequestError', 'A DocumentType cannot be part of the range contents.');
+      contained.push(k);
+    }
+    if (first && rangeIsCharData(first)) {
+      c = sc.cloneNode(false); c.data = sc.substringData(so, sc.length - so); frag.appendChild(c);
+      if (extract) sc.replaceData(so, sc.length - so, '');
+    } else if (first) {
+      c = first.cloneNode(false); frag.appendChild(c);
+      c.appendChild(rangeContents(sc, so, first, rangeLen(first), extract));
+    }
+    for (i = 0; i < contained.length; i++) frag.appendChild(extract ? contained[i] : contained[i].cloneNode(true));
+    if (last && rangeIsCharData(last)) {
+      c = ec.cloneNode(false); c.data = ec.substringData(0, eo); frag.appendChild(c);
+      if (extract) ec.replaceData(0, eo, '');
+    } else if (last) {
+      c = last.cloneNode(false); frag.appendChild(c);
+      c.appendChild(rangeContents(last, 0, ec, eo, extract));
+    }
+    return frag;
+  }
+  // rangeExtract extracts r's contents and collapses r to where they were.
+  function rangeExtract(r) {
+    var sc = r.__sc, so = r.__so, ec = r.__ec, eo = r.__eo;
+    var node = sc, off = so;
+    if (!rangeHas(sc, ec)) {
+      var ref = sc;
+      while (ref.parentNode && !rangeHas(ref.parentNode, ec)) ref = ref.parentNode;
+      node = ref.parentNode; off = rangeIndex(ref) + 1;
+    }
+    var frag = rangeContents(sc, so, ec, eo, true);
+    r.__sc = r.__ec = node; r.__so = r.__eo = off;
+    return frag;
+  }
+
   var Range = function () {
     var d = (typeof document !== 'undefined') ? document : null;
-    this.collapsed = true;
-    this.startContainer = d; this.endContainer = d;
-    this.startOffset = 0; this.endOffset = 0;
-    this.commonAncestorContainer = d;
+    this.__sc = d; this.__ec = d;
+    this.__so = 0; this.__eo = 0;
   };
-  Range.prototype.setStart = function (n, o) { this.startContainer = n; this.startOffset = o || 0; this.commonAncestorContainer = n; };
-  Range.prototype.setEnd = function (n, o) { this.endContainer = n; this.endOffset = o || 0; };
-  Range.prototype.setStartBefore = function (n) { this.setStart(n.parentNode || n, 0); };
-  Range.prototype.setStartAfter = Range.prototype.setStartBefore;
-  Range.prototype.setEndBefore = function (n) { this.setEnd(n.parentNode || n, 0); };
-  Range.prototype.setEndAfter = Range.prototype.setEndBefore;
-  Range.prototype.collapse = function () { this.collapsed = true; };
-  Range.prototype.selectNode = function (n) { this.setStart(n.parentNode || n, 0); this.setEnd(n.parentNode || n, 0); };
-  Range.prototype.selectNodeContents = function (n) { this.setStart(n, 0); this.setEnd(n, 0); };
-  Range.prototype.deleteContents = noop;
-  Range.prototype.extractContents = function () { return document.createDocumentFragment(); };
-  Range.prototype.cloneContents = function () { return document.createDocumentFragment(); };
-  Range.prototype.insertNode = noop;
-  Range.prototype.surroundContents = noop;
-  Range.prototype.cloneRange = function () { var r = new Range(); r.startContainer = this.startContainer; r.endContainer = this.endContainer; r.startOffset = this.startOffset; r.endOffset = this.endOffset; return r; };
+  Range.START_TO_START = Range.prototype.START_TO_START = 0;
+  Range.START_TO_END = Range.prototype.START_TO_END = 1;
+  Range.END_TO_END = Range.prototype.END_TO_END = 2;
+  Range.END_TO_START = Range.prototype.END_TO_START = 3;
+  [['startContainer', function () { return this.__sc; }],
+   ['startOffset', function () { return this.__so; }],
+   ['endContainer', function () { return this.__ec; }],
+   ['endOffset', function () { return this.__eo; }],
+   ['collapsed', function () { return this.__sc === this.__ec && this.__so === this.__eo; }],
+   ['commonAncestorContainer', function () {
+     var c = this.__sc;
+     while (c && !rangeHas(c, this.__ec)) c = c.parentNode;
+     return c;
+   }]].forEach(function (p) {
+    Object.defineProperty(Range.prototype, p[0], { get: p[1], enumerable: true, configurable: true });
+  });
+  Range.prototype.setStart = function (n, o) {
+    o = rangePoint(n, o, 'setStart');
+    if (!this.__ec || rangeRoot(this.__ec) !== rangeRoot(n) || rangeCmp(n, o, this.__ec, this.__eo) > 0) { this.__ec = n; this.__eo = o; }
+    this.__sc = n; this.__so = o;
+  };
+  Range.prototype.setEnd = function (n, o) {
+    o = rangePoint(n, o, 'setEnd');
+    if (!this.__sc || rangeRoot(this.__sc) !== rangeRoot(n) || rangeCmp(n, o, this.__sc, this.__so) < 0) { this.__sc = n; this.__so = o; }
+    this.__ec = n; this.__eo = o;
+  };
+  Range.prototype.setStartBefore = function (n) { this.setStart(rangeParent(n, 'setStartBefore'), rangeIndex(n)); };
+  Range.prototype.setStartAfter = function (n) { this.setStart(rangeParent(n, 'setStartAfter'), rangeIndex(n) + 1); };
+  Range.prototype.setEndBefore = function (n) { this.setEnd(rangeParent(n, 'setEndBefore'), rangeIndex(n)); };
+  Range.prototype.setEndAfter = function (n) { this.setEnd(rangeParent(n, 'setEndAfter'), rangeIndex(n) + 1); };
+  Range.prototype.collapse = function (toStart) {
+    if (toStart) { this.__ec = this.__sc; this.__eo = this.__so; } else { this.__sc = this.__ec; this.__so = this.__eo; }
+  };
+  Range.prototype.selectNode = function (n) {
+    var p = rangeParent(n, 'selectNode'), i = rangeIndex(n);
+    this.__sc = this.__ec = p; this.__so = i; this.__eo = i + 1;
+  };
+  Range.prototype.selectNodeContents = function (n) {
+    rangePoint(n, 0, 'selectNodeContents');
+    this.__sc = this.__ec = n; this.__so = 0; this.__eo = rangeLen(n);
+  };
+  Range.prototype.compareBoundaryPoints = function (how, source) {
+    how = how >>> 0;
+    if (how > 3) throw rangeErr('NotSupportedError', 'The comparison method provided must be one of START_TO_START, START_TO_END, END_TO_END or END_TO_START.');
+    if (!(source instanceof Range)) throw new TypeError("Failed to execute 'compareBoundaryPoints': parameter 2 is not of type 'Range'.");
+    if (rangeRoot(this.__sc) !== rangeRoot(source.__sc)) throw rangeErr('WrongDocumentError', 'The source range is in a different tree.');
+    var mine = (how === 0 || how === 3), theirs = (how === 0 || how === 1);
+    return rangeCmp(mine ? this.__sc : this.__ec, mine ? this.__so : this.__eo,
+      theirs ? source.__sc : source.__ec, theirs ? source.__so : source.__eo);
+  };
+  Range.prototype.comparePoint = function (n, o) {
+    if (rangeRoot(rangeNode(n, 'comparePoint')) !== rangeRoot(this.__sc)) throw rangeErr('WrongDocumentError', 'The node provided is in a different tree.');
+    o = rangePoint(n, o, 'comparePoint');
+    if (rangeCmp(n, o, this.__sc, this.__so) < 0) return -1;
+    return rangeCmp(n, o, this.__ec, this.__eo) > 0 ? 1 : 0;
+  };
+  Range.prototype.isPointInRange = function (n, o) {
+    if (rangeRoot(rangeNode(n, 'isPointInRange')) !== rangeRoot(this.__sc)) return false;
+    o = rangePoint(n, o, 'isPointInRange');
+    return rangeCmp(n, o, this.__sc, this.__so) >= 0 && rangeCmp(n, o, this.__ec, this.__eo) <= 0;
+  };
+  Range.prototype.intersectsNode = function (n) {
+    if (rangeRoot(rangeNode(n, 'intersectsNode')) !== rangeRoot(this.__sc)) return false;
+    var p = n.parentNode;
+    if (!p) return true;
+    var i = rangeIndex(n);
+    return rangeCmp(p, i, this.__ec, this.__eo) < 0 && rangeCmp(p, i + 1, this.__sc, this.__so) > 0;
+  };
+  Range.prototype.cloneRange = function () {
+    var r = new Range();
+    r.__sc = this.__sc; r.__so = this.__so; r.__ec = this.__ec; r.__eo = this.__eo;
+    return r;
+  };
   Range.prototype.detach = noop;
-  Range.prototype.toString = function () { return ''; };
+  // toString concatenates the Text data inside the range in tree order: the tail
+  // of a start Text node, every wholly contained Text node, the head of an end one.
+  Range.prototype.toString = function () {
+    var sc = this.__sc, so = this.__so, ec = this.__ec, eo = this.__eo;
+    if (!sc) return '';
+    if (sc === ec && rangeIsText(sc)) return sc.substringData(so, eo - so);
+    var s = rangeIsText(sc) ? sc.substringData(so, sc.length - so) : '';
+    var n = (!rangeIsCharData(sc) && rangeChildAt(sc, so)) || rangeNextSkip(sc);
+    var stop = rangeIsCharData(ec) ? ec : (rangeChildAt(ec, eo) || rangeNextSkip(ec));
+    while (n && n !== stop) {
+      if (rangeIsText(n)) s += n.data;
+      n = n.firstChild || rangeNextSkip(n);
+    }
+    if (rangeIsText(ec)) s += ec.substringData(0, eo);
+    return s;
+  };
+  Range.prototype.cloneContents = function () { return rangeContents(this.__sc, this.__so, this.__ec, this.__eo, false); };
+  Range.prototype.extractContents = function () { return rangeExtract(this); };
+  // deleteContents leaves the tree exactly as extractContents does; the extracted
+  // fragment is simply dropped.
+  Range.prototype.deleteContents = function () { rangeExtract(this); };
+  // insertNode inserts at the start boundary, splitting a start Text node. The
+  // range tracks its own three mutations (split, detach of an already-attached
+  // node, insert) the way a live range would, so it ends up containing the node.
+  Range.prototype.insertNode = function (node) {
+    rangeNode(node, 'insertNode');
+    var r = this, sc = r.__sc, so = r.__so, t = sc.nodeType;
+    var isText = rangeIsText(sc);
+    if (t === 7 || t === 8 || (isText && !sc.parentNode) || sc === node) throw rangeErr('HierarchyRequestError', 'The node cannot be inserted at the range start.');
+    var ref = isText ? sc : rangeChildAt(sc, so);
+    var parent = ref ? ref.parentNode : sc;
+    if (rangeHas(node, parent)) throw rangeErr('HierarchyRequestError', 'The new child element contains the parent.');
+    var idx, p;
+    if (isText) {
+      ref = sc.cloneNode(false); ref.data = sc.substringData(so, sc.length - so);
+      idx = rangeIndex(sc);
+      parent.insertBefore(ref, sc.nextSibling);
+      if (r.__ec === sc && r.__eo > so) { r.__ec = ref; r.__eo -= so; }
+      if (r.__ec === parent && r.__eo > idx) r.__eo++;
+      sc.replaceData(so, sc.length - so, '');
+    }
+    if (node === ref) ref = ref.nextSibling;
+    if ((p = node.parentNode)) {
+      idx = rangeIndex(node);
+      if (rangeHas(node, r.__sc)) { r.__sc = p; r.__so = idx; } else if (r.__sc === p && r.__so > idx) r.__so--;
+      if (rangeHas(node, r.__ec)) { r.__ec = p; r.__eo = idx; } else if (r.__ec === p && r.__eo > idx) r.__eo--;
+      p.removeChild(node);
+    }
+    var off = ref ? rangeIndex(ref) : rangeLen(parent);
+    var count = node.nodeType === 11 ? rangeLen(node) : 1;
+    var wasCollapsed = r.collapsed;
+    parent.insertBefore(node, ref || null);
+    if (r.__sc === parent && r.__so > off) r.__so += count;
+    if (r.__ec === parent && r.__eo > off) r.__eo += count;
+    if (wasCollapsed) { r.__ec = parent; r.__eo = off + count; }
+  };
+  Range.prototype.surroundContents = function (newParent) {
+    rangeNode(newParent, 'surroundContents');
+    var s = rangeIsText(this.__sc) ? this.__sc.parentNode : this.__sc;
+    var e = rangeIsText(this.__ec) ? this.__ec.parentNode : this.__ec;
+    if (s !== e) throw rangeErr('InvalidStateError', 'The Range has partially selected a non-Text node.');
+    var t = newParent.nodeType;
+    if (t === 9 || t === 10 || t === 11) throw rangeErr('InvalidNodeTypeError', 'The node provided cannot surround the range contents.');
+    var frag = rangeExtract(this);
+    while (newParent.firstChild) newParent.removeChild(newParent.firstChild);
+    this.insertNode(newParent);
+    newParent.appendChild(frag);
+    this.selectNode(newParent);
+  };
   Range.prototype.getBoundingClientRect = zeroRect;
   Range.prototype.getClientRects = function () { return []; };
   Range.prototype.createContextualFragment = function (markup) {
@@ -1229,19 +1607,75 @@ const preludeAPIJS = `
     document.createRange = function () { return new Range(); };
   }
 
-  var emptySelection = {
-    rangeCount: 0, isCollapsed: true, type: 'None',
-    anchorNode: null, anchorOffset: 0, focusNode: null, focusOffset: 0,
-    toString: function () { return ''; },
-    getRangeAt: function () { return null; },
-    addRange: noop, removeRange: noop, removeAllRanges: noop, empty: noop,
-    collapse: noop, collapseToStart: noop, collapseToEnd: noop,
-    selectAllChildren: noop, setBaseAndExtent: noop, extend: noop, modify: noop,
-    containsNode: function () { return false; },
-    deleteFromDocument: noop
+  // Selection: one per window, holding at most one Range (the object addRange was
+  // given, so edits through either are the same edit). Nothing here selects on its
+  // own — there is no pointer or caret — and no selectionchange event fires; it is
+  // the programmatic surface editors and highlighters drive. modify() needs layout
+  // and stays inert.
+  var Selection = function () { this.__r = null; this.__back = false; };
+  function selSet(sel, an, ao, fn, fo) {
+    var r = new Range();
+    ao = rangePoint(an, ao, 'setBaseAndExtent'); fo = rangePoint(fn, fo, 'setBaseAndExtent');
+    var back = rangeRoot(an) === rangeRoot(fn) && rangeCmp(an, ao, fn, fo) > 0;
+    if (back) { r.setStart(fn, fo); r.setEnd(an, ao); } else { r.setStart(an, ao); r.setEnd(fn, fo); }
+    sel.__r = r; sel.__back = back;
+  }
+  [['rangeCount', function () { return this.__r ? 1 : 0; }],
+   ['isCollapsed', function () { return !this.__r || this.__r.collapsed; }],
+   ['type', function () { return !this.__r ? 'None' : (this.__r.collapsed ? 'Caret' : 'Range'); }],
+   ['anchorNode', function () { var r = this.__r; return !r ? null : (this.__back ? r.endContainer : r.startContainer); }],
+   ['anchorOffset', function () { var r = this.__r; return !r ? 0 : (this.__back ? r.endOffset : r.startOffset); }],
+   ['focusNode', function () { var r = this.__r; return !r ? null : (this.__back ? r.startContainer : r.endContainer); }],
+   ['focusOffset', function () { var r = this.__r; return !r ? 0 : (this.__back ? r.startOffset : r.endOffset); }]].forEach(function (p) {
+    Object.defineProperty(Selection.prototype, p[0], { get: p[1], enumerable: true, configurable: true });
+  });
+  Selection.prototype.toString = function () { return this.__r ? this.__r.toString() : ''; };
+  Selection.prototype.getRangeAt = function (i) {
+    if ((i >>> 0) !== 0 || !this.__r) throw rangeErr('IndexSizeError', 'The index ' + i + ' is not a valid range index.');
+    return this.__r;
   };
-  window.getSelection = function () { return emptySelection; };
-  window.Selection = function () {};
+  Selection.prototype.addRange = function (r) {
+    if (!(r instanceof Range)) throw new TypeError("Failed to execute 'addRange': parameter 1 is not of type 'Range'.");
+    if (!this.__r) { this.__r = r; this.__back = false; }
+  };
+  Selection.prototype.removeRange = function (r) {
+    if (this.__r !== r) throw rangeErr('NotFoundError', 'The given range is not in the selection.');
+    this.__r = null;
+  };
+  Selection.prototype.removeAllRanges = Selection.prototype.empty = function () { this.__r = null; this.__back = false; };
+  Selection.prototype.collapse = Selection.prototype.setPosition = function (n, o) {
+    if (n == null) { this.removeAllRanges(); return; }
+    selSet(this, n, o, n, o);
+  };
+  Selection.prototype.collapseToStart = function () {
+    if (!this.__r) throw rangeErr('InvalidStateError', 'There is no selection to collapse.');
+    selSet(this, this.__r.startContainer, this.__r.startOffset, this.__r.startContainer, this.__r.startOffset);
+  };
+  Selection.prototype.collapseToEnd = function () {
+    if (!this.__r) throw rangeErr('InvalidStateError', 'There is no selection to collapse.');
+    selSet(this, this.__r.endContainer, this.__r.endOffset, this.__r.endContainer, this.__r.endOffset);
+  };
+  Selection.prototype.selectAllChildren = function (n) {
+    var r = new Range();
+    r.selectNodeContents(n);
+    this.__r = r; this.__back = false;
+  };
+  Selection.prototype.setBaseAndExtent = function (an, ao, fn, fo) { selSet(this, an, ao, fn, fo); };
+  Selection.prototype.extend = function (n, o) {
+    if (!this.__r) throw rangeErr('InvalidStateError', 'There is no selection to extend.');
+    selSet(this, this.anchorNode, this.anchorOffset, n, o);
+  };
+  Selection.prototype.modify = noop;
+  Selection.prototype.containsNode = function (n, allowPartial) {
+    var r = this.__r;
+    if (!r || rangeRoot(rangeNode(n, 'containsNode')) !== rangeRoot(r.startContainer)) return false;
+    if (allowPartial) return r.intersectsNode(n);
+    return rangeCmp(n, 0, r.startContainer, r.startOffset) >= 0 && rangeCmp(n, rangeLen(n), r.endContainer, r.endOffset) <= 0;
+  };
+  Selection.prototype.deleteFromDocument = function () { if (this.__r) this.__r.deleteContents(); };
+  var selection = new Selection();
+  window.getSelection = function () { return selection; };
+  window.Selection = Selection;
   if (typeof document !== 'undefined') {
     document.getSelection = window.getSelection;
   }
@@ -1559,28 +1993,174 @@ const preludeAPIJS = `
 
   // ---- attachInternals / ElementInternals (form-associated custom elements) ----
   //
-  // A cached inert ElementInternals so form-associated components that call
-  // attachInternals() in their constructor don't throw. No validation or form
-  // participation is modelled; setFormValue/setValidity are accepted-and-ignored.
+  // HTML Standard §4.13.7. The ElementInternals object, its ValidityState,
+  // CustomStateSet and the ARIA mixin live here; every question about the tree
+  // (form owner, labels, disabled, the form* lifecycle callbacks, form.elements,
+  // and reflecting the value for extraction) is Go's — see forminternals.go.
+  // The ARIA defaults extraction reads and the custom states are pushed to Go as they
+  // change (internalsstate.go): one feeds unblink's accessible names and control
+  // state, the other the :state() selector. Not modelled: formStateRestoreCallback
+  // (no session restore to trigger it).
+  var faceEntriesOf = null; // el → its entry-list pairs, or null when not form-associated
   (function () {
-    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
-    if (ep && typeof ep.attachInternals !== 'function') {
-      ep.attachInternals = function () {
-        if (this.__internals) return this.__internals;
-        var host = this;
-        var states = (typeof Set === 'function') ? new Set() : { add: noop, 'delete': noop, has: function () { return false; }, clear: noop };
-        this.__internals = {
-          form: null, labels: [], willValidate: true,
-          validity: { valid: true, valueMissing: false, typeMismatch: false, patternMismatch: false, tooLong: false, tooShort: false, rangeUnderflow: false, rangeOverflow: false, stepMismatch: false, badInput: false, customError: false },
-          validationMessage: '',
-          get shadowRoot() { return host.shadowRoot || null; },
-          states: states, role: null,
-          setFormValue: noop, setValidity: noop,
-          checkValidity: function () { return true; }, reportValidity: function () { return true; }
-        };
-        return this.__internals;
-      };
+    var hook = window.__unblinkFormInternals;
+    try { delete window.__unblinkFormInternals; } catch (e) {}
+    var HP = window.HTMLElement && window.HTMLElement.prototype;
+    if (!hook || !HP || typeof WeakMap !== 'function') return;
+
+    var attached = new WeakMap(); // host element → its ElementInternals
+    var priv = new WeakMap();     // ElementInternals / ValidityState / CustomStateSet → state
+    var FLAGS = ['valueMissing', 'typeMismatch', 'patternMismatch', 'tooLong', 'tooShort', 'rangeUnderflow', 'rangeOverflow', 'stepMismatch', 'badInput', 'customError'];
+    var building = false;
+    function illegal() { if (!building) throw new TypeError('Illegal constructor'); }
+    function notSupported(msg) { return new window.DOMException(msg, 'NotSupportedError'); }
+    function state(self) { var s = priv.get(self); if (!s) throw new TypeError('Illegal invocation'); return s; }
+    // Form-participation members throw unless the target is form-associated.
+    function formState(self) {
+      var s = state(self);
+      if (hook.kind(s.host) !== 2) throw notSupported('The target element is not a form-associated custom element.');
+      return s;
     }
+    function anyFlag(flags) { for (var i = 0; i < FLAGS.length; i++) if (flags[FLAGS[i]]) return true; return false; }
+    function accessor(proto, name, get, set) { Object.defineProperty(proto, name, { get: get, set: set, enumerable: true, configurable: true }); }
+
+    function ValidityState() { illegal(); }
+    FLAGS.forEach(function (f) { accessor(ValidityState.prototype, f, function () { return !!state(this).flags[f]; }); });
+    accessor(ValidityState.prototype, 'valid', function () { return !anyFlag(state(this).flags); });
+
+    function CustomStateSet() { illegal(); }
+    var CS = CustomStateSet.prototype;
+    function pushStates(s) { hook.setStates(s.host, Array.from(s.set)); }
+    CS.add = function (v) { var s = state(this); s.set.add(String(v)); pushStates(s); return this; };
+    CS['delete'] = function (v) { var s = state(this), had = s.set['delete'](String(v)); pushStates(s); return had; };
+    CS.has = function (v) { return state(this).set.has(String(v)); };
+    CS.clear = function () { var s = state(this); s.set.clear(); pushStates(s); };
+    CS.forEach = function (cb, thisArg) { var self = this; state(this).set.forEach(function (v) { cb.call(thisArg, v, v, self); }); };
+    CS.values = CS.keys = function () { return state(this).set.values(); };
+    CS.entries = function () { return state(this).set.entries(); };
+    CS[Symbol.iterator] = CS.values;
+    accessor(CS, 'size', function () { return state(this).set.size; });
+
+    function ElementInternals() { illegal(); }
+    var EI = ElementInternals.prototype;
+
+    // File | USVString | FormData | null; a FormData is copied (later edits to the
+    // caller's object must not change the submission value).
+    function normValue(v) {
+      if (v === null || v === undefined) return null;
+      if (v instanceof window.File) return v;
+      if (v instanceof window.FormData) { var c = new window.FormData(); c.__e = v.__e.slice(); return c; }
+      return String(v);
+    }
+    function entryPairs(s) {
+      var v = s.value, out = [];
+      if (v === null) return out;
+      if (v instanceof window.FormData) return v.__e.slice();
+      var name = s.host.getAttribute('name');
+      if (name) out.push([name, v]);
+      return out;
+    }
+    // Tell Go the submission value (a File travels as its name) for form.submit()
+    // serialization and for the extraction-side reflection.
+    function pushValue(s) {
+      var v = s.value, names = [], values = [], files = [];
+      var add = function (name, val) {
+        var isFile = val instanceof window.File;
+        names.push(name); values.push(isFile ? val.name : val); files.push(isFile);
+      };
+      if (v instanceof window.FormData) v.__e.forEach(function (p) { add(p[0], p[1]); });
+      else if (v !== null) add('', v);
+      hook.setValue(s.host, v === null ? 0 : (v instanceof window.FormData ? 2 : 1), names, values, files);
+    }
+
+    accessor(EI, 'shadowRoot', function () { return hook.shadowRoot(state(this).host); });
+    accessor(EI, 'states', function () { return state(this).states; });
+    accessor(EI, 'form', function () { return hook.form(formState(this).host); });
+    accessor(EI, 'labels', function () { return hook.labels(formState(this).host); });
+    accessor(EI, 'willValidate', function () { return hook.willValidate(formState(this).host); });
+    accessor(EI, 'validity', function () { return formState(this).validity; });
+    accessor(EI, 'validationMessage', function () { return formState(this).message; });
+    EI.setFormValue = function (value, formStateValue) {
+      var s = formState(this);
+      if (arguments.length === 0) throw new TypeError("Failed to execute 'setFormValue' on 'ElementInternals': 1 argument required, but only 0 present.");
+      s.value = normValue(value);
+      s.state = arguments.length > 1 ? normValue(formStateValue) : s.value;
+      pushValue(s);
+    };
+    EI.setValidity = function (flags, message, anchor) {
+      var s = formState(this);
+      if (flags === null || flags === undefined) flags = {};
+      if (typeof flags !== 'object') throw new TypeError("Failed to execute 'setValidity' on 'ElementInternals': The provided value is not of type 'ValidityStateFlags'.");
+      var next = {};
+      FLAGS.forEach(function (f) { next[f] = !!flags[f]; });
+      var bad = anyFlag(next);
+      if (bad && (message === undefined || message === '')) throw new TypeError("Failed to execute 'setValidity' on 'ElementInternals': The second argument should not be empty if one or more flags in the first argument are true.");
+      if (anchor !== null && anchor !== undefined && !hook.contains(s.host, anchor)) throw new window.DOMException('The anchor element is not a descendant of the target element.', 'NotFoundError');
+      s.flags = next;
+      s.message = bad ? String(message) : '';
+      s.anchor = (anchor === null || anchor === undefined) ? s.host : anchor;
+      hook.setInvalid(s.host, bad);
+    };
+    // No validation UI exists to report through, so reportValidity is checkValidity.
+    EI.checkValidity = EI.reportValidity = function () { return hook.checkValidity(formState(this).host); };
+
+    // ARIAMixin: default accessibility semantics. Go keeps the ones extraction
+    // reads, under their attribute names (ariaLabel → aria-label), and ignores the rest.
+    ['role', 'ariaAtomic', 'ariaAutoComplete', 'ariaBrailleLabel', 'ariaBrailleRoleDescription', 'ariaBusy', 'ariaChecked', 'ariaColCount', 'ariaColIndex', 'ariaColIndexText', 'ariaColSpan', 'ariaCurrent', 'ariaDescription', 'ariaDisabled', 'ariaExpanded', 'ariaHasPopup', 'ariaHidden', 'ariaInvalid', 'ariaKeyShortcuts', 'ariaLabel', 'ariaLevel', 'ariaLive', 'ariaModal', 'ariaMultiLine', 'ariaMultiSelectable', 'ariaOrientation', 'ariaPlaceholder', 'ariaPosInSet', 'ariaPressed', 'ariaReadOnly', 'ariaRelevant', 'ariaRequired', 'ariaRoleDescription', 'ariaRowCount', 'ariaRowIndex', 'ariaRowIndexText', 'ariaRowSpan', 'ariaSelected', 'ariaSetSize', 'ariaSort', 'ariaValueMax', 'ariaValueMin', 'ariaValueNow', 'ariaValueText'].forEach(function (name) {
+      accessor(EI, name, function () { var v = state(this).aria[name]; return v === undefined ? null : v; },
+        function (v) {
+          var s = state(this);
+          s.aria[name] = (v === null || v === undefined) ? null : String(v);
+          hook.setAria(s.host, name === 'role' ? name : 'aria-' + name.slice(4).toLowerCase(), s.aria[name]);
+        });
+    });
+    ['ariaActiveDescendantElement', 'ariaControlsElements', 'ariaDescribedByElements', 'ariaDetailsElements', 'ariaErrorMessageElements', 'ariaFlowToElements', 'ariaLabelledByElements', 'ariaOwnsElements'].forEach(function (name) {
+      accessor(EI, name, function () { var v = state(this).aria[name]; return v === undefined ? null : v; },
+        function (v) {
+          var s = state(this);
+          s.aria[name] = (v === undefined) ? null : v;
+          if (name === 'ariaLabelledByElements') hook.setLabelledBy(s.host, s.aria[name]);
+        });
+    });
+
+    HP.attachInternals = function () {
+      var kind = hook.kind(this);
+      if (kind === 0) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': Unable to attach ElementInternals to non-custom elements.");
+      if (kind < 0) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': ElementInternals is disabled by disabledFeatures.");
+      if (attached.has(this)) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': ElementInternals for the specified element was already attached.");
+      var it, validity, states;
+      building = true;
+      try { it = new ElementInternals(); validity = new ValidityState(); states = new CustomStateSet(); } finally { building = false; }
+      var s = { host: this, value: null, state: null, flags: {}, message: '', anchor: null, validity: validity, states: states, aria: {} };
+      priv.set(it, s);
+      priv.set(validity, s);
+      priv.set(states, { set: new Set(), host: this });
+      attached.set(this, it);
+      return it;
+    };
+
+    faceEntriesOf = function (el) {
+      if (hook.kind(el) !== 2) return null;
+      var it = attached.get(el);
+      return (it && !hook.disabled(el)) ? entryPairs(priv.get(it)) : [];
+    };
+
+    // form.checkValidity()/reportValidity(): accessors so they exist on a <form>
+    // only (every element shares this prototype) and a component class or instance
+    // can still define its own. Only form-associated custom elements carry validity
+    // — native controls have no constraint-validation model here and count as valid.
+    ['checkValidity', 'reportValidity'].forEach(function (m) {
+      var impl = function () { return hook.validateForm(this); };
+      Object.defineProperty(HP, m, {
+        get: function () { return (this && this.tagName === 'FORM') ? impl : undefined; },
+        set: function (v) { Object.defineProperty(this, m, { value: v, writable: true, enumerable: true, configurable: true }); },
+        configurable: true
+      });
+    });
+
+    window.ElementInternals = ElementInternals;
+    window.CustomStateSet = CustomStateSet;
+    if (typeof window.ValidityState === 'undefined') window.ValidityState = ValidityState;
   })();
 
   // ---- reportError + cookieStore ----

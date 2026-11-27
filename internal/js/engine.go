@@ -296,7 +296,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		b.installCSPEvalGate()
 		b.runScripts(scripts)
 		if len(modules) > 0 {
-			b.runModules(modules, parseImportMap(doc))
+			b.runModules(modules)
 		}
 		b.injectContentScripts(webext.RunAtEnd)
 		b.fireLifecycle()
@@ -347,6 +347,9 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	// and is a no-op unless the page attached a shadow root. The runtime is discarded, so
 	// this may splice destructively into doc.
 	if b != nil {
+		// Reflect form-associated custom elements' submission values onto the tree
+		// first, so the composed clones carry them (the runtime is gone: no undo).
+		_ = b.reflectInternals()
 		b.ComposeShadowInto(doc)
 		// Cosmetic filtering: detach extension-hidden ad markup from the frozen tree so
 		// it never reaches the Markdown. Post-Terminate (like shadow composition) means

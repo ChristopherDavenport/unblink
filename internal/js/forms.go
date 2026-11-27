@@ -48,24 +48,76 @@ func (b *bridge) htmlCollection(nodes []*html.Node) *goja.Object {
 	return o
 }
 
-// formControls returns a form's submittable controls in document order. Kept to the
-// form-associated elements a submit serializes; nested forms are not a real thing.
-func formControls(form *html.Node) []*html.Node {
+// formControls returns a form's submittable controls in tree order: the
+// form-associated elements a submit serializes — including form-associated custom
+// elements (forminternals.go) — whose form owner is this form. That is its
+// descendants, minus any whose form="id" attribute names something else, plus
+// controls elsewhere in the tree whose form attribute names this form's id.
+func (b *bridge) formControls(form *html.Node) []*html.Node {
+	// A form attribute only counts in a connected tree, and only the first element
+	// carrying an id can be named by it. Controls outside the form are only worth
+	// looking for when the form can be named at all.
+	connected := b.isConnected(form)
+	root, id := form, ""
+	if connected {
+		if fid := getAttr(form, "id"); fid != "" && findByID(treeRoot(form), fid) == form {
+			root, id = treeRoot(form), fid
+		}
+	}
 	var out []*html.Node
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
+	var walk func(n, nearest *html.Node)
+	walk = func(n, nearest *html.Node) {
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			if c.Type == html.ElementNode {
-				switch c.Data {
-				case "input", "select", "textarea", "button", "fieldset", "output":
+			if c.Type != html.ElementNode {
+				continue
+			}
+			if b.isListed(c) {
+				owned := nearest == form
+				if connected && hasAttr(c, "form") {
+					owned = id != "" && getAttr(c, "form") == id
+				}
+				if owned {
 					out = append(out, c)
 				}
 			}
-			walk(c)
+			if c.Data == "form" {
+				walk(c, c)
+			} else {
+				walk(c, nearest)
+			}
 		}
 	}
-	walk(form)
+	if root == form {
+		walk(form, form)
+	} else {
+		walk(root, nil)
+	}
 	return out
+}
+
+// isListed reports whether n is a control form.elements lists.
+func (b *bridge) isListed(n *html.Node) bool {
+	switch n.Data {
+	case "input", "select", "textarea", "button", "fieldset", "output":
+		return true
+	}
+	return b.formAssoc[n.Data]
+}
+
+// formOwner returns a listed control's form owner: with a form attribute in a
+// connected tree, the first element carrying that id if it is a <form> (else none,
+// with no fallback to an ancestor); otherwise the nearest ancestor <form>.
+// dom.extractForms applies the same rule to the extracted tree.
+func (b *bridge) formOwner(n *html.Node) *html.Node {
+	if hasAttr(n, "form") && b.isConnected(n) {
+		if id := getAttr(n, "form"); id != "" {
+			if f := findByID(treeRoot(n), id); f != nil && f.Data == "form" {
+				return f
+			}
+		}
+		return nil
+	}
+	return ancestorForm(n)
 }
 
 // controlValue reads a control's current submitted value: textarea uses its text,
@@ -92,9 +144,17 @@ func controlValue(n *html.Node) string {
 // serializeForm builds the successful-controls name/value set per the HTML form
 // submission algorithm (skips unnamed/disabled controls, unchecked checkboxes and
 // radios, and non-submitting button/reset types).
-func serializeForm(form *html.Node) url.Values {
+func (b *bridge) serializeForm(form *html.Node) url.Values {
 	vals := url.Values{}
-	for _, c := range formControls(form) {
+	for _, c := range b.formControls(form) {
+		if b.isFACE(c) {
+			// A form-associated custom element contributes its setFormValue entries
+			// (a File as its filename, per the urlencoded encoding algorithm).
+			for _, e := range b.faceEntries(c) {
+				vals.Add(e.name, e.value)
+			}
+			continue
+		}
 		name := getAttr(c, "name")
 		if name == "" || hasAttr(c, "disabled") {
 			continue
@@ -136,6 +196,11 @@ func (b *bridge) submitForm(form *html.Node, fireEvent bool) {
 	if form == nil || form.Data != "form" {
 		return
 	}
+	// requestSubmit() validates interactively first (unless novalidate): an invalid
+	// form-associated custom element fires `invalid` and blocks the submission.
+	if fireEvent && !hasAttr(form, "novalidate") && !b.validateForm(form) {
+		return
+	}
 	if fireEvent && !b.fireSubmitEvent(form) {
 		return // canceled
 	}
@@ -150,7 +215,7 @@ func (b *bridge) submitForm(form *html.Node, fireEvent bool) {
 		method = "GET"
 	}
 	if method == "GET" {
-		target.RawQuery = serializeForm(form).Encode()
+		target.RawQuery = b.serializeForm(form).Encode()
 		target.Fragment = "" // a GET submit drops any fragment
 	}
 	b.navigate(target.String())

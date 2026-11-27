@@ -50,7 +50,7 @@ Include the benchstat table in the PR. JS renders settle on two tiers (ADR
 0004): provably-idle pages (no in-flight network, no live timers) close in
 ~1-3ms; anything armed pays the ~60ms quiet window after its last activity.
 
-**Go-version gotcha:** the MCP SDK needs Go ≥ 1.25. The Makefile exports
+**Go-version gotcha:** the module needs Go ≥ 1.27 (`whatwg-url` 0.9 requires it). The Makefile exports
 `GOTOOLCHAIN=auto` so `go` downloads the toolchain pinned in `go.mod`
 automatically. If you invoke `go` directly instead of via `make`, prefix it with
 `GOTOOLCHAIN=auto`.
@@ -125,7 +125,8 @@ the agent via the `requests` tool); only the page-JS *read* is denied. The layer
   IP). Hatches `--allow-private`, `--js-allow-private`. (Detailed gotcha below.)
 - **Same-Origin Policy** (ADR 0015): SOP is the default. Cross-origin *network
   reads* go through CORS; cookies are origin/domain-scoped (public-suffix jar,
-  HttpOnly hidden from `document.cookie`); **Web Storage is origin-partitioned** per
+  HttpOnly hidden from `document.cookie`, and `Set-Cookie` stripped from every
+  response object page JS sees — `responseObject` in `internal/js/async.go`); **Web Storage is origin-partitioned** per
   session (`internal/session`). The cross-*document* half (iframes/`contentWindow`,
   `window.open`/`opener`/`frames`, `postMessage`, `document.domain`, `window.name`)
   is **moot by architecture** — single-document, one runtime per render, no
@@ -140,8 +141,10 @@ the agent via the `requests` tool); only the page-JS *read* is denied. The layer
   `<meta>`) is enforced over page JS — `script-src` nonce/hash/host + `strict-dynamic`,
   `connect-src`, `unsafe-eval` (via `EvalError` shims); report-only surfaces without
   blocking. Nonces are **hidden** — captured before page JS runs and blanked in the
-  DOM (`hideNonces`), so page code can't scrape and reuse one. `internal/js/csp.go`;
-  hatch `--no-csp`.
+  DOM (`hideNonces`), so page code can't scrape and reuse one. An inline
+  `<script type="importmap">` passes the same inline-script check
+  (`cspAllowInlineElement`), so a non-nonced map cannot remap a trusted module's
+  imports. `internal/js/csp.go`; hatch `--no-csp`.
 - **SRI** (ADR 0012, default on): `integrity`-pinned scripts/modules are hashed over
   the *raw pre-transcode* bytes and blocked on mismatch. `internal/js/sri.go`; hatch
   `--no-sri`.
@@ -198,14 +201,16 @@ not `doFetch`).
 - Tests use external `_test` packages with fixtures in `testdata/`. `internal/js`
   carries the densest suite; `internal/browser/browser_test.go` is the
   integration-level test of the whole pipeline. Every parser that eats untrusted
-  bytes (dom, reduce, pdf, robots, token cursors) has a fuzz target — `make fuzz`
+  bytes (dom, reduce, pdf, feed, robots, token cursors) has a fuzz target — `make fuzz`
   (FUZZTIME per target); seed corpora run in `make test`.
 - `docs/decisions/` holds the ADRs (numbered `NNNN-slug.md`): 0001 keeps
   `dslipak/pdf` but **vendors it at `third_party/pdf`** (imported by its
   in-repo path `…/unblink/third_party/pdf` — never via a `replace` directive,
   which would break `go install <module>@version`) with three loop-bounding
   patches after fuzzing found an infinite-loop DoS that recover+ctx couldn't
-  contain — sync upstream manually, re-fuzz before adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
+  contain, plus a fourth (`NewReaderContext`, `third_party/pdf/cancel.go`) that binds
+  the reader to the request context so the extraction stops when the context ends —
+  cooperative, at the reader's checkpoints — sync upstream manually, re-fuzz before adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
   pseudo-version pins are deliberate — bumping goja is its own reviewed
   change); 0003 is the JS memory guard (process-level heap watchdog +
   `debug.SetMemoryLimit`, because goja has no per-runtime accounting); 0004 is the
@@ -252,13 +257,15 @@ not `doFetch`).
   honest; a pinned vendored corpus under `testdata/wpt/`; on-demand analysis, not a
   CI gate. The ranked roadmap it feeds is `docs/wpt-compatibility.md` — headline
   findings: HTML tree-construction is already strong (html/syntax 0.944), the top
-  content-fidelity gaps are the URL parser and TextDecoder/TextEncoder); 0017 is the
+  content-fidelity gaps are the URL parser and TextDecoder/TextEncoder — but those figures predate the 2026-11-27 re-measurement in that doc: a missing `Element.insertAdjacentText` crashed testharness.js's result rendering, hiding ~37k subtests as timeouts, so compare PASS counts across runs, not the older ratios); 0017 is the
   `[\s-…]` regex-class rewrite (goja rejects a valid-ECMAScript `-` after a
   `\s`/`\d`/`\w` shorthand — the camelCase/slugify idiom — with "invalid character
   class range", aborting the whole script/module; `fixClassRangeHyphen` in
   `internal/js/regexfix.go` escapes the hyphen before compile at compileCached +
   classicProgram — value-preserving in every JS context, odd-backslash guard for the
-  real `[\\s-z]` range; a targeted goja workaround, not a regex-compat layer); 0018 is
+  real `[\\s-z]` range; a targeted goja workaround, not a regex-compat layer — upstream
+  goja accepts the idiom as of the 2026-11-25 pin, so the rewrite is now redundant but
+  retained, see the ADR's dated note); 0018 is
   the per-render module-instance registry (`internal/js/moduleregistry.go`) giving
   dynamic `import()` browser module-map semantics — each resolved URL fetched +
   esbuild-CJS-transformed + evaluated once, its live namespace shared across
@@ -267,7 +274,16 @@ not `doFetch`).
   "useMemoCache of null" failure); two-phase (off-loop instantiate/dedup, on-loop
   post-order evaluate), replaces bundleDynamicChunk, preserves the ADR 0004 settle
   bracket; scope = the dynamic-import path only (static `<script type=module>` still
-  bundles per entry). Add a new
+  bundles per entry). Import maps (`internal/js/importmap.go`: `imports` + `scopes`)
+  resolve through one `bridge.moduleResolve` on every path — static bundling, registry
+  deps, dynamic `import()`; a classic script's or non-literal `import()` uses the
+  document base as referrer, only the first import map is read, and its `integrity`
+  key is not handled; 0019 is form-associated custom element reflection (the engine
+  stamps an `ElementInternals` submission value onto the extraction-bound tree as
+  `data-unblink-form-value`/`-invalid` — names in `internal/page` — so `dom` form
+  extraction sees design-system controls without reading the JS heap; never visible
+  to page JS; Amendment 1 extends it to default ARIA semantics via
+  `data-unblink-default-*`, `:state()` matching, and `form="id"` ownership). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)

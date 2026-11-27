@@ -37,7 +37,7 @@ explicit about both directions.
 | Page representation | Reduced Markdown (article or full page) + structured tools (outline, links, forms, JSON-LD/tables, CSS-schema extraction) | Accessibility-tree snapshots | Typed page decomposition, 3 detail levels, targeted `find` queries | DOM automation primitives (navigate/click/fill/evaluate) | DOM automation primitives; some semantic extraction |
 | Screenshots / pixels | No — permanent non-goal | Yes, plus video, tracing, PDF export | Yes (real Chromium) | Not a focus | No — no graphical rendering |
 | Install footprint | One static binary (linux/darwin/windows), nothing else; ~27 MB stripped, ~29 MB idle RSS ([measured](#measured-footprint)) — no embedded V8, so ~5× smaller on disk than the from-scratch engines | Node + full browser install | Node + Chromium (npm or Docker) | ~147 MB of binaries; [measured](#measured-footprint): 8 MB idle RSS, ~1 ms cold start — leaner than its own claims | ~138 MB single binary; [measured](#measured-footprint): 15 MB idle RSS, ~5 ms cold start; no native Windows, glibc-only Linux |
-| Token efficiency | Core design: token-budgeted, cursor-paginated Markdown; cheap `browse`/`find` orientation. [Measured](#token-cost-per-page): reads a nav-heavy portal for ~1% of a snapshot's tokens | Verbose — [measured](#token-cost-per-page): ×86 unblink's read on a nav-heavy portal; no orientation surface | Core design: orientation 23–178× smaller than a11y-tree dumps. [Measured](#token-cost-per-page): orientation 1.3–2× unblink's `browse`; *reading* costs snapshot-scale | Not a design concern — [measured](#token-cost-per-page): its snapshot truncates at ~4 KB and never reaches the article on a nav-heavy page | Not a design concern, though its `markdown` tool is genuinely dense — [measured](#token-cost-per-page): cheapest column on small clean pages, ×67 unblink on a nav-heavy portal (no reduction, budget, or orientation) |
+| Token efficiency | Core design: token-budgeted, cursor-paginated Markdown; cheap `browse`/`find` orientation. [Measured](#token-cost-per-page): reads a nav-heavy portal for ~1% of a snapshot's tokens | Verbose — [measured](#token-cost-per-page): ×86 unblink's read on a nav-heavy portal; no orientation surface | Core design: orientation 23–178× smaller than a11y-tree dumps. [Measured](#token-cost-per-page): orientation ×0.5–0.7 of unblink's `browse`; *reading* costs snapshot-scale | Not a design concern — [measured](#token-cost-per-page): its snapshot truncates at ~4 KB and never reaches the article on a nav-heavy page | Not a design concern, though its `markdown` tool is genuinely dense — [measured](#token-cost-per-page): cheapest column on small clean pages, ×67 unblink on a nav-heavy portal (no reduction, budget, or orientation) |
 | Sessions | Cookies + history + persistent live JS runtime per session | Real browser profile, tabs, storage | Persistent Chromium session, stable hashed element IDs, structural diffs | Fast-boot ephemeral sessions | CDP sessions |
 | Agent-safety defaults | SSRF dial guard + untrusted-content fence + origin-scoped credentials, all on by default; [measured](#content-boundary-what-reaches-the-model): only tool that strips all hidden-instruction text, fences content as untrusted, and defangs image-beacon exfiltration to inert text | — | Chromium sandbox on by default | Stealth / anti-fingerprinting, tracker blocking (secures the browser, not the content boundary; [measured](#content-boundary-what-reaches-the-model): no untrusted-content fence) | robots.txt respect, proxy support ([measured](#content-boundary-what-reaches-the-model): leaks all hidden text + a live image-beacon, no fence) |
 | License | MIT | Apache-2.0 | MIT | Apache-2.0 | AGPL-3.0 |
@@ -90,7 +90,7 @@ unblink's selector-based `controls`/`interact`.
 Docker image) and Chromium's memory profile per session. It optimizes what
 the *model* pays per page, not what the *host* pays to run the browser. Young
 project (v0.6.3 on npm). [Measured](#token-cost-per-page): the efficiency
-layer earns its keep on *orientation* (1.3–2× unblink's `browse`, far below a
+layer earns its keep on *orientation* (×0.5–0.7 of unblink's `browse`, far below a
 raw snapshot) — but actually *reading* a page's prose requires its `full`
 detail level, which costs about what a Playwright snapshot costs (its
 `summary` level truncates article text; sentinel-verified by the harness).
@@ -407,8 +407,9 @@ a unified `metadata` object, a deep-linkable heading outline, and ready-to-use
 `extract` schemas (all added v0.20.0–v0.21.0). That is a few hundred tokens for a far
 more actionable orientation, still one to two orders of magnitude under any full-page
 read. Charlotte's orientation is leaner (×0.5–0.7 of unblink's here), the trade being
-it carries less structure per call. (Charlotte's column is its 2026-07-03 measurement;
-only unblink's was re-measured — see the [provenance note](#measured-head-to-head).)
+it carries less structure per call. (Charlotte's column, like every other, is from the
+2026-07-06 run in which all columns were re-measured together — see the
+[provenance note](#measured-head-to-head).)
 
 The shape of the result: on a **clean long-form page** everyone lands within
 ~1.3× of everyone — there is little junk to strip, and every representation

@@ -5,6 +5,9 @@ Vendored after fuzzing found a containment failure
 the library into infinite in-memory loops that neither recover() nor a
 context deadline can stop. Three loop-bounding patches, each marked
 "unblink patch", live in `page.go`, `lex.go`, and `read.go` — see the ADR.
+A fourth patch adds cooperative cancellation (`NewReaderContext`): the new
+file `cancel.go` plus marked hunks in `read.go` and `page.go` (ADR
+Amendment 3).
 Imported as a plain package of the unblink module
 (`github.com/christopherdavenport/unblink/third_party/pdf`); a `replace`
 directive would break `go install <module>@version`. Upstream license

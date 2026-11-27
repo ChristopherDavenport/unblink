@@ -4,11 +4,11 @@ import (
 	"strings"
 
 	"github.com/dop251/goja"
-	urlpkg "github.com/nlnwa/whatwg-url/url"
+	urlpkg "github.com/nationallibraryofnorway/whatwg-url/url"
 )
 
 // installURL binds a native, spec-conformant WHATWG URL parser
-// (github.com/nlnwa/whatwg-url) as the __unblinkURLParse / __unblinkURLSet
+// (github.com/nationallibraryofnorway/whatwg-url) as the __unblinkURLParse / __unblinkURLSet
 // primitives; the JS window.URL class in the prelude wraps them. It mirrors
 // installSubtle (subtle.go): stateless per-call primitives, one parser per bridge
 // (every call runs on this runtime's single loop goroutine, and concurrent renders

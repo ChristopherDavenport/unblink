@@ -327,6 +327,13 @@ func (b *bridge) installNodeProto() {
 		other := b.unwrap(call.Argument(0))
 		return vm.ToValue(contains(n, other))
 	})
+	b.protoMethod(p, "isSameNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		return vm.ToValue(b.unwrap(call.Argument(0)) == n)
+	})
+	b.protoMethod(p, "isEqualNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		other := b.unwrap(call.Argument(0))
+		return vm.ToValue(other != nil && equalNodes(n, other))
+	})
 	b.protoMethod(p, "compareDocumentPosition", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		other := b.unwrap(call.Argument(0))
 		switch {
@@ -387,6 +394,14 @@ func (b *bridge) installElementProto() {
 		func(n *html.Node) goja.Value { return vm.ToValue(innerHTML(n)) },
 		func(n *html.Node, v goja.Value) {
 			setInnerHTML(n, v.String())
+			// Parsed-in custom elements upgrade like inserted ones — when the
+			// markup lands in a connected tree (a shadow root's included); a
+			// detached parent's or a <template>'s stays inert until inserted.
+			if n.Data != "template" && b.isConnected(n) {
+				for _, c := range childNodes(n) { // a constructor may edit the list
+					b.upgradeTree(c)
+				}
+			}
 			b.onMutate(mutationRecord{typ: "childList", target: n})
 		})
 	b.protoGetter(p, "outerHTML", func(n *html.Node) goja.Value { return vm.ToValue(outerHTML(n)) })
@@ -471,10 +486,10 @@ func (b *bridge) installElementProto() {
 	})
 
 	b.protoMethod(p, "querySelector", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.wrap(query(n, call.Argument(0).String()))
+		return b.wrap(b.pageQuery(n, call.Argument(0).String()))
 	})
 	b.protoMethod(p, "querySelectorAll", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(n, call.Argument(0).String()))
+		return b.nodeList(b.pageQueryAll(n, call.Argument(0).String()))
 	})
 	b.protoMethod(p, "getElementsByTagName", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		return b.nodeList(queryAll(n, call.Argument(0).String()))
@@ -483,16 +498,10 @@ func (b *bridge) installElementProto() {
 		return b.nodeList(queryAll(n, "."+call.Argument(0).String()))
 	})
 	b.protoMethod(p, "matches", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return vm.ToValue(matchesSelector(n, call.Argument(0).String()))
+		return vm.ToValue(b.pageClosest(n, call.Argument(0).String(), true) != nil)
 	})
 	b.protoMethod(p, "closest", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		sel := call.Argument(0).String()
-		for a := n; a != nil; a = a.Parent {
-			if a.Type == html.ElementNode && matchesSelector(a, sel) {
-				return b.wrap(a)
-			}
-		}
-		return goja.Null()
+		return b.wrap(b.pageClosest(n, call.Argument(0).String(), false))
 	})
 
 	b.protoMethod(p, "insertAdjacentHTML", func(n *html.Node, call goja.FunctionCall) goja.Value {
@@ -505,6 +514,19 @@ func (b *bridge) installElementProto() {
 			b.insertAdjacentNode(n, call.Argument(0).String(), el)
 		}
 		return call.Argument(1)
+	})
+
+	// insertAdjacentText inserts data as a Text node. An unknown position is a
+	// SyntaxError, as the DOM Standard's "insert adjacent" steps require.
+	b.protoMethod(p, "insertAdjacentText", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		position := call.Argument(0).String()
+		switch strings.ToLower(position) {
+		case "beforebegin", "afterbegin", "beforeend", "afterend":
+		default:
+			b.throwDOMException("SyntaxError", "The value provided ('"+position+"') is not one of 'beforebegin', 'afterbegin', 'beforeend', or 'afterend'.")
+		}
+		b.insertAdjacentNode(n, position, &html.Node{Type: html.TextNode, Data: call.Argument(1).String()})
+		return goja.Undefined()
 	})
 
 	b.protoGetter(p, "classList", func(n *html.Node) goja.Value { return b.classListFor(n) })
@@ -566,7 +588,7 @@ func (b *bridge) installHTMLElementProto() {
 		if n.Data != "form" {
 			return goja.Undefined()
 		}
-		return b.htmlCollection(formControls(n))
+		return b.htmlCollection(b.formControls(n))
 	})
 	b.protoMethod(p, "submit", func(n *html.Node, _ goja.FunctionCall) goja.Value {
 		b.submitForm(n, false)
@@ -574,6 +596,10 @@ func (b *bridge) installHTMLElementProto() {
 	})
 	b.protoMethod(p, "requestSubmit", func(n *html.Node, _ goja.FunctionCall) goja.Value {
 		b.submitForm(n, true)
+		return goja.Undefined()
+	})
+	b.protoMethod(p, "reset", func(n *html.Node, _ goja.FunctionCall) goja.Value {
+		b.resetForm(n)
 		return goja.Undefined()
 	})
 
@@ -811,4 +837,44 @@ func nullToEmptyString(v goja.Value) string {
 		return ""
 	}
 	return v.String()
+}
+
+// equalNodes implements the DOM Standard's "node A equals node B": same node
+// type; for elements the same namespace, local name and attribute set (order
+// does not matter); for text, comments and doctypes the same data; and the same
+// number of children, each equal to its counterpart.
+func equalNodes(a, b *html.Node) bool {
+	if a.Type != b.Type {
+		return false
+	}
+	switch a.Type {
+	case html.ElementNode:
+		if a.Data != b.Data || a.Namespace != b.Namespace || len(a.Attr) != len(b.Attr) {
+			return false
+		}
+		for _, x := range a.Attr {
+			found := false
+			for _, y := range b.Attr {
+				if x.Namespace == y.Namespace && x.Key == y.Key {
+					found = x.Val == y.Val
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+	case html.TextNode, html.CommentNode, html.DoctypeNode:
+		if a.Data != b.Data {
+			return false
+		}
+	}
+	ca, cb := a.FirstChild, b.FirstChild
+	for ca != nil && cb != nil {
+		if !equalNodes(ca, cb) {
+			return false
+		}
+		ca, cb = ca.NextSibling, cb.NextSibling
+	}
+	return ca == nil && cb == nil
 }

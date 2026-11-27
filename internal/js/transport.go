@@ -20,9 +20,13 @@ type Transport interface {
 
 // Response is a raw HTTP response for in-page JavaScript (body already read).
 type Response struct {
-	Status  int
-	Headers map[string]string
-	Body    []byte
+	Status int
+	// StatusText is the reason phrase from the status line, without the code
+	// ("Not Found"). Empty when the transport does not supply one, which is also
+	// what an HTTP/2 or HTTP/3 response carries; nothing is synthesized from Status.
+	StatusText string
+	Headers    map[string]string
+	Body       []byte
 	// Raw is the body before the charset→UTF-8 transcode (the octets the server
 	// sent), used only for Subresource Integrity hashing (see sri.go). May be nil
 	// for synthesized responses (e.g. extension resources); SRI callers fall back

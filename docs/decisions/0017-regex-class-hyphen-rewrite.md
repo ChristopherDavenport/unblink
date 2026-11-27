@@ -77,3 +77,13 @@ guards the allocation), so it is a no-op for the overwhelming majority of source
   provably semantics-preserving" discipline, or an ADR 0002 goja bump.
 - If goja later fixes `TransformRegExp` (or broadens the regexp2 fallback), this
   rewrite becomes a harmless no-op and can be retired.
+
+## Note (2026-11-27): fixed upstream; rewrite retained
+
+The goja pin was bumped to `5e92a7e2` (2026-11-25) as a reviewed ADR 0002 change.
+That range includes upstream's "Treat '-' next to a character class escape as a
+literal" and its move to regexp2 for every pattern, so goja at this pin compiles
+`/[\s-_]+/` unaided — the case described in *Context* above no longer reproduces.
+`fixClassRangeHyphen` is therefore redundant at the current pin. It is retained: it
+is value-preserving, so it is a no-op against a goja that accepts the idiom, and
+removing it is a separate change. The decision above is unchanged.

@@ -241,7 +241,7 @@ mark(14, (function(){ var ul = document.createElement('ul'); ul.innerHTML = '<li
 mark(18, new DOMMatrix().translate(2, 3).transformPoint(new DOMPoint(1, 1)).x === 3 && typeof Path2D === 'function');
 mark(19, document.fonts.check('12px X') === true && typeof FontFace === 'function');
 mark(20, (function(){ var a = document.createElement('div').animate([{ opacity: 0 }], { duration: 10 }); return a.playState === 'finished' && typeof document.body.getAnimations === 'function'; })());
-mark(21, (function(){ var e = document.createElement('x-int'); return typeof e.attachInternals === 'function' && typeof e.attachInternals().setFormValue === 'function'; })());
+mark(21, (function(){ customElements.define('x-int', class extends HTMLElement { static formAssociated = true; }); var e = document.createElement('x-int'); var threw = false; try { document.createElement('x-undefined').attachInternals(); } catch (err) { threw = err.name === 'NotSupportedError'; } return threw && typeof e.attachInternals().setFormValue === 'function'; })());
 mark(22, typeof TextEncoderStream === 'function' && typeof TextDecoderStream === 'function');
 mark(23, (function(){ navigation.navigate('/x2', { state: { n: 2 } }); return navigation.currentEntry.getState().n === 2 && navigation.entries().length >= 2; })());
 mark(24, typeof cookieStore.getAll === 'function' && typeof reportError === 'function');

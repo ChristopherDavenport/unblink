@@ -29,7 +29,8 @@ contained** rather than trusted:
 1. Every call runs behind `recover()` (`extract`, `pdfTitle`) — a library panic
    becomes a clean classified error, never a process crash.
 2. Extraction runs on a goroutine bounded by the caller's context, so a
-   pathological PDF cannot hang a request past its deadline.
+   pathological PDF cannot hang a request past its deadline. (This bounded
+   the request only, not the goroutine — see Amendment 3.)
 3. Input size is already capped upstream by fetch's body limit (10 MiB).
 4. Unextractable/encrypted/image-only PDFs degrade to a manifest, not an error.
 5. `FuzzConvert` (`internal/content/pdf/fuzz_test.go`, `make fuzz`)
@@ -71,13 +72,55 @@ test). The vendored copy is now a plain package of the unblink module —
 imported as `github.com/christopherdavenport/unblink/third_party/pdf`, no
 nested `go.mod`, no `require`/`replace` — which `go install` accepts.
 
+## Amendment 3: cooperative cancellation (a fourth patch)
+
+Decision item 2 and `maxExtractTime` only ever bounded the *request*.
+`Convert` returned when its context ended, but the extraction goroutine could
+not be stopped: a document that kept the library busy went on burning a CPU
+after the request had returned, and repeated requests stacked such goroutines
+up. Loop-bounding patches fix known loops one at a time; they do nothing for
+the next one. Two that the three patches above do not cover: an xref `/Prev`
+that points at its own table (opening the document never finishes), and a page
+tree listing one page object 200,000 times (page lookup rescans the kids from
+the start, so extraction is quadratic — from a ~1.2 MB file).
+
+The vendored copy now carries a fourth patch, marked "unblink patch" like the
+others, that makes an extraction stop when its context ends:
+
+4. `cancel.go` (new file, not in upstream) — `NewReaderContext(ctx, f, size)`
+   binds a `Reader` to a context. Once the context is done:
+   - every read of the document bytes fails (a wrapping `io.ReaderAt`), which
+     starves the lexer and every stream filter;
+   - `read.go resolve()` panics — one line at the single path behind
+     `Value.Key`/`Value.Index`, so every walk over the object graph (page
+     tree, `Parent` chains, fonts) is covered. Supporting hunks: a `ctx` field
+     on `Reader`, set in `NewReaderEncrypted`;
+   - `page.go cmap.Decode()` panics once per decoded character code — that
+     loop is quadratic over in-memory data and resolves nothing. Supporting
+     hunks: an `r` field on `cmap`, set in `readCmap`.
+
+   The checkpoints panic because that is how the library already reports
+   malformed input, and the caller already recovers. `NewReader` and the rest
+   of the upstream API are unchanged.
+
+`Convert` passes its context (capped at `maxExtractTime`) to
+`NewReaderContext` and reports the context's error for anything that comes
+back after the context ended. `TestExtractionStopsWhenContextEnds` runs the
+two documents above and requires the extraction itself to return.
+
+The limit of the guarantee: cancellation is cooperative. A loop that reaches
+none of the three checkpoints is not interrupted; `Convert` still returns on
+time (it does not wait for the goroutine), but that goroutine runs until its
+loop ends. No such loop is known. Concurrent extractions are not capped.
+
 ## Consequences
 
 - Extraction quality stays at `rsc.io/pdf` level (no OCR, struggles with some
   encodings); acceptable for the manifest-fallback contract.
 - The vendored copy at `third_party/pdf` is the source of truth, imported by
   its in-repo path. To sync upstream: copy the upstream files over
-  `third_party/pdf`, re-apply the three "unblink patch" hunks, and re-run
-  `make fuzz` before adopting.
+  `third_party/pdf`, keep `cancel.go`, re-apply every "unblink patch" hunk
+  (the three loop bounds and the cancellation hunks in `read.go`/`page.go`),
+  and re-run `make test` and `make fuzz` before adopting.
 - Revisit trigger: pdfcpu (or another maintained pure-Go library) shipping
   first-class text extraction.

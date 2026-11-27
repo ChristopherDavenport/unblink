@@ -17,7 +17,7 @@ linters:
         # read-path closers are listed too.
         - (io.Closer).Close
         - (*compress/gzip.Reader).Close
-        - (*golang.org/x/net/http2.ClientConn).Close
+        - (*net/http.ClientConn).Close
   exclusions:
     rules:
       # Test HTTP handlers write responses constantly; unchecked

@@ -3,6 +3,139 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## v0.25.0 — 2026-11-27
+
+### Added
+
+- **Import map `scopes`.** The import map is parsed and resolved per the HTML Standard
+  (`internal/js/importmap.go`): `"imports"` and `"scopes"`, exact and trailing-slash
+  prefix keys, the most specific matching scope first. One resolver serves static
+  `<script type=module>` bundling, the module registry's static dependencies, and
+  dynamic `import()` — which previously did not consult the import map at all. A
+  registry module's nested `import()` now resolves against that module's own URL.
+  Limits: a classic script's `import()` and a non-literal `import()` in a bundled
+  module use the document base as referrer; only the first import map is read; the
+  import map `"integrity"` key is not handled.
+- **Form-associated custom elements.** `ElementInternals` is real for elements defined
+  with `static formAssociated = true`: `setFormValue`, `form`, `labels`, the validity
+  API (`setValidity`, `checkValidity`, `reportValidity`), `states`, and the
+  `formAssociatedCallback`/`formDisabledCallback`/`formResetCallback` reactions. Such an
+  element takes part in `form.elements`, `new FormData(form)`, form submission and
+  form validation, and its value appears in the `forms` tool and is sent by
+  `submit_form` ([ADR 0019](docs/decisions/0019-form-associated-element-reflection.md)).
+  `attachInternals()` now throws `NotSupportedError` on a non-custom element or a
+  second call, as browsers do. `form.reset()` is new, and `requestSubmit()` validates
+  first unless `novalidate`. Not implemented: `formStateRestoreCallback`, `:state()`,
+  `form="id"` association, reflection of `File` values to the `forms` tool.
+- **`form="id"`, `:state()` and default ARIA semantics for custom elements**
+  ([ADR 0019](docs/decisions/0019-form-associated-element-reflection.md), Amendment 1).
+  A control's `form` attribute now decides its form owner, for native and custom
+  controls, in page JS and in the `forms` tool alike; a descendant control that names
+  another form no longer belongs to its ancestor form. `:state(x)` matches
+  `ElementInternals.states` in `matches`/`querySelector`/`closest`. A custom
+  element's `internals.role`, `ariaLabel`, `ariaLabelledByElements` and checked/
+  expanded/pressed/selected/required/invalid/disabled defaults reach the semantic
+  output; an explicit `role`/`aria-*` attribute wins. `adoptedCallback` is still
+  not fired.
+- **`Element.insertAdjacentText`.** It was missing and threw a `TypeError`.
+- **Passive-by-default touch/wheel listeners.** `touchstart`/`touchmove`/`wheel`/
+  `mousewheel` listeners on window, document, `<html>` and `<body>` are passive unless
+  registered with an explicit `passive: false`, as the DOM Standard specifies, so a
+  `preventDefault()` there no longer cancels the event. Re-adding the same
+  (type, callback, capture) listener is now a no-op.
+- **DOM `Range` and `Selection`.** `Range` implements the DOM Standard's boundary
+  points, comparison methods, `toString`, and the clone/extract/delete/insert/surround
+  algorithms over the node tree (it was a shape-only stub returning empty results);
+  `Selection` holds the range it was given, and `getRangeAt` on an empty selection
+  throws `IndexSizeError`. Ranges are not live, no `selectionchange` event fires, and
+  the geometry methods remain zero stubs.
+
+### Changed
+
+- **Go 1.27 is now the minimum.** The refreshed `golang.org/x/*` dependencies need
+  1.26 and `whatwg-url` 0.9 needs 1.27; the `go` directive moved 1.25 → 1.27.
+  `GOTOOLCHAIN=auto` (set by the Makefile) still downloads the toolchain automatically.
+- **`--tls-mimic` uses `net/http`'s HTTP/2 client** instead of the deprecated
+  `x/net/http2` client API. The opening HTTP/2 frames are unchanged and are now pinned
+  by a wire-level test.
+- **`whatwg-url` 0.9**, under its new module path
+  `github.com/nationallibraryofnorway/whatwg-url`.
+- **WPT conformance re-measured**; see `docs/wpt-compatibility.md`. Earlier figures
+  undercounted because the missing `insertAdjacentText` crashed the test harness's
+  result rendering.
+- **Dependencies refreshed**, including releases that clear govulncheck findings, and a
+  reviewed goja/goja_nodejs bump ([ADR 0002](docs/decisions/0002-dependency-pinning-policy.md))
+  that picks up upstream fixes for out-of-bounds access through detached TypedArray
+  buffers and several parser panics. Upstream goja now accepts the `[\s-_]` regex idiom
+  itself; the [ADR 0017](docs/decisions/0017-regex-class-hyphen-rewrite.md) rewrite is
+  retained as a no-op.
+- **`statusText` is the server's reason phrase.** `XMLHttpRequest.statusText` and
+  `Response.statusText` report the phrase from the HTTP/1.x status line instead of a
+  constant `OK`. It is empty on HTTP/2 and later, which have no reason phrase.
+
+### Fixed
+
+- **`XMLHttpRequest` follows the XHR Standard where it previously diverged.** `abort()`
+  cancels the request and fires `abort`/`loadend` instead of delivering the response;
+  `timeout`/`ontimeout` cut the request at the deadline; a response walks
+  `HEADERS_RECEIVED` → `LOADING` → `DONE` with `readystatechange` at each step (also
+  delivered to `addEventListener` listeners); `overrideMimeType` and `responseXML`
+  work; `send()` throws `InvalidStateError` outside the `OPENED` state.
+- **Next.js pages that rendered as "Application error" now render.** Three engine gaps,
+  each fatal to a page such as react.dev/learn: `Node.isEqualNode`/`isSameNode` were
+  missing (Next.js's head manager calls `isEqualNode`); `document.hasFocus` was
+  missing; and `MutationObserver` handed an observer the mutations made while it was
+  disconnected, which crashed CodeMirror 6, and never called back an observer that
+  re-observed after `disconnect()`. Records are now queued per observer at mutation
+  time, as the DOM Standard specifies.
+- **A throwing XHR event handler no longer strands the request.** Each handler and
+  listener is isolated; the exception is reported to the console and delivery
+  continues.
+- **`submit_form` sends what `forms` shows.** Repeated field names are all sent, in
+  order (only the last was sent before); an unchecked checkbox or radio contributes
+  nothing (a radio group used to post its last radio whether or not it was checked),
+  and a checked one without a `value` posts `on`. A caller-supplied value for a name
+  still replaces every entry of that name.
+- **Custom elements created through `innerHTML` are upgraded.** The setter never
+  upgraded them, in the light tree or a shadow root.
+- **`--tls-mimic` connection pool.** A burst of concurrent requests to a host with no
+  pooled connection each dialed and closed the previous connection under its
+  in-flight request, so all but one failed; they now share one dial. A connection at
+  the server's stream limit is treated as busy, not dead. A request that fails on its
+  own deadline returns that error and leaves the healthy connection pooled.
+- **Import maps:** a map inserted by a classic script before the first module loads is
+  honoured again; URLs are parsed and serialised with the WHATWG URL parser; duplicate
+  keys resolve last-wins; a map whose `imports` or `scopes` is not an object is
+  rejected. Lookups no longer scan every key, and a map is rejected above 4 MiB of
+  source, 50,000 entries or 2,000 scopes.
+- **PDF extraction stops when its request ends**
+  ([ADR 0001](docs/decisions/0001-pdf-extraction-library.md), Amendment 3). The
+  extraction goroutine used to keep running after the context ended or the wall-clock
+  limit passed. The vendored reader is now bound to the context and fails at its
+  checkpoints once it is done. Cancellation is cooperative: a loop that reaches no
+  checkpoint would not be stopped; none is known.
+- **Feed (RSS/Atom/JSON Feed) Markdown.** A literal `<` in plain-text content is no
+  longer treated as a tag opener (which dropped the text after it), adjacent block
+  elements are separated instead of glued together, titles are collapsed to one line,
+  and link labels and destinations are escaped. Relative item links are resolved
+  against the feed URL.
+
+### Security
+
+- **`Set-Cookie` never reaches page JS.** Response headers handed to page script kept
+  `Set-Cookie`, so an HttpOnly cookie's value could be read through
+  `fetch()`'s `response.headers`, through `XMLHttpRequest.getResponseHeader`/
+  `getAllResponseHeaders`, and through an internal property of the XHR object.
+  `Set-Cookie` and `Set-Cookie2` are now dropped where the engine builds the response
+  object for page JS, which covers fetch and XHR alike. The cookie jar is fed below
+  that point and still stores the cookies.
+- **Import maps are gated by CSP.** An inline `<script type="importmap">` now needs
+  the same nonce/hash allowance as an inline script (`internal/js/csp.go`,
+  `cspAllowInlineElement`). Previously a non-nonced import map under
+  `script-src 'nonce-…'` was honoured and could redirect a trusted module's imports.
+  A blocked map is ignored and recorded as a CSP violation; report-only reports
+  without blocking; `--no-csp` disables the gate.
+
 ## v0.24.0 — 2026-07-06
 
 ### Fixed

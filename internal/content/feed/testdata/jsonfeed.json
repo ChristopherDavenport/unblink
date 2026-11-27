@@ -1,0 +1,29 @@
+{
+  "version": "https://jsonfeed.org/version/1.1",
+  "title": "Example JSON Feed",
+  "home_page_url": "https://json.example.net/",
+  "feed_url": "https://json.example.net/feed.json",
+  "description": "A JSON Feed description",
+  "authors": [{"name": "Feed Owner"}],
+  "items": [
+    {
+      "id": "1",
+      "url": "https://json.example.net/one",
+      "title": "JSON Item One",
+      "summary": "Plain summary one",
+      "content_html": "<p>Longer HTML body that the summary should win over</p>",
+      "date_published": "2023-11-05T10:00:00-05:00",
+      "authors": [{"name": "Dana Dev"}]
+    },
+    {
+      "id": "2",
+      "url": "https://json.example.net/two",
+      "title": "JSON Item Two",
+      "content_html": "<p>HTML <strong>body</strong> &amp; more</p>"
+    },
+    {
+      "id": "3",
+      "content_text": "Text-only item with no title, url, or date"
+    }
+  ]
+}

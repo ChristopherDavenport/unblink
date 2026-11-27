@@ -124,7 +124,7 @@ func (b *bridge) installGlobals(win *goja.Object) {
 	_ = win.Set("history", hist)
 
 	_ = win.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
-		b.addListener(b.winListeners, call)
+		b.addListener(b.winListeners, call, true)
 		return goja.Undefined()
 	})
 	_ = win.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {

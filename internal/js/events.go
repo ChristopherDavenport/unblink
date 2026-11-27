@@ -25,10 +25,11 @@ type listenerEntry struct {
 
 // listenerOpts is the parsed addEventListener 3rd argument.
 type listenerOpts struct {
-	capture bool
-	once    bool
-	passive bool
-	signal  goja.Value // nil if absent
+	capture    bool
+	once       bool
+	passive    bool
+	passiveSet bool       // `passive` was given explicitly (else the per-target default applies)
+	signal     goja.Value // nil if absent
 }
 
 // domEvent holds the Go-side state for an in-flight event dispatch.
@@ -64,7 +65,9 @@ const (
 
 // --- registration ---
 
-func (b *bridge) addListener(reg map[string][]listenerEntry, call goja.FunctionCall) {
+// addListener registers a listener in reg. passiveTarget marks the targets whose
+// touch/wheel listeners are passive by default (window, document, <html>, <body>).
+func (b *bridge) addListener(reg map[string][]listenerEntry, call goja.FunctionCall, passiveTarget bool) {
 	fnVal := call.Argument(1)
 	fn, ok := goja.AssertFunction(fnVal)
 	if !ok {
@@ -75,10 +78,32 @@ func (b *bridge) addListener(reg map[string][]listenerEntry, call goja.FunctionC
 	if opts.signal != nil && b.signalAborted(opts.signal) {
 		return // an already-aborted signal means never add the listener
 	}
-	reg[t] = append(reg[t], listenerEntry{fn: fn, jsFn: fnVal, capture: opts.capture, once: opts.once, passive: opts.passive})
+	// Identity is (type, callback, capture): re-adding the same listener — even with
+	// a different passive/once — is a no-op, and the first registration wins.
+	for _, e := range reg[t] {
+		if e.capture == opts.capture && e.jsFn != nil && e.jsFn.SameAs(fnVal) {
+			return
+		}
+	}
+	passive := opts.passive
+	if !opts.passiveSet {
+		passive = passiveTarget && passiveByDefault(t)
+	}
+	reg[t] = append(reg[t], listenerEntry{fn: fn, jsFn: fnVal, capture: opts.capture, once: opts.once, passive: passive})
 	if opts.signal != nil {
 		b.onAbort(opts.signal, func() { removeEntryByFn(reg, t, fnVal, opts.capture) })
 	}
+}
+
+// passiveByDefault reports whether listeners for an event type default to passive
+// on the window/document/<html>/<body> targets (DOM "default passive value"): the
+// scroll-blocking touch and wheel events.
+func passiveByDefault(typ string) bool {
+	switch typ {
+	case "touchstart", "touchmove", "wheel", "mousewheel":
+		return true
+	}
+	return false
 }
 
 func (b *bridge) removeListener(reg map[string][]listenerEntry, call goja.FunctionCall) {
@@ -108,7 +133,11 @@ func (b *bridge) nodeAddListener(n *html.Node, call goja.FunctionCall) {
 		m = make(map[string][]listenerEntry)
 		b.nodeListeners[n] = m
 	}
-	b.addListener(m, call)
+	passiveTarget := false
+	if passiveByDefault(call.Argument(0).String()) {
+		passiveTarget = n == findTag(b.doc, "html") || n == findTag(b.doc, "body")
+	}
+	b.addListener(m, call, passiveTarget)
 }
 
 func (b *bridge) nodeRemoveListener(n *html.Node, call goja.FunctionCall) {
@@ -133,7 +162,10 @@ func (b *bridge) parseListenerOpts(arg goja.Value) listenerOpts {
 	opts := listenerOpts{
 		capture: boolProp(o, "capture"),
 		once:    boolProp(o, "once"),
-		passive: boolProp(o, "passive"),
+	}
+	// passive is tri-state: absent/undefined/null leaves the per-target default.
+	if p := o.Get("passive"); p != nil && !goja.IsUndefined(p) && !goja.IsNull(p) {
+		opts.passive, opts.passiveSet = p.ToBoolean(), true
 	}
 	if s := o.Get("signal"); s != nil && !goja.IsUndefined(s) && !goja.IsNull(s) {
 		opts.signal = s
@@ -387,9 +419,12 @@ func (b *bridge) invokePhase(entry pathEntry, ev *domEvent, filter phaseFilter) 
 				continue
 			}
 		}
+		// The in-passive-listener flag covers exactly this callback. callSafe
+		// recovers a throwing listener, so the restore below always runs.
+		prevPassive := ev.passiveActive
 		ev.passiveActive = le.passive
 		b.callSafe(le.fn, entry.jsValue, ev.js)
-		ev.passiveActive = false
+		ev.passiveActive = prevPassive
 		if le.once {
 			removeEntryByFn(entry.listeners, ev.typ, le.jsFn, le.capture)
 		}

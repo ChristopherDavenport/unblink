@@ -63,7 +63,7 @@ func (g *guardedTransport) Do(ctx context.Context, method, url string, headers m
 	for k := range res.Header {
 		hdr[strings.ToLower(k)] = res.Header.Get(k)
 	}
-	return &js.Response{Status: res.Status, Headers: hdr, Body: res.Body, Raw: res.Raw, FinalURL: res.FinalURL}, nil
+	return &js.Response{Status: res.Status, StatusText: res.StatusText, Headers: hdr, Body: res.Body, Raw: res.Raw, FinalURL: res.FinalURL}, nil
 }
 
 // Denied reports how many requests the budget caps rejected, for render

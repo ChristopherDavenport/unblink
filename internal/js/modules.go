@@ -2,14 +2,13 @@ package js
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/andybalholm/cascadia"
 	esbuild "github.com/evanw/esbuild/pkg/api"
+	urlpkg "github.com/nationallibraryofnorway/whatwg-url/url"
 	"golang.org/x/net/html"
 )
 
@@ -17,7 +16,7 @@ const moduleNamespace = "unblink-url"
 
 var (
 	selModuleScript = cascadia.MustCompile("script[type=module]")
-	selImportMap    = cascadia.MustCompile("script[type=importmap]")
+	selAnyScript    = cascadia.MustCompile("script")
 	selPreload      = cascadia.MustCompile("link[rel~=modulepreload], link[rel~=preload]")
 )
 
@@ -80,32 +79,18 @@ func relHasToken(rel, tok string) bool {
 	return false
 }
 
-// parseImportMap reads the first <script type="importmap"> and returns its
-// "imports" mapping (bare specifier -> URL). Scopes are not supported.
-func parseImportMap(doc *html.Node) map[string]string {
-	n := selImportMap.MatchFirst(doc)
-	if n == nil {
-		return nil
-	}
-	var im struct {
-		Imports map[string]string `json:"imports"`
-	}
-	if err := json.Unmarshal([]byte(scriptText(n)), &im); err != nil {
-		return nil
-	}
-	return im.Imports
-}
-
 // runModules bundles and runs each <script type="module"> via esbuild — the
 // module graph is fetched through the guarded transport, bundled to a classic
 // IIFE, and run on the existing goja path. goja has no native ESM, so bundling is
 // the pure-Go route. A build failure (incl. a blocked/failed module fetch) skips
 // that module script; it is never fatal. Requires a transport (network).
-func (b *bridge) runModules(modules []*html.Node, importMap map[string]string) {
+func (b *bridge) runModules(modules []*html.Node) {
 	if b.transport == nil {
 		return
 	}
-	plugin := b.modulePlugin(importMap)
+	b.acquireImportMap(b.doc) // module loading begins: the import map is now fixed
+	importMap := b.importMap
+	plugin := b.modulePlugin()
 	for _, m := range modules {
 		var entry string
 		if src := strings.TrimSpace(getAttr(m, "src")); src != "" {
@@ -246,17 +231,11 @@ func lowerDynamicImport(src string) (string, bool) {
 // modulePlugin resolves every specifier to an absolute URL in a custom namespace
 // and loads its bytes through the guarded transport, so esbuild never touches a
 // filesystem and all module fetches obey the SSRF guard + budget.
-func (b *bridge) modulePlugin(importMap map[string]string) esbuild.Plugin {
+func (b *bridge) modulePlugin() esbuild.Plugin {
 	resolve := func(a esbuild.OnResolveArgs) (esbuild.OnResolveResult, error) {
-		spec := a.Path
-		if isBareSpecifier(spec) {
-			mapped, ok := importMap[spec]
-			if !ok {
-				return esbuild.OnResolveResult{}, fmt.Errorf("unresolved bare specifier %q", spec)
-			}
-			spec = mapped
-		}
-		abs, err := b.moduleResolve(a.Importer, spec)
+		// a.Importer is the importing module's URL (moduleNamespace) or the stdin
+		// entry name, which moduleResolve treats as "the document is the referrer".
+		abs, err := b.moduleResolve(a.Importer, a.Path)
 		if err != nil {
 			return esbuild.OnResolveResult{}, err
 		}
@@ -306,52 +285,17 @@ func (b *bridge) modulePlugin(importMap map[string]string) esbuild.Plugin {
 	}
 }
 
-// moduleResolve joins a specifier against the importing module's URL (or the page
-// base URL for the entry point).
+// moduleResolve resolves a module specifier written in the module at importer (an
+// absolute URL), or in the document itself when importer is not one (an inline
+// module's stdin entry, a classic script): the import map's matching scopes, then
+// its top-level imports, then the specifier as a URL relative to the referrer.
+//
+// An absolute importer never reads docBaseNow, so the off-loop registry instantiate
+// (always called with a module URL) cannot race on-loop navigation updates.
 func (b *bridge) moduleResolve(importer, spec string) (string, error) {
-	// An absolute specifier (http/https, or chrome-extension:// for a background
-	// module) resolves to itself — no base needed. Besides being correct, this keeps
-	// off-loop dynamic-import bundles (bundleDynamicChunk, whose entry imports an
-	// absolute URL) from reading docBaseNow off the loop goroutine, which would race
-	// with on-loop navigation updates.
-	if u, err := url.Parse(spec); err == nil && u.IsAbs() {
-		return u.String(), nil
-	}
-	// Relative imports resolve against the importer when it is an absolute URL (so a
-	// module's own path, not the document base, anchors its siblings); otherwise the
-	// document/extension base.
-	var base *url.URL
-	if iu, err := url.Parse(importer); err == nil && iu.IsAbs() {
-		base = iu
-	} else {
-		base = b.docBaseNow()
-	}
-	u, err := url.Parse(spec)
+	base, err := urlpkg.Parse(importer)
 	if err != nil {
-		return "", err
+		base = whatwgURL(b.docBaseNow())
 	}
-	if base == nil {
-		if u.IsAbs() {
-			return u.String(), nil
-		}
-		return "", fmt.Errorf("cannot resolve %q without a base url", spec)
-	}
-	return base.ResolveReference(u).String(), nil
-}
-
-// isBareSpecifier reports whether spec is a bare module specifier (needs an import
-// map), i.e. not relative, root-relative, or an absolute http(s) URL.
-func isBareSpecifier(spec string) bool {
-	switch {
-	case spec == "":
-		return false
-	case strings.HasPrefix(spec, "./"), strings.HasPrefix(spec, "../"), strings.HasPrefix(spec, "/"):
-		return false
-	case strings.Contains(spec, "://"):
-		// Any absolute-URL specifier (http/https, and chrome-extension:// for an
-		// extension background module) is not bare.
-		return false
-	default:
-		return true
-	}
+	return b.importMap.resolve(b.ctx, spec, base)
 }

@@ -34,6 +34,11 @@ type observeTarget struct {
 type mutationObserver struct {
 	callback goja.Callable
 	targets  []*observeTarget
+	// queue is this observer's record queue (DOM Standard: each observer has its
+	// own). A record is queued at mutation time, to the observers interested in it
+	// then — so a mutation made while an observer is disconnected never reaches it,
+	// even if it re-observes before the next delivery.
+	queue []mutationRecord
 }
 
 // onMutate is the single sink for every DOM mutation made through the bridge. It
@@ -48,11 +53,38 @@ func (b *bridge) onMutate(rec mutationRecord) {
 			b.disconnectTree(n)
 		}
 	}
-	if len(b.observers) == 0 {
-		return
+	// Form-associated custom elements: leaving the tree can drop the form owner or a
+	// disabling <fieldset>, and a disabled attribute change (theirs or a fieldset's)
+	// flips formDisabledCallback. Insertion is handled by scan.
+	if len(b.faces) > 0 {
+		for _, n := range rec.removed {
+			b.syncFACETree(n)
+		}
+		if rec.typ == "attributes" && rec.attr == "disabled" {
+			b.syncFACETree(rec.target)
+		}
+		// form="id": the attribute itself changing re-associates the element, and so
+		// does anything that changes which element the id names.
+		if rec.typ == "attributes" && rec.attr == "form" {
+			if _, ok := b.faces[rec.target]; ok {
+				b.syncFACE(rec.target)
+			}
+		}
+		if rec.typ == "childList" || rec.attr == "id" {
+			b.formRefEpoch++
+		}
+		b.syncFormRefs(rec)
 	}
-	b.pendingRecords = append(b.pendingRecords, rec)
-	b.scheduleFlush()
+	queued := false
+	for _, obs := range b.observers {
+		if obs.matches(rec) {
+			obs.queue = append(obs.queue, rec)
+			queued = true
+		}
+	}
+	if queued {
+		b.scheduleFlush()
+	}
 }
 
 func (b *bridge) scheduleFlush() {
@@ -67,25 +99,17 @@ func (b *bridge) scheduleFlush() {
 	}))
 }
 
-// flushMutations delivers all queued records to every matching observer, then
-// clears the queue. Runs on the loop goroutine (no locking needed).
+// flushMutations delivers each observer's queued records to its callback, then
+// clears that queue. Runs on the loop goroutine (no locking needed). It iterates
+// a copy of the observer list: a callback may observe or disconnect.
 func (b *bridge) flushMutations() {
-	if len(b.pendingRecords) == 0 {
-		return
-	}
-	records := b.pendingRecords
-	b.pendingRecords = nil
-	for _, obs := range b.observers {
-		var matched []mutationRecord
-		for _, r := range records {
-			if obs.matches(r) {
-				matched = append(matched, r)
-			}
-		}
-		if len(matched) == 0 {
+	for _, obs := range append([]*mutationObserver(nil), b.observers...) {
+		if len(obs.queue) == 0 {
 			continue
 		}
-		b.callSafe(obs.callback, goja.Undefined(), b.recordList(matched))
+		records := obs.queue
+		obs.queue = nil
+		b.callSafe(obs.callback, goja.Undefined(), b.recordList(records))
 	}
 }
 
@@ -187,11 +211,26 @@ func (b *bridge) installMutationObserver() {
 					t.attributes = true
 				}
 			}
-			obs.targets = append(obs.targets, t)
+			// Observing a node again replaces its options (DOM Standard), and an
+			// observer that was disconnected starts receiving records again.
+			replaced := false
+			for i, old := range obs.targets {
+				if old.node == n {
+					obs.targets[i] = t
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				obs.targets = append(obs.targets, t)
+			}
+			b.addObserver(obs)
 			return goja.Undefined()
 		})
 		_ = this.Set("disconnect", func(goja.FunctionCall) goja.Value {
+			// disconnect stops observation and empties the record queue.
 			obs.targets = nil
+			obs.queue = nil
 			b.removeObserver(obs)
 			return goja.Undefined()
 		})
@@ -199,10 +238,19 @@ func (b *bridge) installMutationObserver() {
 			return b.takeRecords(obs)
 		})
 
-		b.observers = append(b.observers, obs)
 		return nil
 	}
 	_ = vm.Set("MutationObserver", ctor)
+}
+
+// addObserver registers obs for record queueing; a no-op when already registered.
+func (b *bridge) addObserver(obs *mutationObserver) {
+	for _, o := range b.observers {
+		if o == obs {
+			return
+		}
+	}
+	b.observers = append(b.observers, obs)
 }
 
 func (b *bridge) removeObserver(obs *mutationObserver) {
@@ -215,17 +263,9 @@ func (b *bridge) removeObserver(obs *mutationObserver) {
 	b.observers = out
 }
 
-// takeRecords returns and removes this observer's currently-queued records.
+// takeRecords returns and empties this observer's record queue.
 func (b *bridge) takeRecords(obs *mutationObserver) goja.Value {
-	var matched []mutationRecord
-	var rest []mutationRecord
-	for _, r := range b.pendingRecords {
-		if obs.matches(r) {
-			matched = append(matched, r)
-		} else {
-			rest = append(rest, r)
-		}
-	}
-	b.pendingRecords = rest
-	return b.recordList(matched)
+	records := obs.queue
+	obs.queue = nil
+	return b.recordList(records)
 }

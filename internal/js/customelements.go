@@ -137,6 +137,7 @@ func (b *bridge) installCustomElements(win *goja.Object) {
 func (b *bridge) define(name string, ctor *goja.Object) {
 	b.customElements[name] = ctor
 	delete(b.customObserved, name)
+	b.readDefinitionFlags(name, ctor)
 	b.scan(b.doc)
 	for _, resolve := range b.whenDefinedResolvers[name] {
 		_ = resolve(ctor)
@@ -170,6 +171,11 @@ func (b *bridge) scan(root *html.Node) {
 				if b.upgraded[nd] && !b.connectedNotified[nd] && b.isConnected(nd) {
 					b.connectedNotified[nd] = true
 					b.invokeLifecycle(nd, "connectedCallback")
+				}
+				// Form-associated: (re)compute the form owner and disabled state,
+				// firing formAssociatedCallback/formDisabledCallback on a change.
+				if b.upgraded[nd] && b.formAssoc[nd.Data] {
+					b.syncFACE(nd)
 				}
 			}
 		}

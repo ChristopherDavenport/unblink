@@ -68,7 +68,7 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
 - Parse/extract: `golang.org/x/net/html` + `github.com/andybalholm/cascadia` (selectors)
 - Reduce: `codeberg.org/readeck/go-readability/v2`, `github.com/microcosm-cc/bluemonday`
 - Emit: `github.com/JohannesKaufmann/html-to-markdown/v2`
-- MCP: `github.com/modelcontextprotocol/go-sdk` (official; requires Go ≥ 1.25)
+- MCP: `github.com/modelcontextprotocol/go-sdk` (official; the module as a whole requires Go ≥ 1.27)
 - JS: `github.com/dop251/goja` + `github.com/dop251/goja_nodejs` (eventloop) — pure Go, no cgo
 - JS modules: `github.com/evanw/esbuild/pkg/api` (bundles ESM → classic IIFE) — pure Go, no cgo
 - Robustness: `github.com/andybalholm/brotli` (decode), `golang.org/x/time/rate` (per-host limit),
@@ -102,7 +102,9 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
 - **Phase 4c — ES modules.** ✅ `<script type=module>` (inline + src), `import`/
   `export`, dynamic `import()`, and import maps — bundled per module graph with
   esbuild (pure Go) via a network-resolver plugin routed through the guarded
-  transport, then run as a classic IIFE on the goja path.
+  transport, then run as a classic IIFE on the goja path. (Import map `scopes`
+  and a registry-backed dynamic `import()` came later — see the *Module loading*
+  entry later in this roadmap and ADR 0018.)
 - **Phase 4d — Event propagation & cookies.** ✅ Full capture → target → bubble
   event dispatch (delegated listeners fire; `stopPropagation`/`preventDefault`/
   real `removeEventListener`), and `document.cookie` read/write backed by the
@@ -416,7 +418,7 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     previously dead 304 path in `fetch.decodeBody` is now live.
   - **HTTP/2 connection pooling under `--tls-mimic`**: the utls RoundTripper
     pools one h2 `ClientConn` per host:port and reuses it while the server keeps
-    it open (dead conns are detected via `CanTakeNewRequest`/round-trip failure
+    it open (dead conns are detected via `Available`/round-trip failure
     and redialed, with a single safe retry) — repeat fetches no longer pay a
     TCP+TLS handshake each. HTTP/1.1 stays one-conn-per-request (rare on this
     path).
@@ -447,6 +449,8 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   - **Fuzz targets + `make fuzz`** (seed corpora run in `make test`): dom
     parse/extract/tables/microdata/find, reduce+emit (both modes, hidden-strip
     on), PDF convert, robots.txt parse+match, pagination cursor round-trip.
+    (A feed-convert target, `internal/content/feed` `FuzzConvert`, joined
+    `make fuzz` later.)
   - **Two real bugs on the first fuzz runs**: (1) `dom.Find` panicked when
     lowercasing shifted byte offsets (invalid UTF-8 folds to 3-byte U+FFFD) —
     match offsets are now mapped back through a fold-offset table
@@ -457,7 +461,12 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     (`replace` directive) with three loop bounds (page-tree walk, synthetic
     newlines, Extends chain), and `pdf.Convert` enforces its own hard
     wall-clock (`maxExtractTime`) as defense in depth. Both crashers live on
-    as committed fuzz-corpus regressions. See ADR 0001.
+    as committed fuzz-corpus regressions. See ADR 0001. (Since then, per that
+    ADR's amendments: the `replace` directive was dropped in v0.17.1 for the
+    in-repo import path `…/unblink/third_party/pdf`, and a fourth patch binds
+    the reader to the request context so the extraction itself stops when the
+    context ends — cooperatively, at the reader's checkpoints — where the
+    wall-clock used to abandon a goroutine that kept running.)
   - **Credential-plumbing unit tests** (`internal/mcpserver/auth_test.go`,
     `tools_test.go`): env-var secret indirection, credentials-require-origin,
     one-shot auth, upload caps/decoding, untrusted-content framing
@@ -628,15 +637,16 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   (over the Phase-24 Streams), and `disconnectedCallback` (fired from a new `onMutate`→
   `disconnectTree` removal hook). **STUB** — `document.fonts`/`FontFace` (`ready` resolves),
   `Element.animate`/`Animation`/`KeyframeEffect` (finished animation, `onfinish` via the wrapped
-  timer), `attachInternals`/`ElementInternals`, the Navigation API (`navigate` fires a `navigate`
+  timer), `attachInternals`/`ElementInternals` (a stub in this phase; real form participation came later, ADR 0019), the Navigation API (`navigate` fires a `navigate`
   event whose `intercept({handler})` runs the router's view update; same-document only),
   `cookieStore` (over `document.cookie`), and `reportError`. Regression nets:
   `internal/js/webapi_tier2_test.go` + `js-api-smoke` markers `api-18`…`api-25`. Also **broad
   `crypto.subtle`** (ADR 0006, `internal/js/subtle.go`): Go byte-primitives (`crypto/*` +
   `crypto/rand`) under a JS WebCrypto model — digest, HMAC, AES-GCM/CBC/CTR, PBKDF2/HKDF, and
   symmetric key gen/import/export; RSA/ECDSA reject (never a sync throw), and `getRandomValues`
-  is re-pointed at `crypto/rand`. **Held open**: the full-WHATWG `URL` upgrade (only on a
-  demonstrated break). **Deferred**: `adoptedCallback` (cross-document adoption) and
+  is re-pointed at `crypto/rand`. **Held open at the time**: the full-WHATWG `URL` upgrade (only on a
+  demonstrated break) — the WPT `url/` run later demonstrated one, and the native parser
+  shipped in v0.23.0 (see the WPT entry below). **Deferred**: `adoptedCallback` (cross-document adoption) and
   `CompressionStream` (needs a Go codec).
 
 - **Phase 26 — Tier 3 crash-avoidance stubs (see `docs/web-api-priorities.md`).** ✅ Flips the
@@ -813,6 +823,67 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   static filter engine never becomes ready (`µb.readyToFilter` stays false; compiling ~3.6 MB of lists in
   goja is impractical). uBO Lite is the recommended ad-block configuration.
 
+- **Browser security model over page JS — CORS, SRI, Fetch-Metadata, CSP, SOP (ADRs 0011–0015, v0.23.0).** ✅
+  The page's own code is treated as hostile and the browser's defaults are applied over it, each
+  behind an off-by-default escape hatch. **CORS** ([ADR 0011](decisions/0011-cors-over-untrusted-js.md),
+  `internal/js/cors.go`, `--js-allow-cross-origin`): a cross-origin `fetch`/XHR is still sent and
+  logged in `requests`; only the page-JS read is gated, and a same-origin request redirected
+  cross-origin is re-validated. **SRI** ([ADR 0012](decisions/0012-subresource-integrity.md),
+  `internal/js/sri.go`, `--no-sri`): `integrity`-pinned scripts/modules are hashed over the raw
+  pre-transcode bytes. **Fetch-Metadata and isolation fidelity**
+  ([ADR 0013](decisions/0013-fetch-metadata-and-cross-origin-isolation.md),
+  `internal/js/secfetch.go`, `isolation.go`): truthful `Sec-Fetch-*` on every request and truthful
+  `crossOriginIsolated`/`isSecureContext`, with no COEP enforcement. **CSP**
+  ([ADR 0014](decisions/0014-csp-enforcement.md), `internal/js/csp.go`, `--no-csp`): the
+  document's header and `<meta>` policies gate `script-src`, `connect-src` and `unsafe-eval`, with
+  nonces hidden from page JS. **SOP** ([ADR 0015](decisions/0015-same-origin-policy.md)): Web
+  Storage is origin-partitioned per session (`internal/session`); the cross-document half is moot
+  with one document per runtime. The ADRs carry the scope and the reasoning.
+
+- **WPT conformance measurement and the fixes it ranked (ADR 0016, v0.23.0).** ✅ `make wpt`
+  (package `wpt/`, build tag `wpt`) runs the in-scope web-platform-tests corpus against the JS
+  engine and buckets every subtest, as an on-demand report rather than a CI gate
+  ([ADR 0016](decisions/0016-wpt-conformance.md)). Its roadmap,
+  [wpt-compatibility.md](wpt-compatibility.md), drove three fixes in the same release: a native
+  WHATWG `URL` parser (`github.com/nationallibraryofnorway/whatwg-url`, bound in `internal/js/urlnative.go`)
+  replacing the regex one, `TextDecoder`/`TextEncoder` correctness, and a DOM batch
+  (`DOMException`, `CharacterData` methods, `dispatchEvent` checks).
+
+- **Module loading — regex-class rewrite, module registry, import map scopes (ADRs 0017, 0018).** ✅
+  v0.24.0 fixed two goja-level gaps that kept Astro/React islands inert. `fixClassRangeHyphen`
+  (`internal/js/regexfix.go`, [ADR 0017](decisions/0017-regex-class-hyphen-rewrite.md)) escapes a
+  `-` that follows a `\s`/`\d`/`\w` shorthand in a character class before compile; upstream goja
+  has since fixed the rejection and the rewrite is retained as a no-op (see the ADR's note). A
+  per-render module-instance registry (`internal/js/moduleregistry.go`,
+  [ADR 0018](decisions/0018-module-instance-registry.md)) gives dynamic `import()` module-map
+  semantics: each resolved URL is fetched, transformed and evaluated once. After v0.24.0, import
+  maps are parsed and resolved per the HTML Standard (`internal/js/importmap.go`): `"imports"`
+  and `"scopes"`, exact and trailing-slash prefix keys, most specific scope first, through one
+  resolver (`bridge.moduleResolve`) shared by static module bundling, the registry's static
+  dependencies, and dynamic `import()`. A registry module's nested `import()` is resolved
+  against that module's own URL. Limits: a classic script's `import()` and a non-literal
+  `import()` in a bundled module use the document base as referrer, because the calling
+  script's URL is not known there; only the first `<script type="importmap">` is read; and the
+  import map `"integrity"` key is not handled.
+
+- **DOM and XHR fidelity after v0.24.0.** ✅ Four changes that replace a stub or a wrong default
+  with the standard's behaviour, none adding an async primitive (ADR 0004). **Passive listeners**
+  (`internal/js/events.go`): `touchstart`/`touchmove`/`wheel`/`mousewheel` listeners on window,
+  document, `<html>` and `<body>` are passive unless registered with an explicit
+  `passive: false`, and re-adding the same (type, callback, capture) listener is a no-op.
+  **`XMLHttpRequest`** (`internal/js/prelude_api.go`, `async.go`): `abort()` cancels the
+  underlying request and runs the error steps; `timeout` is a deadline on the request's context;
+  a response walks `HEADERS_RECEIVED`→`LOADING`→`DONE`; `overrideMimeType` and `responseXML`
+  work; the header getters hide `Set-Cookie`. **`statusText`** (XHR and `Response`) is the reason
+  phrase from the server's HTTP/1.x status line, carried through `fetch.Result.StatusText` and
+  `js.Response.StatusText`; it is empty on HTTP/2 and later by design, since those protocols
+  have no reason phrase and nothing is synthesized. **`Range`/`Selection`**
+  (`internal/js/prelude_api.go`): `Range` implements the DOM Standard's boundary-point,
+  comparison, `toString` and clone/extract/delete/insert/surround algorithms over the node tree,
+  and `Selection` holds the one `Range` it was given. Ranges are **not live** — a mutation made
+  outside a range's own methods does not move its boundary points — no `selectionchange` event
+  fires, and the geometry methods stay zero stubs.
+
 The tool inventory now stands at **18 tools** (the per-phase counts in the roadmap
 above are historical milestones): `read`, `browse`, `links`, `forms`, `find`,
 `site`, `click`, `submit_form`, `controls`, `interact`, `data`, `extract`,
@@ -865,7 +936,16 @@ TLS-says-Chrome / h2-says-Go mismatch no longer stands out. **Still deferred**
 *order*, `INITIAL_WINDOW_SIZE`, `ENABLE_PUSH`, the connection `WINDOW_UPDATE`, and
 the `:method :authority :scheme :path` pseudo-header order — stock
 `x/net/http2` can't control these, and over HTTP/2 Go still owns header ordering
-(only header presence/values align, not order). Cloudflare-Turnstile / interactive
+(only header presence/values align, not order). The path runs on `net/http`'s own HTTP/2 client
+(`Transport.NewClientConn`), not the `x/net/http2` client API that `x/net` v0.63
+deprecated. That needed Go 1.27, where `Transport.DialTLSContext` accepts any
+connection exposing a `crypto/tls` `ConnectionState`; a small adapter around the utls
+connection provides it, and utls still performs the handshake. One internal detail is
+relied on: `http.HTTP2Config` has no `MaxHeaderListSize`, so the Chrome value is
+reached through `Transport.MaxResponseHeaderBytes` minus the 320 bytes net/http adds.
+`TestTLSMimicH2Settings` pins the full opening frames on the wire (SETTINGS order and
+values, the connection `WINDOW_UPDATE`, pseudo-header order) and fails if a toolchain
+bump changes any of it. Cloudflare-Turnstile / interactive
 JS challenges remain a non-goal (would need a `chromedp` escape hatch, which breaks
 the pure-Go / no-Chromium constraint).
 
@@ -881,6 +961,9 @@ the pure-Go / no-Chromium constraint).
   which stays out of scope.
 - **goja goroutine-safety**: a runtime is single-goroutine; concurrency is
   handled by a pool, capped separately from fetch concurrency.
-- **Output token budget**: whole-page Markdown can be huge; `read` will paginate
-  and default to article-mode extraction. Never return an unbounded blob.
-- **Anti-bot / TLS fingerprint**: realistic UA/headers first; utls opt-in later.
+- **Output token budget**: whole-page Markdown can be huge; `read` paginates
+  via an opaque cursor (`internal/tokens`) and defaults to article-mode
+  extraction. Never return an unbounded blob.
+- **Anti-bot / TLS fingerprint**: realistic UA/headers by default; the utls Chrome
+  ClientHello and tuned h2 persona are opt-in via `--tls-mimic` (limits in the
+  anti-bot paragraph above).

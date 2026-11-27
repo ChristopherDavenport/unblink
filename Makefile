@@ -1,6 +1,6 @@
 # unblink — pure-Go "browser for AI"
 #
-# The official MCP SDK requires Go >= 1.25, newer than the Go that may be
+# The dependencies require Go >= 1.27, possibly newer than the Go that may be
 # installed locally. We set GOTOOLCHAIN=auto so the go command downloads and
 # uses the toolchain pinned in go.mod automatically, without touching your
 # global `go env` configuration.
@@ -58,6 +58,7 @@ fuzz:
 	go test ./internal/dom -run '^$$' -fuzz '^FuzzParseExtract$$' -fuzztime $(FUZZTIME)
 	go test ./internal/reduce -run '^$$' -fuzz '^FuzzReduce$$' -fuzztime $(FUZZTIME)
 	go test ./internal/content/pdf -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
+	go test ./internal/content/feed -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
 	go test ./internal/robots -run '^$$' -fuzz '^FuzzParse$$' -fuzztime $(FUZZTIME)
 	go test ./internal/tokens -run '^$$' -fuzz '^FuzzPaginateCursor$$' -fuzztime $(FUZZTIME)
 

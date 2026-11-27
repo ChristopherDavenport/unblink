@@ -139,7 +139,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.installCSPEvalGate() // CSP unsafe-eval gate before page scripts
 		b.runScripts(scripts)
 		if len(modules) > 0 {
-			b.runModules(modules, parseImportMap(doc))
+			b.runModules(modules)
 		}
 		b.injectContentScripts(webext.RunAtEnd)
 		b.fireLifecycle()
@@ -195,6 +195,9 @@ func (c *Context) Snapshot(ctx context.Context) ([]byte, uint64, error) {
 	err := c.run(ctx, false, nil, nil, func(*goja.Runtime) {
 		root := c.doc
 		if c.bridge != nil {
+			// Form-associated custom elements' submission values ride on the snapshot
+			// as attributes, removed again below so page JS never observes them.
+			defer c.bridge.reflectInternals()()
 			// Flatten shadow content (resolving <slot>) into a composed clone so the
 			// snapshot shows what a browser would render. Clone-based: the live tree
 			// keeps its separate shadow subtrees intact for the next Dispatch.
