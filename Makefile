@@ -58,6 +58,7 @@ fuzz:
 	go test ./internal/dom -run '^$$' -fuzz '^FuzzParseExtract$$' -fuzztime $(FUZZTIME)
 	go test ./internal/reduce -run '^$$' -fuzz '^FuzzReduce$$' -fuzztime $(FUZZTIME)
 	go test ./internal/content/pdf -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
+	go test ./internal/content/feed -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
 	go test ./internal/robots -run '^$$' -fuzz '^FuzzParse$$' -fuzztime $(FUZZTIME)
 	go test ./internal/tokens -run '^$$' -fuzz '^FuzzPaginateCursor$$' -fuzztime $(FUZZTIME)
 

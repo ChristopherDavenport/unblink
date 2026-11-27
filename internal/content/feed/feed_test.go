@@ -293,3 +293,67 @@ func TestConvertMalformed(t *testing.T) {
 		})
 	}
 }
+
+func jsonFeed(title, itemTitle, itemURL, text, htmlBody string) []byte {
+	return fmt.Appendf(nil, `{"version":"https://jsonfeed.org/version/1.1","title":%q,"items":[{"id":"1","title":%q,"url":%q,"content_text":%q,"content_html":%q}]}`,
+		title, itemTitle, itemURL, text, htmlBody)
+}
+
+// A '<' that does not open a tag is text: comparisons and an unclosed '<' in
+// plain-text content must survive the tag stripper.
+func TestConvertKeepsLiteralAngleBrackets(t *testing.T) {
+	for _, text := range []string{
+		"if a < b then c > d ok",
+		"score <3 and more after it",
+		"ends with a dangling <",
+	} {
+		md, _, err := feed.Convert(jsonFeed("T", "Item", "https://example.com/1", text, ""), nil)
+		if err != nil {
+			t.Fatalf("Convert(%q): %v", text, err)
+		}
+		if !strings.Contains(md, text) {
+			t.Errorf("summary lost literal text %q; got:\n%s", text, md)
+		}
+	}
+}
+
+// Block-level boundaries separate words; inline tags do not.
+func TestConvertBlockTagsSeparateText(t *testing.T) {
+	body := `<h2>Heading</h2><p>Body with <b>bo</b>ld</p><ul><li>one</li><li>two</li></ul>line<br/>break`
+	md, _, err := feed.Convert(jsonFeed("T", "Item", "https://example.com/1", "", body), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Heading Body with bold one two line break"; !strings.Contains(md, want) {
+		t.Errorf("want summary %q; got:\n%s", want, md)
+	}
+}
+
+// Titles and links must not be able to break out of the Markdown heading or
+// link syntax they are written into.
+func TestConvertEscapesTitlesAndLinks(t *testing.T) {
+	md, title, err := feed.Convert(jsonFeed("Feed\ntitle", "A [tricky]\ntitle", "https://example.com/a b(1)", "x", ""), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "Feed title" {
+		t.Errorf("title = %q, want newline collapsed", title)
+	}
+	if want := `- [A \[tricky\] title](https://example.com/a%20b%281%29)`; !strings.Contains(md, want) {
+		t.Errorf("want item line %q; got:\n%s", want, md)
+	}
+}
+
+func TestConvertResolvesRelativeLinks(t *testing.T) {
+	base, err := url.Parse("https://example.com/blog/feed.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md, _, err := feed.Convert(jsonFeed("T", "Item", "/posts/1", "x", ""), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "(https://example.com/posts/1)"; !strings.Contains(md, want) {
+		t.Errorf("want resolved link %q; got:\n%s", want, md)
+	}
+}
