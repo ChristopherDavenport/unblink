@@ -98,7 +98,7 @@ The post-fix 0.979 has no such conflict.
 | **P2** | TextDecoder/TextEncoder correctness (fatal, options, labels, surrogates) | ✅ done | encoding **0.504 → 0.873** |
 | **P3** | DOM fidelity — DOMException + CharacterData + DOMTokenList/createHTMLDocument branding + dispatchEvent; passive-by-default added later (reflected token lists still open) | ✅ done | dom **0.488 → 0.648** (measured before passive-by-default; not re-run since) |
 | **P4** | HTML tree-construction — **maintain only** | already strong | html/syntax **0.944** |
-| **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | not started | reflection/iframe-dominated; smaller real slice |
+| **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | partly done: `ElementInternals` form participation shipped ([ADR 0019](decisions/0019-form-associated-element-reflection.md)); the rest not started | not re-measured; reflection/iframe-dominated; smaller real slice |
 | **secondary** | Security-posture edges — audit-driven | ✅ closed | 6 gaps found + fixed/locked (WPT can't measure; see *Secondary*) |
 | *not ranked* | IDL reflection breadth, streams backpressure, legacy encodings, asymmetric crypto | excluded | by-design or low content-value |
 
@@ -193,6 +193,16 @@ dominated by **ARIA/`ElementInternals` IDL reflection** (`AriaMixin-string-attri
 (correctly excluded as (d)). The genuinely fixable, content-relevant slice is
 smaller and needs per-test triage; `ElementInternals` form participation is the most
 promising item. Medium value (component-heavy sites).
+
+**Progress:** form participation is implemented (`internal/js/forminternals.go`):
+`static formAssociated`, a real `attachInternals()`, `setFormValue`, `form`/`labels`,
+the validity API, `formAssociatedCallback`/`formDisabledCallback`/`formResetCallback`,
+and participation in `form.elements`, `new FormData(form)` and submission. The value
+also reaches unblink's own `forms`/`submit_form` tools by tree reflection (ADR 0019).
+The custom-elements score has not been re-run since. Still open in P5: the ARIA
+reflection properties are stored state only (they do not feed accessible names),
+`:state()`, `form="id"` association, `formStateRestoreCallback` (never called), and
+`adoptedCallback`.
 
 ### Secondary — security-posture parity (measured: largely *not* client-side-measurable)
 

@@ -275,7 +275,11 @@ not `doFetch`).
   resolve through one `bridge.moduleResolve` on every path — static bundling, registry
   deps, dynamic `import()`; a classic script's or non-literal `import()` uses the
   document base as referrer, only the first import map is read, and its `integrity`
-  key is not handled. Add a new
+  key is not handled; 0019 is form-associated custom element reflection (the engine
+  stamps an `ElementInternals` submission value onto the extraction-bound tree as
+  `data-unblink-form-value`/`-invalid` — names in `internal/page` — so `dom` form
+  extraction sees design-system controls without reading the JS heap; never visible
+  to page JS). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)

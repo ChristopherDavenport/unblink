@@ -637,7 +637,7 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   (over the Phase-24 Streams), and `disconnectedCallback` (fired from a new `onMutate`→
   `disconnectTree` removal hook). **STUB** — `document.fonts`/`FontFace` (`ready` resolves),
   `Element.animate`/`Animation`/`KeyframeEffect` (finished animation, `onfinish` via the wrapped
-  timer), `attachInternals`/`ElementInternals`, the Navigation API (`navigate` fires a `navigate`
+  timer), `attachInternals`/`ElementInternals` (a stub in this phase; real form participation came later, ADR 0019), the Navigation API (`navigate` fires a `navigate`
   event whose `intercept({handler})` runs the router's view update; same-document only),
   `cookieStore` (over `document.cookie`), and `reportError`. Regression nets:
   `internal/js/webapi_tier2_test.go` + `js-api-smoke` markers `api-18`…`api-25`. Also **broad

@@ -16,6 +16,17 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   Limits: a classic script's `import()` and a non-literal `import()` in a bundled
   module use the document base as referrer; only the first import map is read; the
   import map `"integrity"` key is not handled.
+- **Form-associated custom elements.** `ElementInternals` is real for elements defined
+  with `static formAssociated = true`: `setFormValue`, `form`, `labels`, the validity
+  API (`setValidity`, `checkValidity`, `reportValidity`), `states`, and the
+  `formAssociatedCallback`/`formDisabledCallback`/`formResetCallback` reactions. Such an
+  element takes part in `form.elements`, `new FormData(form)`, form submission and
+  form validation, and its value appears in the `forms` tool and is sent by
+  `submit_form` ([ADR 0019](docs/decisions/0019-form-associated-element-reflection.md)).
+  `attachInternals()` now throws `NotSupportedError` on a non-custom element or a
+  second call, as browsers do. `form.reset()` is new, and `requestSubmit()` validates
+  first unless `novalidate`. Not implemented: `formStateRestoreCallback`, `:state()`,
+  `form="id"` association, reflection of `File` values to the `forms` tool.
 - **Passive-by-default touch/wheel listeners.** `touchstart`/`touchmove`/`wheel`/
   `mousewheel` listeners on window, document, `<html>` and `<body>` are passive unless
   registered with an explicit `passive: false`, as the DOM Standard specifies, so a

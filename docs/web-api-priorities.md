@@ -158,8 +158,10 @@ Regression nets for the shipped items: `internal/js/webapi_tier2_test.go` and th
 - ✅ **`Element.animate()` / Web Animations (`Animation`/`KeyframeEffect`)** (Phase 25) — a
   finished animation; `finished`/`ready` resolve and `onfinish` fires once via the wrapped timer.
 - ✅ **Custom-element lifecycle + `ElementInternals`** (Phase 25) — `disconnectedCallback` now
-  fires on removal (Go-side hook in `onMutate`→`disconnectTree`), and `attachInternals()` returns
-  an inert `ElementInternals`. *`adoptedCallback` deferred* (needs cross-document adoption, which
+  fires on removal (Go-side hook in `onMutate`→`disconnectTree`), and `attachInternals()` returned
+  an inert `ElementInternals`. That stub has since been replaced by real form participation for
+  form-associated custom elements (`internal/js/forminternals.go`,
+  [ADR 0019](decisions/0019-form-associated-element-reflection.md)). *`adoptedCallback` deferred* (needs cross-document adoption, which
   the single-document engine barely exercises).
 - ✅ **Navigation API** (Phase 25) — `navigation.navigate`/`currentEntry`/`entries`, and a
   `navigate` event whose `intercept({handler})` runs the router's view update. Same-document
