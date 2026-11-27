@@ -415,8 +415,13 @@ func (c *Client) Jar() http.CookieJar { return c.http.Jar }
 // than a parsed page.
 type Result struct {
 	Status int
-	Header http.Header
-	Body   []byte
+	// StatusText is the reason phrase the server sent on an HTTP/1.x status
+	// line ("Not Found"). It is empty for HTTP/2 and later, which have no reason
+	// phrase — Go fills http.Response.Status from a table there, and passing
+	// that on would invent text the server never sent.
+	StatusText string
+	Header     http.Header
+	Body       []byte
 	// Raw is the response body after content-encoding decode but BEFORE the
 	// charset→UTF-8 transcode (i.e. the octets the server actually sent). It is
 	// what Subresource Integrity must hash — hashing the transcoded Body would
@@ -441,7 +446,7 @@ func (c *Client) Fetch(ctx context.Context, method, rawURL string, headers map[s
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	status, header, respBody, raw, finalURL, err := c.roundTrip(req)
+	status, statusText, header, respBody, raw, finalURL, err := c.roundTrip(req)
 	if err != nil {
 		return nil, err
 	}
@@ -449,14 +454,24 @@ func (c *Client) Fetch(ctx context.Context, method, rawURL string, headers map[s
 	if finalURL != nil {
 		fu = finalURL.String()
 	}
-	return &Result{Status: status, Header: header, Body: respBody, Raw: raw, FinalURL: fu}, nil
+	return &Result{Status: status, StatusText: statusText, Header: header, Body: respBody, Raw: raw, FinalURL: fu}, nil
+}
+
+// reasonPhrase returns the status line's reason phrase for an HTTP/1.x
+// response and "" otherwise (see Result.StatusText).
+func reasonPhrase(resp *http.Response) string {
+	if resp.ProtoMajor != 1 {
+		return ""
+	}
+	_, phrase, _ := strings.Cut(resp.Status, " ")
+	return strings.TrimSpace(phrase)
 }
 
 // do sends req and decodes the response into a *page.Page. The body is
 // charset-decoded to UTF-8 for textual content types and left as raw
 // decompressed bytes otherwise.
 func (c *Client) do(req *http.Request) (*page.Page, error) {
-	status, header, body, _, finalURL, err := c.roundTrip(req)
+	status, _, header, body, _, finalURL, err := c.roundTrip(req)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +490,7 @@ func (c *Client) do(req *http.Request) (*page.Page, error) {
 // limiting and retry-with-backoff), decompresses (gzip/brotli/deflate), and
 // decodes the body to UTF-8. It returns both the decoded body and the raw
 // pre-transcode bytes (the 4th value) — see Result.Raw.
-func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, []byte, *url.URL, error) {
+func (c *Client) roundTrip(req *http.Request) (int, string, http.Header, []byte, []byte, *url.URL, error) {
 	c.setHeaders(req)
 	ctx := req.Context()
 	start := time.Now()
@@ -484,7 +499,7 @@ func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, []byte,
 	var lastErr error
 	for attempt := 0; ; attempt++ {
 		if err := c.limiter.Wait(ctx, req.URL.Hostname()); err != nil {
-			return 0, nil, nil, nil, nil, err
+			return 0, "", nil, nil, nil, nil, err
 		}
 		if attempt > 0 && req.GetBody != nil {
 			if b, err := req.GetBody(); err == nil {
@@ -503,18 +518,18 @@ func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, []byte,
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
-			return 0, nil, nil, nil, nil, ctx.Err()
+			return 0, "", nil, nil, nil, nil, ctx.Err()
 		}
 	}
 	if lastErr != nil {
 		slog.Warn("fetch error", "method", req.Method, "url", redactURL(req.URL), "err", lastErr.Error())
-		return 0, nil, nil, nil, nil, fmt.Errorf("fetch: %s %s: %w", req.Method, redactURL(req.URL), lastErr)
+		return 0, "", nil, nil, nil, nil, fmt.Errorf("fetch: %s %s: %w", req.Method, redactURL(req.URL), lastErr)
 	}
 	defer resp.Body.Close()
 
 	decoded, err := decodeBody(resp)
 	if err != nil {
-		return 0, nil, nil, nil, nil, fmt.Errorf("fetch: decompress: %w", err)
+		return 0, "", nil, nil, nil, nil, fmt.Errorf("fetch: decompress: %w", err)
 	}
 	// Read the decompressed body into memory under a hard cap (reading one byte
 	// past the limit lets us detect an over-cap body). Capping here bounds memory
@@ -523,14 +538,14 @@ func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, []byte,
 	limit := c.maxBytes
 	raw, err := io.ReadAll(io.LimitReader(decoded, limit+1))
 	if err != nil {
-		return 0, nil, nil, nil, nil, fmt.Errorf("fetch: read body: %w", err)
+		return 0, "", nil, nil, nil, nil, fmt.Errorf("fetch: read body: %w", err)
 	}
 	if int64(len(raw)) > limit {
-		return 0, nil, nil, nil, nil, fmt.Errorf("fetch: response body exceeds max bytes (%d)", limit)
+		return 0, "", nil, nil, nil, nil, fmt.Errorf("fetch: response body exceeds max bytes (%d)", limit)
 	}
 	if len(raw) == 0 {
 		// Empty body (e.g. a HEAD request or 204 No Content): nothing to decode.
-		return resp.StatusCode, resp.Header, nil, nil, resp.Request.URL, nil
+		return resp.StatusCode, reasonPhrase(resp), resp.Header, nil, nil, resp.Request.URL, nil
 	}
 	// Only charset-decode textual bodies. Running charset.NewReader over a PDF,
 	// image, or other binary transcodes it as if it were text and corrupts the
@@ -547,7 +562,7 @@ func (c *Client) roundTrip(req *http.Request) (int, http.Header, []byte, []byte,
 		// a charset quirk.
 	}
 	slog.Debug("fetch", "method", req.Method, "url", redactURL(req.URL), "status", resp.StatusCode, "bytes", len(body), "dur", time.Since(start))
-	return resp.StatusCode, resp.Header, body, raw, resp.Request.URL, nil
+	return resp.StatusCode, reasonPhrase(resp), resp.Header, body, raw, resp.Request.URL, nil
 }
 
 func (c *Client) setHeaders(req *http.Request) {
