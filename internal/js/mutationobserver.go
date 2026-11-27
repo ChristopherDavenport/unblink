@@ -58,6 +58,14 @@ func (b *bridge) onMutate(rec mutationRecord) {
 		if rec.typ == "attributes" && rec.attr == "disabled" {
 			b.syncFACETree(rec.target)
 		}
+		// form="id": the attribute itself changing re-associates the element, and so
+		// does anything that changes which element the id names.
+		if rec.typ == "attributes" && rec.attr == "form" {
+			if _, ok := b.faces[rec.target]; ok {
+				b.syncFACE(rec.target)
+			}
+		}
+		b.syncFormRefs(rec)
 	}
 	if len(b.observers) == 0 {
 		return

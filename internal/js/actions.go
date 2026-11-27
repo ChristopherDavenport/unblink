@@ -115,7 +115,7 @@ func (b *bridge) dispatchKey(n *html.Node, typ, key string) {
 	// Implicit form submission: Enter on a control in a form submits it unless a
 	// handler canceled the keydown or keypress.
 	if info.key == "Enter" && downOK && pressOK {
-		if form := ancestorForm(n); form != nil {
+		if form := b.formOwner(n); form != nil {
 			b.submitForm(form, true)
 		}
 	}

@@ -1997,8 +1997,10 @@ const preludeAPIJS = `
   // CustomStateSet and the ARIA mixin live here; every question about the tree
   // (form owner, labels, disabled, the form* lifecycle callbacks, form.elements,
   // and reflecting the value for extraction) is Go's — see forminternals.go.
-  // Not modelled: the :state() selector, ARIA defaults feeding the accessible name,
-  // and formStateRestoreCallback (no session restore to trigger it).
+  // The ARIA defaults extraction reads and the custom states are pushed to Go as they
+  // change (internalsstate.go): one feeds unblink's accessible names and control
+  // state, the other the :state() selector. Not modelled: formStateRestoreCallback
+  // (no session restore to trigger it).
   var faceEntriesOf = null; // el → its entry-list pairs, or null when not form-associated
   (function () {
     var hook = window.__unblinkFormInternals;
@@ -2028,10 +2030,11 @@ const preludeAPIJS = `
 
     function CustomStateSet() { illegal(); }
     var CS = CustomStateSet.prototype;
-    CS.add = function (v) { state(this).set.add(String(v)); return this; };
-    CS['delete'] = function (v) { return state(this).set['delete'](String(v)); };
+    function pushStates(s) { hook.setStates(s.host, Array.from(s.set)); }
+    CS.add = function (v) { var s = state(this); s.set.add(String(v)); pushStates(s); return this; };
+    CS['delete'] = function (v) { var s = state(this), had = s.set['delete'](String(v)); pushStates(s); return had; };
     CS.has = function (v) { return state(this).set.has(String(v)); };
-    CS.clear = function () { state(this).set.clear(); };
+    CS.clear = function () { var s = state(this); s.set.clear(); pushStates(s); };
     CS.forEach = function (cb, thisArg) { var self = this; state(this).set.forEach(function (v) { cb.call(thisArg, v, v, self); }); };
     CS.values = CS.keys = function () { return state(this).set.values(); };
     CS.entries = function () { return state(this).set.entries(); };
@@ -2101,14 +2104,23 @@ const preludeAPIJS = `
     // No validation UI exists to report through, so reportValidity is checkValidity.
     EI.checkValidity = EI.reportValidity = function () { return hook.checkValidity(formState(this).host); };
 
-    // ARIAMixin: default accessibility semantics, held as settable/readable state.
+    // ARIAMixin: default accessibility semantics. Go keeps the ones extraction
+    // reads, under their attribute names (ariaLabel → aria-label), and ignores the rest.
     ['role', 'ariaAtomic', 'ariaAutoComplete', 'ariaBrailleLabel', 'ariaBrailleRoleDescription', 'ariaBusy', 'ariaChecked', 'ariaColCount', 'ariaColIndex', 'ariaColIndexText', 'ariaColSpan', 'ariaCurrent', 'ariaDescription', 'ariaDisabled', 'ariaExpanded', 'ariaHasPopup', 'ariaHidden', 'ariaInvalid', 'ariaKeyShortcuts', 'ariaLabel', 'ariaLevel', 'ariaLive', 'ariaModal', 'ariaMultiLine', 'ariaMultiSelectable', 'ariaOrientation', 'ariaPlaceholder', 'ariaPosInSet', 'ariaPressed', 'ariaReadOnly', 'ariaRelevant', 'ariaRequired', 'ariaRoleDescription', 'ariaRowCount', 'ariaRowIndex', 'ariaRowIndexText', 'ariaRowSpan', 'ariaSelected', 'ariaSetSize', 'ariaSort', 'ariaValueMax', 'ariaValueMin', 'ariaValueNow', 'ariaValueText'].forEach(function (name) {
       accessor(EI, name, function () { var v = state(this).aria[name]; return v === undefined ? null : v; },
-        function (v) { state(this).aria[name] = (v === null || v === undefined) ? null : String(v); });
+        function (v) {
+          var s = state(this);
+          s.aria[name] = (v === null || v === undefined) ? null : String(v);
+          hook.setAria(s.host, name === 'role' ? name : 'aria-' + name.slice(4).toLowerCase(), s.aria[name]);
+        });
     });
     ['ariaActiveDescendantElement', 'ariaControlsElements', 'ariaDescribedByElements', 'ariaDetailsElements', 'ariaErrorMessageElements', 'ariaFlowToElements', 'ariaLabelledByElements', 'ariaOwnsElements'].forEach(function (name) {
       accessor(EI, name, function () { var v = state(this).aria[name]; return v === undefined ? null : v; },
-        function (v) { state(this).aria[name] = (v === undefined) ? null : v; });
+        function (v) {
+          var s = state(this);
+          s.aria[name] = (v === undefined) ? null : v;
+          if (name === 'ariaLabelledByElements') hook.setLabelledBy(s.host, s.aria[name]);
+        });
     });
 
     HP.attachInternals = function () {
@@ -2122,7 +2134,7 @@ const preludeAPIJS = `
       var s = { host: this, value: null, state: null, flags: {}, message: '', anchor: null, validity: validity, states: states, aria: {} };
       priv.set(it, s);
       priv.set(validity, s);
-      priv.set(states, { set: new Set() });
+      priv.set(states, { set: new Set(), host: this });
       attached.set(this, it);
       return it;
     };

@@ -134,9 +134,14 @@ type bridge struct {
 	upgradingStack       []*html.Node
 	// Form-associated custom elements (forminternals.go): the definitions that
 	// declared `static formAssociated` / disabled internals, and per-element state.
-	formAssoc            map[string]bool
-	internalsDisabled    map[string]bool
-	faces                map[*html.Node]*faceState
+	formAssoc         map[string]bool
+	internalsDisabled map[string]bool
+	faces             map[*html.Node]*faceState
+	faceFormRefs      []*html.Node // form-associated custom elements carrying a form="id" attribute
+	// ElementInternals state every custom element can hold (internalsstate.go): its
+	// default ARIA semantics and its CustomStateSet. Both maps are created on first use.
+	ariaDefaults         map[*html.Node]*ariaDefaults
+	customStates         map[*html.Node][]string
 	upgradeCount         int // total custom-element upgrades; bounds re-entrant upgrade blowup
 	whenDefinedResolvers map[string][]func(interface{}) error
 	reflectConstructFn   goja.Callable
@@ -517,10 +522,10 @@ func (b *bridge) documentObject() *goja.Object {
 		return b.wrap(findByID(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("querySelector", func(call goja.FunctionCall) goja.Value {
-		return b.wrap(query(b.doc, call.Argument(0).String()))
+		return b.wrap(b.pageQuery(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("querySelectorAll", func(call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(b.doc, call.Argument(0).String()))
+		return b.nodeList(b.pageQueryAll(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("getElementsByTagName", func(call goja.FunctionCall) goja.Value {
 		return b.nodeList(queryAll(b.doc, call.Argument(0).String()))
@@ -681,10 +686,10 @@ func (b *bridge) documentFacade(docNode *html.Node) goja.Value {
 		return b.wrap(findByID(docNode, call.Argument(0).String()))
 	})
 	_ = d.Set("querySelector", func(call goja.FunctionCall) goja.Value {
-		return b.wrap(query(docNode, call.Argument(0).String()))
+		return b.wrap(b.pageQuery(docNode, call.Argument(0).String()))
 	})
 	_ = d.Set("querySelectorAll", func(call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(docNode, call.Argument(0).String()))
+		return b.nodeList(b.pageQueryAll(docNode, call.Argument(0).String()))
 	})
 	_ = d.Set("appendChild", func(call goja.FunctionCall) goja.Value {
 		if n := b.unwrap(call.Argument(0)); n != nil && n.Parent == nil {

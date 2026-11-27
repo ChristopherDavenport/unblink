@@ -135,17 +135,6 @@ func namespaceURIFor(label string) string {
 	return "http://www.w3.org/1999/xhtml"
 }
 
-func matchesSelector(n *html.Node, selector string) bool {
-	if n.Type != html.ElementNode {
-		return false
-	}
-	sel, err := compileSelector(selector)
-	if err != nil {
-		return false
-	}
-	return sel.Match(n)
-}
-
 // setAttrMut sets an attribute, records the mutation, and notifies an upgraded
 // custom element's attributeChangedCallback when the attribute is observed.
 func (b *bridge) setAttrMut(n *html.Node, key, val string) {

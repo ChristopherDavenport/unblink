@@ -179,6 +179,15 @@ const (
 	// FormInvalidAttr is present when the element fails constraint validation
 	// (ElementInternals.setValidity).
 	FormInvalidAttr = "data-unblink-form-invalid"
+	// AriaDefaultPrefix prefixes a custom element's default ARIA semantics, set
+	// through ElementInternals (internals.role, internals.ariaLabel, …): the prefix
+	// plus "role" or the aria-* attribute name, e.g. data-unblink-default-aria-label.
+	// A default applies only where the element has no such attribute of its own.
+	AriaDefaultPrefix = "data-unblink-default-"
+	// AriaDefaultLabelledByAttr carries the text of the elements named by
+	// internals.ariaLabelledByElements, which are object references rather than ids
+	// and so have no aria-labelledby spelling.
+	AriaDefaultLabelledByAttr = "data-unblink-default-labelledby-text"
 )
 
 // Form is an HTML form and its fields.

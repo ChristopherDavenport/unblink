@@ -31,10 +31,17 @@ var (
 	selHeadings = cascadia.MustCompile("h1, h2, h3, h4, h5, h6")
 	selPara     = cascadia.MustCompile("p")
 	// Non-anchor interactive controls. a[href] is covered by links/click; this is
-	// the surface that needs real DOM-event dispatch (the interact tool).
+	// the surface that needs real DOM-event dispatch (the interact tool). The last
+	// two are a custom element whose ElementInternals default role is button/tab
+	// (an explicit role attribute wins, so it must be absent).
 	selInteractive = cascadia.MustCompile(
 		"button, [role=button], input[type=submit], input[type=button], " +
-			"input[type=reset], [onclick], [tabindex], summary, [role=tab]")
+			"input[type=reset], [onclick], [tabindex], summary, [role=tab], " +
+			"[" + page.AriaDefaultPrefix + "role=button]:not([role]), " +
+			"[" + page.AriaDefaultPrefix + "role=tab]:not([role])")
+	// A field that names its form owner by id rather than by ancestry.
+	selFormRef = cascadia.MustCompile(
+		"input[form], select[form], textarea[form], [" + page.FormValueAttr + "][form]")
 )
 
 // Extract walks p.Doc and fills p.Meta (title, description, links, forms, images,
@@ -175,6 +182,7 @@ func extractLinks(doc *html.Node, base *url.URL) []page.Link {
 
 func extractForms(doc *html.Node, base, pageURL *url.URL, res *idResolver, minter *idMinter) []page.Form {
 	var out []page.Form
+	fields := formFields(doc, res)
 	for _, f := range selForm.MatchAll(doc) {
 		action := resolveURL(base, attr(f, "action"))
 		if action == "" && pageURL != nil {
@@ -191,7 +199,7 @@ func extractForms(doc *html.Node, base, pageURL *url.URL, res *idResolver, minte
 			Method:  method,
 			Enctype: strings.ToLower(strings.TrimSpace(attr(f, "enctype"))),
 		}
-		for _, fld := range selField.MatchAll(f) {
+		for _, fld := range fields(f) {
 			if isCustomField(fld) {
 				form.Fields = append(form.Fields, extractCustomFields(fld, res, minter)...)
 				continue
@@ -203,12 +211,42 @@ func extractForms(doc *html.Node, base, pageURL *url.URL, res *idResolver, minte
 	return out
 }
 
+// formFields returns the lookup from a form to its fields in tree order. A field
+// belongs to its form owner: the form its form="id" attribute names (the first
+// element with that id, if it is a form — otherwise it has no owner), else its
+// nearest ancestor form. The JS engine's form.elements applies the same rule.
+func formFields(doc *html.Node, res *idResolver) func(form *html.Node) []*html.Node {
+	if selFormRef.MatchFirst(doc) == nil {
+		// No field names its form: every form owns exactly its descendants.
+		return selField.MatchAll
+	}
+	owned := map[*html.Node][]*html.Node{}
+	for _, fld := range selField.MatchAll(doc) {
+		var owner *html.Node
+		if id, ok := lookupAttr(fld, "form"); ok {
+			if t := res.get(id); t != nil && t.Data == "form" {
+				owner = t
+			}
+		} else {
+			for p := fld.Parent; p != nil && owner == nil; p = p.Parent {
+				if p.Type == html.ElementNode && p.Data == "form" {
+					owner = p
+				}
+			}
+		}
+		if owner != nil {
+			owned[owner] = append(owned[owner], fld)
+		}
+	}
+	return func(form *html.Node) []*html.Node { return owned[form] }
+}
+
 func extractField(n *html.Node, res *idResolver, minter *idMinter) page.Field {
 	f := page.Field{
 		Name:        attr(n, "name"),
 		Value:       attr(n, "value"),
 		Placeholder: attr(n, "placeholder"),
-		Required:    hasAttr(n, "required") || strings.EqualFold(attr(n, "aria-required"), "true"),
+		Required:    hasAttr(n, "required") || strings.EqualFold(ariaAttr(n, "aria-required"), "true"),
 		Disabled:    hasAttr(n, "disabled"),
 		Invalid:     ariaInvalid(n),
 	}
@@ -262,9 +300,11 @@ func extractCustomFields(n *html.Node, res *idResolver, minter *idMinter) []page
 	base := page.Field{
 		Type:        n.Data,
 		Placeholder: attr(n, "placeholder"),
-		Required:    hasAttr(n, "required") || strings.EqualFold(attr(n, "aria-required"), "true"),
+		Required:    hasAttr(n, "required") || strings.EqualFold(ariaAttr(n, "aria-required"), "true"),
 		Disabled:    hasAttr(n, "disabled"),
 		Invalid:     ariaInvalid(n) || hasAttr(n, page.FormInvalidAttr),
+		// A custom checkbox/switch states its checkedness through ARIA.
+		Checked: normTristate(ariaAttr(n, "aria-checked"), false, false),
 	}
 	label := accessibleName(n, res)
 	var out []page.Field
@@ -383,7 +423,7 @@ func isLandmarkCandidate(n *html.Node) bool {
 	case "header", "footer", "nav", "main", "aside", "section", "form":
 		return true
 	}
-	switch strings.ToLower(strings.TrimSpace(attr(n, "role"))) {
+	switch strings.ToLower(strings.TrimSpace(ariaAttr(n, "role"))) {
 	case "banner", "contentinfo", "navigation", "main", "complementary", "region", "search", "form":
 		return true
 	}
@@ -396,7 +436,7 @@ func isLandmarkCandidate(n *html.Node) bool {
 // (ARIA scoping). form and section/[role=region] are landmarks only when they
 // carry an explicit accessible name.
 func landmarkRole(n *html.Node, res *idResolver) string {
-	switch strings.ToLower(strings.TrimSpace(attr(n, "role"))) {
+	switch strings.ToLower(strings.TrimSpace(ariaAttr(n, "role"))) {
 	case "banner":
 		return "banner"
 	case "navigation":
@@ -524,7 +564,7 @@ func extractInteractive(doc *html.Node, base *url.URL, res *idResolver, minter *
 		}
 		seen[n] = true
 		name := accessibleName(n, res)
-		role := attr(n, "role")
+		role := ariaAttr(n, "role")
 		kind := controlKind(n)
 		c := page.Control{
 			Text:     name,
@@ -546,7 +586,7 @@ func extractInteractive(doc *html.Node, base *url.URL, res *idResolver, minter *
 // controls.
 func applyControlState(c *page.Control, n *html.Node, base *url.URL) {
 	var ariaChecked, ariaExpanded, ariaPressed, ariaSelected, value, placeholder, href, typ string
-	var hasChecked, hasRequired, ariaRequired, invalid, disabled bool
+	var hasChecked, hasRequired, ariaRequired, invalid, disabled, nativeDisabled bool
 	for _, a := range n.Attr {
 		switch a.Key {
 		case "aria-checked":
@@ -566,7 +606,7 @@ func applyControlState(c *page.Control, n *html.Node, base *url.URL) {
 		case "aria-invalid":
 			invalid = !strings.EqualFold(strings.TrimSpace(a.Val), "false")
 		case "disabled":
-			disabled = true
+			disabled, nativeDisabled = true, true
 		case "aria-disabled":
 			if strings.EqualFold(a.Val, "true") {
 				disabled = true
@@ -580,6 +620,15 @@ func applyControlState(c *page.Control, n *html.Node, base *url.URL) {
 		case "type":
 			typ = a.Val
 		}
+	}
+	if isCustomTag(n) {
+		// A custom element may state these through ElementInternals instead; re-read
+		// the ARIA ones with the explicit-attribute-else-default order.
+		ariaChecked, ariaExpanded = ariaAttr(n, "aria-checked"), ariaAttr(n, "aria-expanded")
+		ariaPressed, ariaSelected = ariaAttr(n, "aria-pressed"), ariaAttr(n, "aria-selected")
+		ariaRequired = strings.EqualFold(ariaAttr(n, "aria-required"), "true")
+		invalid = ariaInvalid(n)
+		disabled = nativeDisabled || strings.EqualFold(ariaAttr(n, "aria-disabled"), "true")
 	}
 	nativeChecked := hasChecked && n.Data == "input" && isCheckableType(typ)
 	c.Checked = normTristate(ariaChecked, true, nativeChecked)
@@ -646,7 +695,7 @@ func controlKind(n *html.Node) string {
 			return "button"
 		}
 	}
-	switch strings.ToLower(attr(n, "role")) {
+	switch strings.ToLower(ariaAttr(n, "role")) {
 	case "button":
 		return "role-button"
 	case "tab":

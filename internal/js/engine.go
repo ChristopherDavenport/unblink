@@ -349,7 +349,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	if b != nil {
 		// Reflect form-associated custom elements' submission values onto the tree
 		// first, so the composed clones carry them (the runtime is gone: no undo).
-		_ = b.reflectFormValues()
+		_ = b.reflectInternals()
 		b.ComposeShadowInto(doc)
 		// Cosmetic filtering: detach extension-hidden ad markup from the frozen tree so
 		// it never reaches the Markdown. Post-Terminate (like shadow composition) means

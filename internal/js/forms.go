@@ -48,29 +48,76 @@ func (b *bridge) htmlCollection(nodes []*html.Node) *goja.Object {
 	return o
 }
 
-// formControls returns a form's submittable controls in document order. Kept to the
+// formControls returns a form's submittable controls in tree order: the
 // form-associated elements a submit serializes — including form-associated custom
-// elements (forminternals.go); nested forms are not a real thing.
+// elements (forminternals.go) — whose form owner is this form. That is its
+// descendants, minus any whose form="id" attribute names something else, plus
+// controls elsewhere in the tree whose form attribute names this form's id.
 func (b *bridge) formControls(form *html.Node) []*html.Node {
-	var out []*html.Node
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			if c.Type == html.ElementNode {
-				switch c.Data {
-				case "input", "select", "textarea", "button", "fieldset", "output":
-					out = append(out, c)
-				default:
-					if b.formAssoc[c.Data] {
-						out = append(out, c)
-					}
-				}
-			}
-			walk(c)
+	// A form attribute only counts in a connected tree, and only the first element
+	// carrying an id can be named by it. Controls outside the form are only worth
+	// looking for when the form can be named at all.
+	connected := b.isConnected(form)
+	root, id := form, ""
+	if connected {
+		if fid := getAttr(form, "id"); fid != "" && findByID(treeRoot(form), fid) == form {
+			root, id = treeRoot(form), fid
 		}
 	}
-	walk(form)
+	var out []*html.Node
+	var walk func(n, nearest *html.Node)
+	walk = func(n, nearest *html.Node) {
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if c.Type != html.ElementNode {
+				continue
+			}
+			if b.isListed(c) {
+				owned := nearest == form
+				if connected && hasAttr(c, "form") {
+					owned = id != "" && getAttr(c, "form") == id
+				}
+				if owned {
+					out = append(out, c)
+				}
+			}
+			if c.Data == "form" {
+				walk(c, c)
+			} else {
+				walk(c, nearest)
+			}
+		}
+	}
+	if root == form {
+		walk(form, form)
+	} else {
+		walk(root, nil)
+	}
 	return out
+}
+
+// isListed reports whether n is a control form.elements lists.
+func (b *bridge) isListed(n *html.Node) bool {
+	switch n.Data {
+	case "input", "select", "textarea", "button", "fieldset", "output":
+		return true
+	}
+	return b.formAssoc[n.Data]
+}
+
+// formOwner returns a listed control's form owner: with a form attribute in a
+// connected tree, the first element carrying that id if it is a <form> (else none,
+// with no fallback to an ancestor); otherwise the nearest ancestor <form>.
+// dom.extractForms applies the same rule to the extracted tree.
+func (b *bridge) formOwner(n *html.Node) *html.Node {
+	if hasAttr(n, "form") && b.isConnected(n) {
+		if id := getAttr(n, "form"); id != "" {
+			if f := findByID(treeRoot(n), id); f != nil && f.Data == "form" {
+				return f
+			}
+		}
+		return nil
+	}
+	return ancestorForm(n)
 }
 
 // controlValue reads a control's current submitted value: textarea uses its text,

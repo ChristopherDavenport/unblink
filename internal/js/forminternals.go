@@ -2,6 +2,7 @@ package js
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -17,8 +18,9 @@ import (
 // here (form owner, disabled-by-fieldset, labels, the lifecycle reactions, the form's
 // entry list, and the reflection onto the tree for extraction); the ElementInternals
 // object itself — validity flags, CustomStateSet, the ARIA mixin — is plain JS in
-// prelude_api.go, which pushes the two facts Go needs (the submission value and
-// whether the element is invalid) through the __unblinkFormInternals hook.
+// prelude_api.go, which pushes the facts Go needs (the submission value and whether
+// the element is invalid; its default ARIA semantics and custom states, see
+// internalsstate.go) through the __unblinkFormInternals hook.
 //
 // formStateRestoreCallback is never invoked: unblink has no session-history restore
 // or autofill, the only two triggers the standard defines for it.
@@ -36,6 +38,7 @@ type faceEntry struct {
 type faceState struct {
 	form     *html.Node
 	disabled bool
+	formRef  bool // carries a form attribute (so it is listed in bridge.faceFormRefs)
 
 	// Submission value from internals.setFormValue: none (null), a single value
 	// submitted under the element's name attribute, or a FormData entry list.
@@ -127,12 +130,19 @@ func faceWillValidate(n *html.Node) bool {
 
 // syncFACE recomputes n's form owner and disabled state and fires
 // formAssociatedCallback / formDisabledCallback for whichever changed. The owner is
-// the nearest ancestor <form> (the form="id" attribute is not honoured, matching this
-// engine's native controls); the walk stops at a shadow boundary, as the standard's
-// does.
+// formOwner's: the form named by a form="id" attribute, else the nearest ancestor
+// <form>; both stop at a shadow boundary, as the standard's do.
 func (b *bridge) syncFACE(n *html.Node) {
 	st := b.faceStateOf(n)
-	if owner := ancestorForm(n); owner != st.form {
+	if ref := hasAttr(n, "form"); ref != st.formRef {
+		st.formRef = ref
+		if ref {
+			b.faceFormRefs = append(b.faceFormRefs, n)
+		} else if i := slices.Index(b.faceFormRefs, n); i >= 0 {
+			b.faceFormRefs = slices.Delete(b.faceFormRefs, i, i+1)
+		}
+	}
+	if owner := b.formOwner(n); owner != st.form {
 		st.form = owner
 		b.invokeLifecycleArgs(n, "formAssociatedCallback", b.wrap(owner))
 	}
@@ -159,6 +169,42 @@ func (b *bridge) syncFACETree(root *html.Node) {
 		}
 	}
 	walk(root)
+}
+
+// syncFormRefs re-resolves the owner of every form-associated custom element that
+// names its form by id, after a mutation that may have changed what an id resolves
+// to: an id attribute changed, or a subtree carrying a referenced id came or went.
+func (b *bridge) syncFormRefs(rec mutationRecord) {
+	if len(b.faceFormRefs) == 0 {
+		return
+	}
+	hit := rec.typ == "attributes" && rec.attr == "id"
+	if !hit && (len(rec.added) > 0 || len(rec.removed) > 0) {
+		ids := make(map[string]bool, len(b.faceFormRefs))
+		for _, n := range b.faceFormRefs {
+			ids[getAttr(n, "form")] = true
+		}
+		var carries func(*html.Node) bool
+		carries = func(nd *html.Node) bool {
+			if nd.Type == html.ElementNode && ids[getAttr(nd, "id")] && hasAttr(nd, "id") {
+				return true
+			}
+			for c := nd.FirstChild; c != nil; c = c.NextSibling {
+				if carries(c) {
+					return true
+				}
+			}
+			return false
+		}
+		hit = slices.ContainsFunc(rec.added, carries) || slices.ContainsFunc(rec.removed, carries)
+	}
+	if !hit {
+		return
+	}
+	// A callback may re-enter and edit the list.
+	for _, n := range slices.Clone(b.faceFormRefs) {
+		b.syncFACE(n)
+	}
 }
 
 func (b *bridge) invokeLifecycleArgs(n *html.Node, name string, args ...goja.Value) {
@@ -327,7 +373,7 @@ func (b *bridge) installFormInternals() {
 	})
 	_ = h.Set("form", func(call goja.FunctionCall) goja.Value {
 		if n := el(call); n != nil {
-			return b.wrap(ancestorForm(n))
+			return b.wrap(b.formOwner(n))
 		}
 		return goja.Null()
 	})
@@ -405,6 +451,7 @@ func (b *bridge) installFormInternals() {
 		n := el(call)
 		return vm.ToValue(n == nil || n.Data != "form" || b.validateForm(n))
 	})
+	b.installInternalsState(h)
 	_ = vm.Set("__unblinkFormInternals", h)
 }
 

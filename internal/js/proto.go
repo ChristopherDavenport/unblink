@@ -471,10 +471,10 @@ func (b *bridge) installElementProto() {
 	})
 
 	b.protoMethod(p, "querySelector", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.wrap(query(n, call.Argument(0).String()))
+		return b.wrap(b.pageQuery(n, call.Argument(0).String()))
 	})
 	b.protoMethod(p, "querySelectorAll", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(n, call.Argument(0).String()))
+		return b.nodeList(b.pageQueryAll(n, call.Argument(0).String()))
 	})
 	b.protoMethod(p, "getElementsByTagName", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		return b.nodeList(queryAll(n, call.Argument(0).String()))
@@ -483,16 +483,10 @@ func (b *bridge) installElementProto() {
 		return b.nodeList(queryAll(n, "."+call.Argument(0).String()))
 	})
 	b.protoMethod(p, "matches", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return vm.ToValue(matchesSelector(n, call.Argument(0).String()))
+		return vm.ToValue(b.pageClosest(n, call.Argument(0).String(), true) != nil)
 	})
 	b.protoMethod(p, "closest", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		sel := call.Argument(0).String()
-		for a := n; a != nil; a = a.Parent {
-			if a.Type == html.ElementNode && matchesSelector(a, sel) {
-				return b.wrap(a)
-			}
-		}
-		return goja.Null()
+		return b.wrap(b.pageClosest(n, call.Argument(0).String(), false))
 	})
 
 	b.protoMethod(p, "insertAdjacentHTML", func(n *html.Node, call goja.FunctionCall) goja.Value {
