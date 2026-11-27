@@ -71,6 +71,10 @@ v0.24.0 figure with the new one.
 | `xhr` | 1047 | 151 | 878 | 18 | 0.147 | 773 → 1047 | 89 → 151 | 0.116 |
 | **TOTAL** | 88203 | 17679 | 60592 | 1056 | 0.226 | 50646 → 88203 | 8339 → 17679 | 0.185 |
 
+The stack-tip run predates the review fixes that followed it (per-observer
+`MutationObserver` queues, `isEqualNode`, the XHR handler isolation, `innerHTML`
+custom-element upgrades); those have not been re-measured.
+
 **Read this table before any earlier figure in this document.** Every measurement
 made before this one undercounted, for one reason: the engine had no
 `Element.insertAdjacentText`. testharness.js calls it while rendering its results

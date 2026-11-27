@@ -81,6 +81,33 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   `HEADERS_RECEIVED` → `LOADING` → `DONE` with `readystatechange` at each step (also
   delivered to `addEventListener` listeners); `overrideMimeType` and `responseXML`
   work; `send()` throws `InvalidStateError` outside the `OPENED` state.
+- **Next.js pages that rendered as "Application error" now render.** Three engine gaps,
+  each fatal to a page such as react.dev/learn: `Node.isEqualNode`/`isSameNode` were
+  missing (Next.js's head manager calls `isEqualNode`); `document.hasFocus` was
+  missing; and `MutationObserver` handed an observer the mutations made while it was
+  disconnected, which crashed CodeMirror 6, and never called back an observer that
+  re-observed after `disconnect()`. Records are now queued per observer at mutation
+  time, as the DOM Standard specifies.
+- **A throwing XHR event handler no longer strands the request.** Each handler and
+  listener is isolated; the exception is reported to the console and delivery
+  continues.
+- **`submit_form` sends what `forms` shows.** Repeated field names are all sent, in
+  order (only the last was sent before); an unchecked checkbox or radio contributes
+  nothing (a radio group used to post its last radio whether or not it was checked),
+  and a checked one without a `value` posts `on`. A caller-supplied value for a name
+  still replaces every entry of that name.
+- **Custom elements created through `innerHTML` are upgraded.** The setter never
+  upgraded them, in the light tree or a shadow root.
+- **`--tls-mimic` connection pool.** A burst of concurrent requests to a host with no
+  pooled connection each dialed and closed the previous connection under its
+  in-flight request, so all but one failed; they now share one dial. A connection at
+  the server's stream limit is treated as busy, not dead. A request that fails on its
+  own deadline returns that error and leaves the healthy connection pooled.
+- **Import maps:** a map inserted by a classic script before the first module loads is
+  honoured again; URLs are parsed and serialised with the WHATWG URL parser; duplicate
+  keys resolve last-wins; a map whose `imports` or `scopes` is not an object is
+  rejected. Lookups no longer scan every key, and a map is rejected above 4 MiB of
+  source, 50,000 entries or 2,000 scopes.
 - **PDF extraction stops when its request ends**
   ([ADR 0001](docs/decisions/0001-pdf-extraction-library.md), Amendment 3). The
   extraction goroutine used to keep running after the context ended or the wall-clock
@@ -95,8 +122,19 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Security
 
-- **XHR header getters hide `Set-Cookie`.** `getResponseHeader`/`getAllResponseHeaders`
-  exposed `Set-Cookie`, and with it HttpOnly cookie values, to page JS.
+- **`Set-Cookie` never reaches page JS.** Response headers handed to page script kept
+  `Set-Cookie`, so an HttpOnly cookie's value could be read through
+  `fetch()`'s `response.headers`, through `XMLHttpRequest.getResponseHeader`/
+  `getAllResponseHeaders`, and through an internal property of the XHR object.
+  `Set-Cookie` and `Set-Cookie2` are now dropped where the engine builds the response
+  object for page JS, which covers fetch and XHR alike. The cookie jar is fed below
+  that point and still stores the cookies.
+- **Import maps are gated by CSP.** An inline `<script type="importmap">` now needs
+  the same nonce/hash allowance as an inline script (`internal/js/csp.go`,
+  `cspAllowInlineElement`). Previously a non-nonced import map under
+  `script-src 'nonce-…'` was honoured and could redirect a trusted module's imports.
+  A blocked map is ignored and recorded as a CSP violation; report-only reports
+  without blocking; `--no-csp` disables the gate.
 
 ## v0.24.0 — 2026-07-06
 

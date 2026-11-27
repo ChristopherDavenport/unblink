@@ -125,7 +125,8 @@ the agent via the `requests` tool); only the page-JS *read* is denied. The layer
   IP). Hatches `--allow-private`, `--js-allow-private`. (Detailed gotcha below.)
 - **Same-Origin Policy** (ADR 0015): SOP is the default. Cross-origin *network
   reads* go through CORS; cookies are origin/domain-scoped (public-suffix jar,
-  HttpOnly hidden from `document.cookie`); **Web Storage is origin-partitioned** per
+  HttpOnly hidden from `document.cookie`, and `Set-Cookie` stripped from every
+  response object page JS sees — `responseObject` in `internal/js/async.go`); **Web Storage is origin-partitioned** per
   session (`internal/session`). The cross-*document* half (iframes/`contentWindow`,
   `window.open`/`opener`/`frames`, `postMessage`, `document.domain`, `window.name`)
   is **moot by architecture** — single-document, one runtime per render, no
@@ -140,8 +141,10 @@ the agent via the `requests` tool); only the page-JS *read* is denied. The layer
   `<meta>`) is enforced over page JS — `script-src` nonce/hash/host + `strict-dynamic`,
   `connect-src`, `unsafe-eval` (via `EvalError` shims); report-only surfaces without
   blocking. Nonces are **hidden** — captured before page JS runs and blanked in the
-  DOM (`hideNonces`), so page code can't scrape and reuse one. `internal/js/csp.go`;
-  hatch `--no-csp`.
+  DOM (`hideNonces`), so page code can't scrape and reuse one. An inline
+  `<script type="importmap">` passes the same inline-script check
+  (`cspAllowInlineElement`), so a non-nonced map cannot remap a trusted module's
+  imports. `internal/js/csp.go`; hatch `--no-csp`.
 - **SRI** (ADR 0012, default on): `integrity`-pinned scripts/modules are hashed over
   the *raw pre-transcode* bytes and blocked on mismatch. `internal/js/sri.go`; hatch
   `--no-sri`.
