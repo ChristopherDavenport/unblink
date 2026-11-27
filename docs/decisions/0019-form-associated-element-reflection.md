@@ -79,3 +79,33 @@ content, so there is no adoption to observe. Making `ownerDocument` truthful
 for those trees is its own change (sanitizers such as DOMPurify parse into
 them). `formStateRestoreCallback` stays uncalled: there is no form-state
 restoration to trigger it.
+
+## Amendment 2 (2026-11-27): owner markers, exact undo
+
+Review of the above found three places where the text and the code needed to
+change.
+
+- **Form ownership is reflected too.** Extraction resolves form owners on the
+  composed (flattened) tree, where a shadow boundary is no longer visible, so it
+  attributed a form-associated element inside a shadow root to an enclosing
+  light-DOM form that the engine, following the HTML Standard, says it does not
+  belong to. The engine now stamps `data-unblink-form-owner` on each
+  form-associated custom element, naming a `data-unblink-form-key` stamped on
+  its owner form (empty = no owner). For a stamped custom element,
+  `dom.formFields` takes that owner over its own rule. So the "one owner rule on
+  both sides" in Amendment 1 holds for native controls; for custom elements the
+  engine's answer is authoritative.
+- **Known gap, unchanged:** native controls inside a shadow root under a
+  light-DOM form. The engine gives them no form owner, while `forms` and
+  `submit_form` still list and send them by ancestry on the composed tree. Closing
+  it means stamping every native shadow control and removing fields agents see
+  today; it is left for its own change.
+- **The live-session undo restores, it does not remove.** A page can set these
+  attribute names on its own elements. Removing them after a snapshot deleted
+  the page's copy and let the page detect the snapshot. One helper (`treeStamp`)
+  now records each attribute's prior state and restores it exactly: the previous
+  value, its absence, and attribute order.
+
+The markers visible in `raw_html` of a rendered page are therefore
+`data-unblink-form-value`, `-form-invalid`, `-form-owner`, `-form-key` and the
+`data-unblink-default-*` family.
