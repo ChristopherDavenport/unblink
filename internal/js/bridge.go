@@ -208,6 +208,11 @@ type bridge struct {
 	// shares one instance of each module URL across all importers (module-map
 	// semantics), so a dependency shared by several import()s isn't duplicated.
 	reg *moduleRegistry
+
+	// importMap is the document's parsed <script type="importmap"> (nil when it has
+	// none). Set once on the loop before any page script runs and immutable after,
+	// so the off-loop module instantiate may read it.
+	importMap *importMap
 }
 
 // resetTransportBudget clears the per-dispatch download budget on the counting

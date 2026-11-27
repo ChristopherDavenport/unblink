@@ -29,7 +29,7 @@ const dynImportConcurrency = 16
 // gracefully to the "reject, don't blank the page" path.
 func (b *bridge) installDynamicImport() {
 	_ = b.vm.Set(dynImportGlobal, func(call goja.FunctionCall) goja.Value {
-		return b.importPromise(call.Argument(0).String())
+		return b.importPromise("", call.Argument(0).String())
 	})
 }
 
@@ -39,7 +39,12 @@ func (b *bridge) installDynamicImport() {
 // instantiate phase (fetch + transform the whole static graph) is bracketed by the
 // pending/keepalive window exactly like fetchPromise, so the settle poll waits for it
 // (ADR 0004); the on-loop evaluate phase runs inside importModule.
-func (b *bridge) importPromise(spec string) goja.Value {
+//
+// referrer is the importing module's URL, which anchors both relative specifiers and
+// import-map scope selection. It is "" for the global loader — an import() in a
+// classic script or a non-literal import() in a bundled module, where the calling
+// script's URL is not known — and the document base stands in.
+func (b *bridge) importPromise(referrer, spec string) goja.Value {
 	vm := b.vm
 	promise, resolve, reject := vm.NewPromise()
 
@@ -49,7 +54,7 @@ func (b *bridge) importPromise(spec string) goja.Value {
 	}
 	// Resolve on-loop: a relative specifier reads docBaseNow, which must not be
 	// touched from the off-loop goroutine (it races on-loop navigation updates).
-	abs, err := b.moduleResolve("", spec)
+	abs, err := b.moduleResolve(referrer, spec)
 	if err != nil {
 		_ = reject(vm.ToValue(fmt.Sprintf("import(%q): %v", spec, err)))
 		return vm.ToValue(promise)

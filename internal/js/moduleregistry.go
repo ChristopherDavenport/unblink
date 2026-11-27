@@ -172,7 +172,14 @@ func (r *moduleRegistry) evaluate(b *bridge, url string) (goja.Value, error) {
 		return ns
 	}
 
-	prog, err := compileCached("module.js", "(function(require, module, exports){\n"+inst.cjs+"\n})")
+	// A module-local __unblinkImport shadows the global loader so a nested dynamic
+	// import() resolves against THIS module's URL (relative specifiers and import-map
+	// scopes), not the document's.
+	importFn := func(call goja.FunctionCall) goja.Value {
+		return b.importPromise(url, call.Argument(0).String())
+	}
+
+	prog, err := compileCached("module.js", "(function(require, module, exports, "+dynImportGlobal+"){\n"+inst.cjs+"\n})")
 	if err != nil {
 		inst.evaluated, inst.evalErr = true, err
 		return nil, err
@@ -187,7 +194,7 @@ func (r *moduleRegistry) evaluate(b *bridge, url string) (goja.Value, error) {
 		inst.evaluated, inst.evalErr = true, errors.New("module wrapper is not callable")
 		return nil, inst.evalErr
 	}
-	if _, err := fn(goja.Undefined(), vm.ToValue(requireFn), moduleObj, exportsObj); err != nil {
+	if _, err := fn(goja.Undefined(), vm.ToValue(requireFn), moduleObj, exportsObj, vm.ToValue(importFn)); err != nil {
 		inst.evaluated, inst.evalErr = true, err
 		return nil, err
 	}

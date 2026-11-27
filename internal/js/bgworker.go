@@ -123,7 +123,7 @@ func (w *bgWorker) runBackgroundScripts(b *bridge) {
 			{Key: "type", Val: "module"},
 			{Key: "src", Val: bg.ServiceWorker},
 		}}
-		b.runModules([]*html.Node{node}, nil)
+		b.runModules([]*html.Node{node})
 	}
 	files := append([]string{}, bg.Scripts...)
 	if bg.ServiceWorker != "" && !bg.Module {
@@ -153,8 +153,9 @@ func (w *bgWorker) runBackgroundPage(b *bridge, page string) {
 		b.recordError(fmt.Errorf("background page %q: %w", page, err))
 		return
 	}
+	b.importMap = parseImportMap(pageDoc, b.docBaseNow())
 	b.runScripts(collectScripts(pageDoc))
-	b.runModules(collectModuleScripts(pageDoc), parseImportMap(pageDoc))
+	b.runModules(collectModuleScripts(pageDoc))
 }
 
 // deliver dispatches one message to the background's onMessage listeners on the
