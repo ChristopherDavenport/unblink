@@ -62,6 +62,7 @@ package pdf
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/md5"
@@ -84,6 +85,7 @@ type Reader struct {
 	trailerptr objptr
 	key        []byte
 	useAES     bool
+	ctx        context.Context // unblink patch: set via NewReaderContext, else nil (see cancel.go)
 }
 
 type xref struct {
@@ -147,6 +149,10 @@ func NewReaderEncrypted(f io.ReaderAt, size int64, pw func() string) (*Reader, e
 	r := &Reader{
 		f:   f,
 		end: end,
+	}
+	// unblink patch: NewReaderContext hands its context in on f (see cancel.go).
+	if c, ok := f.(*cancelReaderAt); ok {
+		r.ctx = c.ctx
 	}
 	pos := end - endChunk + int64(i)
 	b := newBuffer(io.NewSectionReader(f, pos, end-pos), pos)
@@ -733,6 +739,7 @@ func (v Value) Len() int {
 //
 //	bugfix: in case the object-ref is within a stream than nothing was returned
 func (r *Reader) resolve(parent objptr, x interface{}) Value {
+	r.checkCanceled() // unblink patch: cancellation checkpoint (see cancel.go)
 
 	if ptr, ok := x.(objptr); ok {
 		if ptr.id >= uint32(len(r.xref)) {
