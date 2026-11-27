@@ -4,9 +4,20 @@ name: Publish to MCP Registry
 # poll below waits until goreleaser has pushed the ghcr image (and, on the
 # very first release, until the ghcr package has been flipped public) so the
 # registry never accepts an oci reference that isn't anonymously pullable.
+#
+# It can also be run by hand for a version that is already released (the image
+# must exist on ghcr): the tag-triggered run reads server.json from the tagged
+# commit, so a manifest the registry rejects can only be corrected on main and
+# published from there.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to publish, e.g. 0.25.0"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,12 +26,20 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      # The tag on a tag push, the typed version on a manual run. Passed through
+      # the environment so the value is never interpolated into a script.
+      RELEASE: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Stamp server.json from tag
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::not a release version: $VERSION"
+            exit 1
+          fi
           jq --arg v "$VERSION" \
             '.version = $v
              | .packages[0].identifier = "ghcr.io/christopherdavenport/unblink:" + $v' \
@@ -30,7 +49,7 @@ jobs:
 
       - name: Wait for image on GHCR
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE#v}"
           IMAGE="ghcr.io/christopherdavenport/unblink:${VERSION}"
           for i in $(seq 1 60); do
             if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
