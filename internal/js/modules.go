@@ -8,7 +8,7 @@ import (
 
 	"github.com/andybalholm/cascadia"
 	esbuild "github.com/evanw/esbuild/pkg/api"
-	urlpkg "github.com/nlnwa/whatwg-url/url"
+	urlpkg "github.com/nationallibraryofnorway/whatwg-url/url"
 	"golang.org/x/net/html"
 )
 

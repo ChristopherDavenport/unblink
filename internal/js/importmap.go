@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/dop251/goja"
-	urlpkg "github.com/nlnwa/whatwg-url/url"
+	urlpkg "github.com/nationallibraryofnorway/whatwg-url/url"
 	"golang.org/x/net/html"
 )
 
