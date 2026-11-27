@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>  Example RSS Feed  </title>
+    <link>https://example.com/</link>
+    <description>News &amp;amp; &lt;b&gt;updates&lt;/b&gt; from Example</description>
+    <item>
+      <title>Full Item</title>
+      <link>https://example.com/posts/full</link>
+      <author>alice@example.com (Alice Author)</author>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 GMT</pubDate>
+      <description>&lt;p&gt;Hello &amp;amp; &lt;a href="https://example.com/x"&gt;welcome&lt;/a&gt;
+        to the   feed&lt;/p&gt;&lt;script&gt;&lt;/script&gt;</description>
+    </item>
+    <item>
+      <title>Bare Item</title>
+    </item>
+    <item>
+      <link>https://example.com/posts/untitled</link>
+      <description>Only a description here</description>
+    </item>
+    <item>
+      <title>Odd Date Item</title>
+      <link>https://example.com/posts/odd-date</link>
+      <pubDate>sometime last spring</pubDate>
+      <dc:creator>Bob Byline</dc:creator>
+    </item>
+    <item>
+      <title>Content Only Item</title>
+      <link>https://example.com/posts/content-only</link>
+      <content:encoded><![CDATA[<div><p>Body from <code>content:encoded</code></p></div>]]></content:encoded>
+    </item>
+  </channel>
+</rss>
