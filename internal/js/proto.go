@@ -509,6 +509,19 @@ func (b *bridge) installElementProto() {
 		return call.Argument(1)
 	})
 
+	// insertAdjacentText inserts data as a Text node. An unknown position is a
+	// SyntaxError, as the DOM Standard's "insert adjacent" steps require.
+	b.protoMethod(p, "insertAdjacentText", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		position := call.Argument(0).String()
+		switch strings.ToLower(position) {
+		case "beforebegin", "afterbegin", "beforeend", "afterend":
+		default:
+			b.throwDOMException("SyntaxError", "The value provided ('"+position+"') is not one of 'beforebegin', 'afterbegin', 'beforeend', or 'afterend'.")
+		}
+		b.insertAdjacentNode(n, position, &html.Node{Type: html.TextNode, Data: call.Argument(1).String()})
+		return goja.Undefined()
+	})
+
 	b.protoGetter(p, "classList", func(n *html.Node) goja.Value { return b.classListFor(n) })
 
 	// Pointer-capture no-op stubs. There is no layout engine, but press-based
