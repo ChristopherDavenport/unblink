@@ -836,7 +836,7 @@ const preludeAPIJS = `
       if (signal && signal.aborted) return Promise.reject(signal.reason || new Error('AbortError'));
       var reqURL = req.url;
       var core = __unblinkFetch(req.method, String(reqURL), headersToPlain(headers), ser.data, req.mode, req.credentials).then(function (r) {
-        var resp = new window.Response(null, { status: r.status, headers: r.headers, url: r.url });
+        var resp = new window.Response(null, { status: r.status, statusText: r.statusText || '', headers: r.headers, url: r.url });
         resp.type = r.type || 'basic';
         resp.__text = r.body;
         resp.__bytes = r.bodyBytes ? new Uint8Array(r.bodyBytes) : null;
@@ -860,6 +860,13 @@ const preludeAPIJS = `
     // makes the response silently undeliverable. responseType='json' parses like
     // a real browser (null on bad JSON, never a throw); 'arraybuffer'/'blob'
     // read the binary body.
+    //
+    // The state machine follows the XHR Standard: open() -> OPENED, send() fires
+    // loadstart, the response walks HEADERS_RECEIVED -> LOADING -> DONE with a
+    // readystatechange at each step, then progress/load/loadend. The body arrives
+    // whole from the Go side, so those steps run back to back in one task. A
+    // failure runs the "request error steps": DONE with an empty response,
+    // readystatechange, then error/timeout/abort, then loadend.
     window.XMLHttpRequest = function () {
       var self = this;
       this.readyState = 0; this.status = 0; this.statusText = '';
@@ -867,69 +874,192 @@ const preludeAPIJS = `
       this.responseURL = ''; this.withCredentials = false; this.timeout = 0;
       this._method = 'GET'; this._url = ''; this._headers = {}; this._resHeaders = null;
       this._listeners = {};
-      this.onreadystatechange = null; this.onload = null; this.onerror = null;
+      this.onreadystatechange = null; this.onloadstart = null; this.onprogress = null;
+      this.onload = null; this.onerror = null; this.onabort = null; this.ontimeout = null;
+      this.onloadend = null;
       this.upload = { addEventListener: noop, removeEventListener: noop };
-      this.open = function (m, u) { self._method = m; self._url = u; self.readyState = 1; };
+      // gen identifies the current request: open(), abort() and a failure bump it,
+      // so a late settlement (or a later step of a delivery whose handler aborted
+      // or re-opened the object) sees a stale token and does nothing.
+      var gen = 0, sendFlag = false, inflight = null, mimeOverride = null;
+      var xmlText = null, xmlDoc; // responseXML source text and its parsed-once cache
+      function invalidState(method, why) {
+        return new window.DOMException("Failed to execute '" + method + "' on 'XMLHttpRequest': " + why, 'InvalidStateError');
+      }
+      function clearResponse() {
+        self.status = 0; self.statusText = ''; self.responseURL = '';
+        self.responseText = ''; self._resHeaders = null;
+        self.response = (self.responseType === '' || self.responseType === 'text') ? '' : null;
+        xmlText = null; xmlDoc = undefined;
+      }
+      // cancel drops the in-flight request: its settlement is ignored (stale gen)
+      // and the Go side cancels the underlying transport call.
+      function cancel() {
+        var p = inflight; inflight = null; gen++;
+        if (p && typeof p.abort === 'function') p.abort();
+      }
+      // finalMime is the response MIME type: the overrideMimeType value when set,
+      // else the Content-Type header.
+      function finalMime() {
+        if (mimeOverride !== null) return mimeOverride;
+        return (self._resHeaders && self._resHeaders['content-type']) || '';
+      }
+      function essence(m) { return String(m).split(';')[0].trim().toLowerCase(); }
+      function progressEvent(type, size, message) {
+        return { type: type, target: self, currentTarget: self, lengthComputable: size > 0, loaded: size, total: size, message: message };
+      }
+      this.open = function (m, u) {
+        cancel();
+        self._method = m; self._url = u; self._headers = {};
+        sendFlag = false; clearResponse();
+        if (self.readyState !== 1) { self.readyState = 1; fire('readystatechange'); }
+      };
       this.setRequestHeader = function (k, v) { self._headers[k] = v; };
+      // Set-Cookie is a forbidden response-header name: page JS never reads it
+      // (it would expose HttpOnly cookies).
+      function hiddenHeader(k) { return k === 'set-cookie' || k === 'set-cookie2'; }
       this.getResponseHeader = function (k) {
         if (!self._resHeaders) return null;
-        var v = self._resHeaders[String(k).toLowerCase()];
+        k = String(k).toLowerCase();
+        if (hiddenHeader(k)) return null;
+        var v = self._resHeaders[k];
         return v == null ? null : v;
       };
       this.getAllResponseHeaders = function () {
         if (!self._resHeaders) return '';
-        var out = '';
-        for (var k in self._resHeaders) out += k + ': ' + self._resHeaders[k] + '\r\n';
+        var names = Object.keys(self._resHeaders).sort(), out = '';
+        for (var i = 0; i < names.length; i++) {
+          if (!hiddenHeader(names[i])) out += names[i] + ': ' + self._resHeaders[names[i]] + '\r\n';
+        }
         return out;
       };
-      this.overrideMimeType = noop;
+      this.overrideMimeType = function (mime) {
+        if (self.readyState === 3 || self.readyState === 4) throw invalidState('overrideMimeType', 'MimeType cannot be overridden when the state is LOADING or DONE.');
+        mimeOverride = String(mime);
+      };
       this.addEventListener = function (t, fn) { (self._listeners[t] || (self._listeners[t] = [])).push(fn); };
       this.removeEventListener = function (t, fn) {
         var a = self._listeners[t]; if (!a) return;
         var i = a.indexOf(fn); if (i >= 0) a.splice(i, 1);
       };
-      this.abort = noop;
+      // responseXML parses on first read. Per the standard it is a document only
+      // for an XML final MIME type (or HTML when responseType is 'document'); a
+      // response without a Content-Type counts as text/xml. overrideMimeType
+      // changes that final MIME type. DOMParser parses XML with the HTML parser.
+      Object.defineProperty(this, 'responseXML', { configurable: true, enumerable: true, get: function () {
+        if (self.readyState !== 4 || xmlText === null || xmlText === '') return null;
+        if (xmlDoc !== undefined) return xmlDoc;
+        var mime = essence(finalMime()) || 'text/xml';
+        var isXML = mime === 'text/xml' || mime === 'application/xml' || /\+xml$/.test(mime);
+        xmlDoc = null;
+        if (isXML || (mime === 'text/html' && self.responseType === 'document')) {
+          try { xmlDoc = new window.DOMParser().parseFromString(xmlText, mime); } catch (e) { xmlDoc = null; }
+        }
+        return xmlDoc;
+      } });
       // Handler exceptions propagate (they surface as unhandled rejections in the
       // render diagnostics rather than vanishing).
       function fire(type, evt) {
-        evt = evt || { type: type, target: self };
+        evt = evt || progressEvent(type, 0);
         var h = self['on' + type];
         if (h) h.call(self, evt);
         var a = (self._listeners[type] || []).slice();
         for (var i = 0; i < a.length; i++) a[i].call(self, evt);
       }
+      // fail runs the standard's request error steps for error/timeout/abort.
+      function fail(type, message) {
+        cancel();
+        self.readyState = 4; sendFlag = false; clearResponse();
+        fire('readystatechange');
+        fire(type, progressEvent(type, 0, message));
+        fire('loadend');
+      }
+      this.abort = function () {
+        cancel();
+        if ((self.readyState === 1 && sendFlag) || self.readyState === 2 || self.readyState === 3) fail('abort');
+        // A finished request (including the one just failed above) returns to
+        // UNSENT without a further readystatechange.
+        if (self.readyState === 4) { self.readyState = 0; sendFlag = false; clearResponse(); }
+      };
+      // bodyText decodes the response body for responseText. Bodies reach JS
+      // already transcoded to UTF-8, so the charset of an overridden MIME type is
+      // honoured only for x-user-defined (the binary-as-text idiom: each byte
+      // >= 0x80 maps to U+F700 + byte, read back with "& 0xff").
+      function bodyText(r) {
+        var cs = /charset\s*=\s*"?([^";\s]+)/i.exec(mimeOverride === null ? '' : mimeOverride);
+        if (!cs || cs[1].toLowerCase() !== 'x-user-defined' || !r.bodyBytes) return r.body;
+        var u8 = new Uint8Array(r.bodyBytes), parts = [];
+        for (var i = 0; i < u8.length; i += 8192) {
+          var codes = [], end = Math.min(i + 8192, u8.length);
+          for (var j = i; j < end; j++) codes.push(u8[j] < 0x80 ? u8[j] : 0xF700 + u8[j]);
+          parts.push(String.fromCharCode.apply(null, codes));
+        }
+        return parts.join('');
+      }
+      function deliver(r, token) {
+        var type = self.responseType;
+        var textual = type === '' || type === 'text';
+        var size = r.bodyBytes ? r.bodyBytes.byteLength : 0;
+        self.status = r.status; self.statusText = r.statusText || '';
+        self.responseURL = r.url || self._url; self._resHeaders = r.headers || {};
+        self.readyState = 2; fire('readystatechange');
+        if (token !== gen) return;
+        var text = bodyText(r);
+        if (size > 0) {
+          if (textual) { self.responseText = text; self.response = text; }
+          self.readyState = 3; fire('readystatechange');
+          if (token !== gen) return;
+        }
+        fire('progress', progressEvent('progress', size));
+        if (token !== gen) return;
+        inflight = null; sendFlag = false;
+        self.readyState = 4;
+        if (textual) {
+          self.responseText = text; self.response = text; xmlText = text;
+        } else if (type === 'json') {
+          try { self.response = r.body === '' ? null : JSON.parse(r.body); } catch (e) { self.response = null; }
+        } else if (type === 'arraybuffer') {
+          self.response = r.bodyBytes || new ArrayBuffer(0);
+        } else if (type === 'blob') {
+          self.response = new window.Blob([r.bodyBytes ? new Uint8Array(r.bodyBytes) : new Uint8Array(0)], { type: essence(finalMime()) });
+        } else if (type === 'document') {
+          xmlText = text; self.response = self.responseXML;
+        } else {
+          self.response = text;
+        }
+        fire('readystatechange');
+        if (token !== gen) return;
+        fire('load', progressEvent('load', size));
+        fire('loadend', progressEvent('loadend', size));
+      }
       this.send = function (body) {
+        if (self.readyState !== 1 || sendFlag) throw invalidState('send', "The object's state must be OPENED.");
         var ser = serializeBody(body);
         if (ser.type) {
           var hasCT = false;
           for (var k in self._headers) if (String(k).toLowerCase() === 'content-type') { hasCT = true; break; }
           if (!hasCT) self._headers['content-type'] = ser.type;
         }
-        __unblinkFetch(self._method, self._url, self._headers, ser.data, 'cors', self.withCredentials ? 'include' : 'same-origin')
-          .then(function (r) {
-            self.status = r.status; self.statusText = 'OK';
-            self.responseURL = r.url || self._url; self._resHeaders = r.headers || {};
-            self.responseText = r.body;
-            if (self.responseType === 'json') {
-              try { self.response = r.body === '' ? null : JSON.parse(r.body); } catch (e) { self.response = null; }
-            } else if (self.responseType === 'arraybuffer') {
-              self.response = r.bodyBytes || new ArrayBuffer(0);
-            } else if (self.responseType === 'blob') {
-              self.response = new window.Blob([r.bodyBytes ? new Uint8Array(r.bodyBytes) : new Uint8Array(0)]);
-            } else {
-              self.response = r.body;
-            }
-            self.readyState = 4;
-            if (self.onreadystatechange) self.onreadystatechange();
-            fire('load'); fire('loadend');
-          }, function (e) {
-            self.status = 0; self.readyState = 4;
-            if (self.onreadystatechange) self.onreadystatechange();
-            fire('error', { type: 'error', target: self, message: String(e) });
-            fire('loadend');
-          });
+        sendFlag = true;
+        var token = ++gen;
+        // The timeout is enforced by the Go side as a deadline on this request
+        // (it rejects with 'fetch: timeout'), so no timer is armed here.
+        var ms = Number(self.timeout) > 0 ? Number(self.timeout) : 0;
+        var p = __unblinkFetch(self._method, self._url, self._headers, ser.data, 'cors', self.withCredentials ? 'include' : 'same-origin', ms);
+        inflight = p;
+        // Settlement is always handled (even for a request cancelled later) so a
+        // discarded result never surfaces as an unhandled rejection.
+        p.then(function (r) {
+          if (token === gen) deliver(r, token);
+        }, function (e) {
+          if (token !== gen) return;
+          if (e === 'fetch: timeout') fail('timeout'); else fail('error', String(e));
+        });
+        fire('loadstart');
       };
     };
+    var XHR_STATES = { UNSENT: 0, OPENED: 1, HEADERS_RECEIVED: 2, LOADING: 3, DONE: 4 };
+    for (var xs in XHR_STATES) { window.XMLHttpRequest[xs] = XHR_STATES[xs]; window.XMLHttpRequest.prototype[xs] = XHR_STATES[xs]; }
   } else {
     window.fetch = function () { return Promise.reject(new Error('unblink: network is disabled in render')); };
     window.XMLHttpRequest = function () {
