@@ -31,9 +31,17 @@ linters:
         linters:
           - errcheck
       # x/net v0.63 deprecates http2.Transport/ClientConn in favour of
-      # net/http's own HTTP/2 client. The --tls-mimic path hands a utls
-      # connection straight to http2 to keep Chrome-like SETTINGS values;
-      # moving it to http.Transport.NewClientConn is its own change.
+      # net/http's own HTTP/2 client. The --tls-mimic path stays on the
+      # deprecated API for one reason (checked against Go 1.27.4): it must
+      # advertise SETTINGS_MAX_HEADER_LIST_SIZE=262144, and net/http has no
+      # field for that. http.HTTP2Config lacks it; the only net/http route
+      # is Transport.MaxResponseHeaderBytes, to which the HTTP/2 code adds
+      # an undocumented 320, so the fingerprint would hang on an internal
+      # constant. http2.Transport.MaxHeaderListSize sets it exactly.
+      # Handing over the utls connection is no longer the obstacle:
+      # DialTLSContext now accepts any conn with *tls.Conn's
+      # ConnectionState method. Drop this rule once HTTP2Config can set the
+      # header list size; TestTLSMimicH2Settings pins the frames to keep.
       - path: ^internal/fetch/tls\.go$
         linters:
           - staticcheck

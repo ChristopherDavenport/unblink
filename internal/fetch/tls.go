@@ -40,6 +40,17 @@ const (
 // golang.org/x/net/http2 still cannot control — and so remains Go's — is the
 // SETTINGS frame *order*, INITIAL_WINDOW_SIZE, ENABLE_PUSH, the connection-level
 // WINDOW_UPDATE, and the pseudo-header order; matching those needs a forked http2.
+//
+// http2.Transport and http2.ClientConn are deprecated in favour of net/http's own
+// HTTP/2 client (on Go 1.27 they are a thin wrapper over it, so the frames are
+// the same either way). This path stays on them because of MaxHeaderListSize
+// alone: as of Go 1.27.4 http.HTTP2Config has no such field, and the only
+// net/http route to SETTINGS_MAX_HEADER_LIST_SIZE is
+// Transport.MaxResponseHeaderBytes plus an undocumented 320 added inside the
+// HTTP/2 code. The connection hand-off itself is supported there now
+// (Transport.DialTLSContext accepts any conn with *tls.Conn's ConnectionState
+// method, then Transport.NewClientConn), so the move is mechanical once that one
+// setting has a field. TestTLSMimicH2Settings pins the frames it must preserve.
 type utlsRoundTripper struct {
 	dialer   *net.Dialer
 	insecure bool // test-only
