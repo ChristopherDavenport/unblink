@@ -3,6 +3,71 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
+## Unreleased
+
+### Added
+
+- **Import map `scopes`.** The import map is parsed and resolved per the HTML Standard
+  (`internal/js/importmap.go`): `"imports"` and `"scopes"`, exact and trailing-slash
+  prefix keys, the most specific matching scope first. One resolver serves static
+  `<script type=module>` bundling, the module registry's static dependencies, and
+  dynamic `import()` — which previously did not consult the import map at all. A
+  registry module's nested `import()` now resolves against that module's own URL.
+  Limits: a classic script's `import()` and a non-literal `import()` in a bundled
+  module use the document base as referrer; only the first import map is read; the
+  import map `"integrity"` key is not handled.
+- **Passive-by-default touch/wheel listeners.** `touchstart`/`touchmove`/`wheel`/
+  `mousewheel` listeners on window, document, `<html>` and `<body>` are passive unless
+  registered with an explicit `passive: false`, as the DOM Standard specifies, so a
+  `preventDefault()` there no longer cancels the event. Re-adding the same
+  (type, callback, capture) listener is now a no-op.
+- **DOM `Range` and `Selection`.** `Range` implements the DOM Standard's boundary
+  points, comparison methods, `toString`, and the clone/extract/delete/insert/surround
+  algorithms over the node tree (it was a shape-only stub returning empty results);
+  `Selection` holds the range it was given, and `getRangeAt` on an empty selection
+  throws `IndexSizeError`. Ranges are not live, no `selectionchange` event fires, and
+  the geometry methods remain zero stubs.
+
+### Changed
+
+- **Go 1.26 is now the minimum.** The refreshed `golang.org/x/*` dependencies require
+  it; the `go` directive moved 1.25 → 1.26. `GOTOOLCHAIN=auto` (set by the Makefile)
+  still downloads the toolchain automatically.
+- **Dependencies refreshed**, including releases that clear govulncheck findings, and a
+  reviewed goja/goja_nodejs bump ([ADR 0002](docs/decisions/0002-dependency-pinning-policy.md))
+  that picks up upstream fixes for out-of-bounds access through detached TypedArray
+  buffers and several parser panics. Upstream goja now accepts the `[\s-_]` regex idiom
+  itself; the [ADR 0017](docs/decisions/0017-regex-class-hyphen-rewrite.md) rewrite is
+  retained as a no-op.
+- **`statusText` is the server's reason phrase.** `XMLHttpRequest.statusText` and
+  `Response.statusText` report the phrase from the HTTP/1.x status line instead of a
+  constant `OK`. It is empty on HTTP/2 and later, which have no reason phrase.
+
+### Fixed
+
+- **`XMLHttpRequest` follows the XHR Standard where it previously diverged.** `abort()`
+  cancels the request and fires `abort`/`loadend` instead of delivering the response;
+  `timeout`/`ontimeout` cut the request at the deadline; a response walks
+  `HEADERS_RECEIVED` → `LOADING` → `DONE` with `readystatechange` at each step (also
+  delivered to `addEventListener` listeners); `overrideMimeType` and `responseXML`
+  work; `send()` throws `InvalidStateError` outside the `OPENED` state.
+- **PDF extraction stops when its request ends**
+  ([ADR 0001](docs/decisions/0001-pdf-extraction-library.md), Amendment 3). The
+  extraction goroutine used to keep running after the context ended or the wall-clock
+  limit passed. The vendored reader is now bound to the context and fails at its
+  checkpoints once it is done. Cancellation is cooperative: a loop that reaches no
+  checkpoint would not be stopped; none is known.
+- **Feed (RSS/Atom/JSON Feed) Markdown.** A literal `<` in plain-text content is no
+  longer treated as a tag opener (which dropped the text after it), adjacent block
+  elements are separated instead of glued together, titles are collapsed to one line,
+  and link labels and destinations are escaped. Relative item links are resolved
+  against the feed URL.
+
+### Security
+
+- **XHR header getters hide `Set-Cookie`.** `getResponseHeader`/`getAllResponseHeaders`
+  exposed `Set-Cookie`, and with it HttpOnly cookie values, to page JS.
+
 ## v0.24.0 — 2026-07-06
 
 ### Fixed

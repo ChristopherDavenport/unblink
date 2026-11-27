@@ -198,14 +198,16 @@ not `doFetch`).
 - Tests use external `_test` packages with fixtures in `testdata/`. `internal/js`
   carries the densest suite; `internal/browser/browser_test.go` is the
   integration-level test of the whole pipeline. Every parser that eats untrusted
-  bytes (dom, reduce, pdf, robots, token cursors) has a fuzz target — `make fuzz`
+  bytes (dom, reduce, pdf, feed, robots, token cursors) has a fuzz target — `make fuzz`
   (FUZZTIME per target); seed corpora run in `make test`.
 - `docs/decisions/` holds the ADRs (numbered `NNNN-slug.md`): 0001 keeps
   `dslipak/pdf` but **vendors it at `third_party/pdf`** (imported by its
   in-repo path `…/unblink/third_party/pdf` — never via a `replace` directive,
   which would break `go install <module>@version`) with three loop-bounding
   patches after fuzzing found an infinite-loop DoS that recover+ctx couldn't
-  contain — sync upstream manually, re-fuzz before adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
+  contain, plus a fourth (`NewReaderContext`, `third_party/pdf/cancel.go`) that binds
+  the reader to the request context so the extraction stops when the context ends —
+  cooperative, at the reader's checkpoints — sync upstream manually, re-fuzz before adopting; 0002 is the dependency pinning policy (goja/goja_nodejs
   pseudo-version pins are deliberate — bumping goja is its own reviewed
   change); 0003 is the JS memory guard (process-level heap watchdog +
   `debug.SetMemoryLimit`, because goja has no per-runtime accounting); 0004 is the
@@ -258,7 +260,9 @@ not `doFetch`).
   class range", aborting the whole script/module; `fixClassRangeHyphen` in
   `internal/js/regexfix.go` escapes the hyphen before compile at compileCached +
   classicProgram — value-preserving in every JS context, odd-backslash guard for the
-  real `[\\s-z]` range; a targeted goja workaround, not a regex-compat layer); 0018 is
+  real `[\\s-z]` range; a targeted goja workaround, not a regex-compat layer — upstream
+  goja accepts the idiom as of the 2026-11-25 pin, so the rewrite is now redundant but
+  retained, see the ADR's dated note); 0018 is
   the per-render module-instance registry (`internal/js/moduleregistry.go`) giving
   dynamic `import()` browser module-map semantics — each resolved URL fetched +
   esbuild-CJS-transformed + evaluated once, its live namespace shared across
@@ -267,7 +271,11 @@ not `doFetch`).
   "useMemoCache of null" failure); two-phase (off-loop instantiate/dedup, on-loop
   post-order evaluate), replaces bundleDynamicChunk, preserves the ADR 0004 settle
   bracket; scope = the dynamic-import path only (static `<script type=module>` still
-  bundles per entry). Add a new
+  bundles per entry). Import maps (`internal/js/importmap.go`: `imports` + `scopes`)
+  resolve through one `bridge.moduleResolve` on every path — static bundling, registry
+  deps, dynamic `import()`; a classic script's or non-literal `import()` uses the
+  document base as referrer, only the first import map is read, and its `integrity`
+  key is not handled. Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)

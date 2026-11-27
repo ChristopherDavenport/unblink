@@ -39,10 +39,11 @@ adversarial and bounds what it can do:
 - **Quarantined JS engine.** Page JavaScript runs on an embedded goja interpreter
   with `require()` disabled (no host file reads), no access to HttpOnly cookies via
   `document.cookie`, and hard bounds on wall-clock time (`--js-timeout`), network
-  (`--js-max-requests`), live runtimes (`--js-max-live`), and **heap memory**
+  bytes (`--js-max-bytes`; `--js-max-requests` is an optional count backstop, off by
+  default), live runtimes (`--js-max-live`), and **heap memory**
   (`--js-memory-limit`, see [ADR-0003](docs/decisions/0003-js-memory-guard.md)).
 - **Fuzzed parsers.** Every parser that eats untrusted bytes (HTML, reduce, PDF,
-  robots, token cursors) has a fuzz target; a fuzz-found PDF CPU-DoS led to
+  feeds, robots, token cursors) has a fuzz target; a fuzz-found PDF CPU-DoS led to
   vendoring and bounding that dependency
   ([ADR-0001](docs/decisions/0001-pdf-extraction-library.md)).
 

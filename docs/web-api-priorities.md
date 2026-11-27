@@ -34,7 +34,8 @@ Every API resolves to one of three treatments. The distinction is load-bearing: 
 the false choice between "implement the whole feature" and "let the page crash."
 
 - **FULL** — content depends on the API *working*. Build it for real. Examples already
-  shipped: `URL`/`URLSearchParams` (`internal/js/globals.go`), `fetch`/`XMLHttpRequest`
+  shipped: `URL`/`URLSearchParams` (`internal/js/globals.go` over the native parser in
+  `internal/js/urlnative.go`), `fetch`/`XMLHttpRequest`
   (`internal/js/prelude_api.go`), `MutationObserver` (`internal/js/mutationobserver.go`),
   `document.forms`/`requestSubmit` (`internal/js/forms.go`).
 
@@ -84,13 +85,13 @@ parentheses. Full detail lives in the [architecture roadmap](architecture.md).
 
 | API | Treatment | Shipped |
 |---|---|---|
-| `URL` / `URLSearchParams` | FULL (pragmatic parser) | Phase 8 — react-router `ReferenceError` at hydration |
+| `URL` / `URLSearchParams` | FULL (native WHATWG parser, `nlnwa/whatwg-url` via `internal/js/urlnative.go`, since v0.23.0; a pragmatic regex parser before that) | Phase 8 — react-router `ReferenceError` at hydration |
 | `crypto.getRandomValues` / `randomUUID` | FULL (`Math.random`-backed, non-cryptographic) | Phase 15 — react-aria uuid crash |
 | `structuredClone` | FULL | Phase 8 |
 | `matchMedia` + constant viewport | FULL evaluator vs 1280×720@1x | Phase 21 — was blanket-false, every page took its narrowest branch |
 | `IntersectionObserver` / `ResizeObserver` | STUB (synthetic visible/zero-size) | Phase 8 — lazy/infinite-scroll content stayed blank |
 | `MutationObserver` | FULL (Go-backed, real mutations) | Phase 8 · settle signal |
-| `fetch` / `XMLHttpRequest` | FULL over transport | Phase 8/19 · settle-audit |
+| `fetch` / `XMLHttpRequest` | FULL over transport. XHR follows the XHR Standard's state machine: `abort()` cancels the request and runs the error steps, `timeout`/`ontimeout` cut the request at the deadline, a response walks `HEADERS_RECEIVED`→`LOADING`→`DONE`, `overrideMimeType` and `responseXML` work, and `Set-Cookie` is hidden from the header getters. `statusText` (XHR and `Response`) is the server's HTTP/1.x reason phrase and is `''` on HTTP/2+, which has none | Phase 8/19 · settle-audit |
 | `Headers`/`Request`/`Response`/`Blob`/`File`/`FormData` | FULL | Phase 21 |
 | `TextEncoder`/`TextDecoder`, `atob`/`btoa` | FULL (UTF-8) | Phase 21 |
 | `performance` (`now`/`mark`/`measure`) | FULL (marks/measures only) | Phase 21 |
@@ -99,6 +100,7 @@ parentheses. Full detail lives in the [architecture roadmap](architecture.md).
 | `postMessage`/`MessageChannel`/`MessagePort` | FULL (same-context FIFO) | Phase 21 |
 | `customElements` + composed Shadow DOM | FULL | Phase 8/23 ([ADR 0005](decisions/0005-shadow-dom-composition.md)) |
 | `DOMParser` / `XMLSerializer` / `Range.createContextualFragment` | FULL | Phase 8/21 |
+| `Range` / `Selection` | FULL over the node tree — boundary points, comparison, `toString`, and the clone/extract/delete/insert/surround algorithms; `Selection` holds the one `Range` it was given. **Not live** (a mutation made outside a range's own methods does not move its boundary points), no `selectionchange` event, geometry methods are zero stubs | `internal/js/prelude_api.go` — was a shape-only stub that returned empty results |
 | `document.forms` / `submit` / `requestSubmit` | FULL (submit → `pendingNav`) | Phase 8 — clears self-submitting bot-check interstitials |
 | `document.implementation.createHTMLDocument` | FULL (inert doc) | — Angular `DomSanitizer` dropped all `[innerHTML]` without it |
 | `HTMLMediaElement`/`Audio`/`Video` constructors | STUB (ctor chain only) | — zone.js patch `ReferenceError` without them |
@@ -130,8 +132,9 @@ each carry a test that writes its content only from the async completion, so a b
 
 ## Tier 2 — situational & upgrades
 
-Tier 2 shipped in **Phase 25** (marked ✅ below), including `crypto.subtle`. One item stays
-deliberately open: the full-WHATWG `URL` upgrade (policy: only on a demonstrated break).
+Tier 2 shipped in **Phase 25** (marked ✅ below), including `crypto.subtle`. The one item
+Phase 25 held open, the full-WHATWG `URL` upgrade, shipped later in v0.23.0 once the
+WPT harness demonstrated the break (see below).
 Regression nets for the shipped items: `internal/js/webapi_tier2_test.go` and the
 `js-api-smoke` eval markers `api-18`…`api-25`.
 
@@ -142,8 +145,11 @@ Regression nets for the shipped items: `internal/js/webapi_tier2_test.go` and th
   `deriveBits`/`deriveKey`, symmetric `generateKey`/`importKey`/`exportKey`. **RSA/ECDSA and
   wrap/unwrap reject** (never a sync throw), so a feature-detecting app degrades to a catchable
   rejection. `getRandomValues` re-pointed at `crypto/rand`. No off-loop I/O → settle-neutral.
-- **`URL` / `URLSearchParams` → full WHATWG state machine.** Present but a pragmatic parser
-  (`globals.go`). Upgrade only on a demonstrated parse divergence, not speculatively.
+- ✅ **`URL` / `URLSearchParams` → full WHATWG state machine** (v0.23.0, P1 of
+  [wpt-compatibility.md](wpt-compatibility.md)). The policy was "upgrade only on a
+  demonstrated parse divergence"; the WPT `url/` run supplied it (the flagship tests timed
+  out in the regex parser). `window.URL` is now a thin class in `globals.go` over the native
+  Go parser `github.com/nlnwa/whatwg-url`, bound in `internal/js/urlnative.go`.
 - ✅ **`DOMMatrix`/`DOMPoint`/`DOMRect`/`DOMQuad`/`Path2D`** (Phase 25) — real pure-JS math
   (matrix compose/inverse/`transformPoint`); `Path2D` records ops, consumed no-op by the canvas
   stub.
@@ -282,7 +288,7 @@ is silently dropped.
 | Fetch, XHR, Beacon | **Tier 0** |
 | Streams, Compression | **Tier 0** (Streams, Phase 24); `Compression`/`DecompressionStream` **deferred** (needs Go codec) |
 | Encoding (`TextEncoder`/`Decoder`) | **Tier 0**; `TextEncoder`/`DecoderStream` **shipped Phase 25** |
-| URL / URLSearchParams / URLPattern | **Tier 0**; WHATWG upgrade + `URLPattern` **Tier 2** |
+| URL / URLSearchParams / URLPattern | **Tier 0** (WHATWG parser **shipped v0.23.0**); `URLPattern` **Tier 2** |
 | Web Storage | **Tier 0**; `cookieStore` **shipped Phase 25** |
 | IndexedDB, Cache | in-memory **stub shipped Phase 24**; persistent feature **Non-goal** |
 | Service Workers, Background Sync/Fetch, Push | `serviceWorker` register-stub **shipped Phase 24**; execution **Non-goal**; rest **Tier 3** |

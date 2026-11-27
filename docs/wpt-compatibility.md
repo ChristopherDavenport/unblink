@@ -4,8 +4,10 @@ This is unblink's ranked roadmap for web-standards conformance, measured against
 [web-platform-tests](https://github.com/web-platform-tests/wpt) suite. It is
 *generated from data*: the `make wpt` harness runs the in-scope WPT testharness.js
 corpus directly against the JS engine and buckets every result (see
-[ADR 0016](decisions/0016-wpt-conformance.md) for the how and why, and
-`wpt/last-run.json` for the full machine-readable output).
+[ADR 0016](decisions/0016-wpt-conformance.md) for the how and why). The full
+machine-readable output is `wpt/last-run.json`, a local artifact that `make wpt`
+writes; it is gitignored and not in the repository, so auditing a run means
+producing it.
 
 The ranking metric is unblink's own (`docs/web-api-priorities.md`): **does closing
 this gap materialize more real page content in the extracted Markdown?** So
@@ -28,11 +30,19 @@ us**:
 | **TMO** | Never produced results within the render budget (a hung async test or an engine-level busy loop) — excluded, but reported so a slow/hanging API is visible | No |
 
 **Reported conformance = PASS / (PASS + FIX).** (b)/(c)/(d)/TMO are excluded *and*
-itemized in `last-run.json` so the exclusions are auditable, not hand-waved. A
+itemized in `wpt/last-run.json` (written locally by `make wpt`, not committed) so the
+exclusions are auditable, not hand-waved. A
 static source-scan pre-filter assigns (d) *before* running, so runner limits never
 inflate or deflate the score.
 
 ## Baseline (wpt `b86e7702`, 16 directories, 3,215 test variants)
+
+**This table is the pre-P1 baseline**, recorded 2026-07-05 with the harness itself
+(commit `945abbf`), before any of the P1–P3 fixes below landed. It has not been
+regenerated since: the `url`, `encoding` and `dom` rows, and the `TOTAL`, describe
+the engine as it was then. The post-fix figures for those three directories are in
+the [priorities table](#ranked-priorities-content-extraction-first); every other row
+has not been re-measured.
 
 | Directory | Tests | Subtests | PASS | FIX (a) | OOS (b) | HARN (d) | TMO | Conformance |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
@@ -58,7 +68,7 @@ conformance ratio is computed over only the handful that complete; read the TMO
 column, not the ratio. ‡ **reflection-dominated** — the FIX count is almost
 entirely exhaustive IDL attribute/ARIA reflection (see the low-priority note).
 
-**The `TOTAL` (0.139) is not a meaningful headline** — it is swamped by html/dom's
+**The baseline `TOTAL` (0.139) is not a meaningful headline** — it is swamped by html/dom's
 54,404 IDL-reflection assertions. Across the **content-extraction core** (dom,
 encoding, domparsing, FileAPI, html/syntax), conformance is **≈0.78**, and HTML
 tree-construction alone is **0.944**. The real story is in the per-directory rows.
@@ -69,30 +79,42 @@ measurable by a client-side harness.
 
 ## Ranked priorities (content-extraction first)
 
-**Progress (branch `feat/wpt-conformance-harness`):** P1–P3 are **implemented** — the
-three deltas below were measured per-directory before/after. P1 also removed the
-per-call interpreter cost behind the `url/` timeouts.
+**Progress:** P1–P3 are **implemented** (merged in PR #48, shipped in v0.23.0) — the
+three deltas below were measured per-directory before/after on 2026-07-05. P1 also
+removed the per-call interpreter cost behind the `url/` timeouts.
+
+The two "before" figures for `url/` disagree: the baseline table above reports
+**0.407** (11 pass / 16 fix over the 27 subtests that completed, with 41 outcomes
+timed out), while the P1 row reports **0.115** as its starting point. Both come
+from the repository history (the table from `945abbf`, the delta from the P1 commit
+`efba4d1` and `32f0775`), which records the two numbers but not the run parameters
+that explain the difference. The baseline row is dagger-marked as timeout-dominated,
+so its ratio is the less reliable of the two; treat neither as a precise "before".
+The post-fix 0.979 has no such conflict.
 
 | # | Item | Status | Conformance |
 |---|---|---|---|
 | **P1** | Native WHATWG URL parser (`nlnwa/whatwg-url` via `urlnative.go`) | ✅ done | url **0.115 → 0.979** |
 | **P2** | TextDecoder/TextEncoder correctness (fatal, options, labels, surrogates) | ✅ done | encoding **0.504 → 0.873** |
-| **P3** | DOM fidelity — DOMException + CharacterData + DOMTokenList/createHTMLDocument branding + dispatchEvent (passive-by-default deferred) | ✅ done (cheap subset) | dom **0.488 → 0.648** |
+| **P3** | DOM fidelity — DOMException + CharacterData + DOMTokenList/createHTMLDocument branding + dispatchEvent; passive-by-default added later (reflected token lists still open) | ✅ done | dom **0.488 → 0.648** (measured before passive-by-default; not re-run since) |
 | **P4** | HTML tree-construction — **maintain only** | already strong | html/syntax **0.944** |
 | **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | not started | reflection/iframe-dominated; smaller real slice |
 | **secondary** | Security-posture edges — audit-driven | ✅ closed | 6 gaps found + fixed/locked (WPT can't measure; see *Secondary*) |
 | *not ranked* | IDL reflection breadth, streams backpressure, legacy encodings, asymmetric crypto | excluded | by-design or low content-value |
 
-Detail for each below.
+Detail for each below. The **Evidence** paragraphs for P1–P3 are the 2026-07-05
+baseline findings that motivated the work, kept as written: the gaps they list in the
+present tense ("unblink always substitutes U+FFFD", "missing") were closed by the
+P1–P3 commits unless a line says otherwise.
 
 ### P1 — Replace the URL parser with a WHATWG-conformant one (`url/`)
 
 **Evidence:** every flagship WHATWG URL test **times out** — `a-element.html`,
 `a-element-origin.html`, `url-constructor.any.js`, `url-setters`, `IdnaTestV2.any.js`,
 `toascii.window.js`, `javascript-urls.window.js` (41 of url/'s outcomes are TMO,
-leaving only 27 subtests that complete at all). unblink's `URL` is a *pragmatic
-regex parser* (`internal/js/globals.go`), and it is too slow — or catastrophically
-backtracks — to get through the standard URL corpus within the render budget.
+leaving only 27 subtests that complete at all). At the time of the baseline unblink's `URL` was a *pragmatic
+regex parser* (`internal/js/globals.go`), and it was too slow — or catastrophically
+backtracked — to get through the standard URL corpus within the render budget.
 
 **Why it's #1:** URL correctness is the most content-bearing API there is — it
 governs link resolution, `<base>` handling, and every fetch target, and agents act
@@ -100,6 +122,11 @@ on the links unblink extracts. A conformant parser both fixes the failures and
 removes a real slow-path (a URL input that hangs the parser is a latent DoS on any
 page that constructs it). The fix is self-contained: swap the regex `URL`/`URLSearchParams`
 for a WHATWG state-machine implementation.
+
+**Shipped (v0.23.0):** `window.URL` is now a thin class over a native Go WHATWG
+parser (`github.com/nlnwa/whatwg-url`, bound in `internal/js/urlnative.go`), and
+`URLSearchParams` is linked live to `url.search`. The Go-side link/fetch pipeline
+still uses `net/url`.
 
 ### P2 — TextDecoder / TextEncoder correctness (`encoding/`)
 
@@ -133,7 +160,11 @@ gaps, not layout:
 - **`DOMTokenList` coverage** (`DOMTokenList-coverage-for-attributes.html`, 54) —
   `classList`-style reflected token lists (`relList`, `sandbox`, …) missing.
 - **Passive event-listener defaults** (`passive-by-default.html`, 32) — `wheel`/
-  `touchstart` should default to `passive`.
+  `touchstart` should default to `passive`. **Implemented after the P3 batch**
+  (`internal/js/events.go`): a listener for `touchstart`/`touchmove`/`wheel`/
+  `mousewheel` on window, document, `<html>` or `<body>` is passive unless it passes
+  an explicit `passive: false`, and re-adding the same (type, callback, capture)
+  listener is a no-op. The `dom/` figure above predates this and has not been re-run.
 - **`dispatchEvent` edge cases** (`EventTarget-dispatchEvent.html`, 23) and
   `DOMImplementation.createHTMLDocument` (13).
 
@@ -237,7 +268,7 @@ rendering*, with no layout engine ([ADR 0007](decisions/0007-semantic-structured
 ## Reproducing this report
 
 ```sh
-make wpt          # offline: run the pinned corpus, print the scorecard, write wpt/last-run.json
+make wpt          # offline: run the pinned corpus, print the scorecard, write wpt/last-run.json (gitignored)
 make wpt-sync     # refresh testdata/wpt/ to the SHA in testdata/wpt/WPT_VERSION (needs network)
 ```
 
