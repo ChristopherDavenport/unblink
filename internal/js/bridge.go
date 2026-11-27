@@ -558,7 +558,7 @@ func (b *bridge) documentObject() *goja.Object {
 		return b.createTreeWalker(root, whatToShow, call.Argument(2))
 	})
 	_ = d.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
-		b.addListener(b.docListeners, call)
+		b.addListener(b.docListeners, call, true)
 		return goja.Undefined()
 	})
 	_ = d.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
