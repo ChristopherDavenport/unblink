@@ -49,3 +49,33 @@ indistinguishable from a real hidden field.
 - `formStateRestoreCallback` is never called (there is no session restore),
   `form="id"` association and the `:state()` selector are not implemented, and
   native controls still have no constraint validation.
+
+## Amendment 1 (2026-11-27): default ARIA semantics, `:state()`, `form="id"`
+
+The same reflection now carries the default ARIA semantics a custom element
+sets through `ElementInternals`. The engine stamps, on the extraction-bound
+tree only, `data-unblink-default-role`,
+`data-unblink-default-aria-{label,checked,expanded,pressed,selected,required,invalid,disabled}`
+and `data-unblink-default-labelledby-text` (the resolved text, since
+`ariaLabelledByElements` holds element references rather than ids). The engine
+stamps every default it has; `internal/dom` applies the ARIA-in-HTML rule that
+an explicit `role` / `aria-*` attribute wins (`lookupARIA`). A custom element
+whose default role is interactive (button, tab, ...) therefore appears as a
+control, and a default landmark role creates a region.
+
+`:state()` is matched without exposing state to page JS: a page-JS selector
+containing `:state(` is rewritten to an attribute selector on a
+per-process-random attribute name, and elements with states carry that
+attribute only for the duration of the one synchronous match.
+
+`form="id"` association is honoured by one owner rule on both sides: the
+engine (`formOwner` in `internal/js/forms.go`, for native and custom controls)
+and `dom.extractForms`. A descendant control whose `form` attribute names
+another form, or no existing form, no longer belongs to its ancestor form.
+
+Still open: `adoptedCallback`. Every node's `ownerDocument` is the main
+document, including nodes inside `createHTMLDocument()` documents and template
+content, so there is no adoption to observe. Making `ownerDocument` truthful
+for those trees is its own change (sanitizers such as DOMPurify parse into
+them). `formStateRestoreCallback` stays uncalled: there is no form-state
+restoration to trigger it.
