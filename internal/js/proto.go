@@ -566,7 +566,7 @@ func (b *bridge) installHTMLElementProto() {
 		if n.Data != "form" {
 			return goja.Undefined()
 		}
-		return b.htmlCollection(formControls(n))
+		return b.htmlCollection(b.formControls(n))
 	})
 	b.protoMethod(p, "submit", func(n *html.Node, _ goja.FunctionCall) goja.Value {
 		b.submitForm(n, false)
@@ -574,6 +574,10 @@ func (b *bridge) installHTMLElementProto() {
 	})
 	b.protoMethod(p, "requestSubmit", func(n *html.Node, _ goja.FunctionCall) goja.Value {
 		b.submitForm(n, true)
+		return goja.Undefined()
+	})
+	b.protoMethod(p, "reset", func(n *html.Node, _ goja.FunctionCall) goja.Value {
+		b.resetForm(n)
 		return goja.Undefined()
 	})
 

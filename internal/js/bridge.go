@@ -132,6 +132,11 @@ type bridge struct {
 	shadowHostOf         map[*html.Node]*html.Node   // shadow-root backing node → host (reverse, for connectivity/retargeting)
 	templateContentCache map[*html.Node]*goja.Object
 	upgradingStack       []*html.Node
+	// Form-associated custom elements (forminternals.go): the definitions that
+	// declared `static formAssociated` / disabled internals, and per-element state.
+	formAssoc            map[string]bool
+	internalsDisabled    map[string]bool
+	faces                map[*html.Node]*faceState
 	upgradeCount         int // total custom-element upgrades; bounds re-entrant upgrade blowup
 	whenDefinedResolvers map[string][]func(interface{}) error
 	reflectConstructFn   goja.Callable
@@ -277,6 +282,9 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		shadowRoots:          make(map[*html.Node]*goja.Object),
 		shadowHostOf:         make(map[*html.Node]*html.Node),
 		templateContentCache: make(map[*html.Node]*goja.Object),
+		formAssoc:            make(map[string]bool),
+		internalsDisabled:    make(map[string]bool),
+		faces:                make(map[*html.Node]*faceState),
 		whenDefinedResolvers: make(map[string][]func(interface{}) error),
 		winListeners:         make(map[string][]listenerEntry),
 		docListeners:         make(map[string][]listenerEntry),
@@ -327,6 +335,7 @@ func (b *bridge) install() {
 	b.installNodeFilter()
 	b.installMutationObserver()
 	b.installCustomElements(win)
+	b.installFormInternals()
 	b.installParsers()
 	b.installAsync()
 	b.installDynamicImport()

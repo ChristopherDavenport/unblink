@@ -48,6 +48,17 @@ func (b *bridge) onMutate(rec mutationRecord) {
 			b.disconnectTree(n)
 		}
 	}
+	// Form-associated custom elements: leaving the tree can drop the form owner or a
+	// disabling <fieldset>, and a disabled attribute change (theirs or a fieldset's)
+	// flips formDisabledCallback. Insertion is handled by scan.
+	if len(b.faces) > 0 {
+		for _, n := range rec.removed {
+			b.syncFACETree(n)
+		}
+		if rec.typ == "attributes" && rec.attr == "disabled" {
+			b.syncFACETree(rec.target)
+		}
+	}
 	if len(b.observers) == 0 {
 		return
 	}

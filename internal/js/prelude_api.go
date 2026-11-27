@@ -405,6 +405,9 @@ const preludeAPIJS = `
       for (var i = 0; i < els.length; i++) {
         var el = els.item ? els.item(i) : els[i];
         if (!el || !el.getAttribute) continue;
+        // A form-associated custom element contributes its setFormValue entries.
+        var face = faceEntriesOf ? faceEntriesOf(el) : null;
+        if (face) { for (var j = 0; j < face.length; j++) this.__e.push(face[j]); continue; }
         var name = el.getAttribute('name');
         if (!name || el.disabled) continue;
         var tag = String(el.tagName || '').toLowerCase();
@@ -1990,28 +1993,162 @@ const preludeAPIJS = `
 
   // ---- attachInternals / ElementInternals (form-associated custom elements) ----
   //
-  // A cached inert ElementInternals so form-associated components that call
-  // attachInternals() in their constructor don't throw. No validation or form
-  // participation is modelled; setFormValue/setValidity are accepted-and-ignored.
+  // HTML Standard §4.13.7. The ElementInternals object, its ValidityState,
+  // CustomStateSet and the ARIA mixin live here; every question about the tree
+  // (form owner, labels, disabled, the form* lifecycle callbacks, form.elements,
+  // and reflecting the value for extraction) is Go's — see forminternals.go.
+  // Not modelled: the :state() selector, ARIA defaults feeding the accessible name,
+  // and formStateRestoreCallback (no session restore to trigger it).
+  var faceEntriesOf = null; // el → its entry-list pairs, or null when not form-associated
   (function () {
-    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
-    if (ep && typeof ep.attachInternals !== 'function') {
-      ep.attachInternals = function () {
-        if (this.__internals) return this.__internals;
-        var host = this;
-        var states = (typeof Set === 'function') ? new Set() : { add: noop, 'delete': noop, has: function () { return false; }, clear: noop };
-        this.__internals = {
-          form: null, labels: [], willValidate: true,
-          validity: { valid: true, valueMissing: false, typeMismatch: false, patternMismatch: false, tooLong: false, tooShort: false, rangeUnderflow: false, rangeOverflow: false, stepMismatch: false, badInput: false, customError: false },
-          validationMessage: '',
-          get shadowRoot() { return host.shadowRoot || null; },
-          states: states, role: null,
-          setFormValue: noop, setValidity: noop,
-          checkValidity: function () { return true; }, reportValidity: function () { return true; }
-        };
-        return this.__internals;
-      };
+    var hook = window.__unblinkFormInternals;
+    try { delete window.__unblinkFormInternals; } catch (e) {}
+    var HP = window.HTMLElement && window.HTMLElement.prototype;
+    if (!hook || !HP || typeof WeakMap !== 'function') return;
+
+    var attached = new WeakMap(); // host element → its ElementInternals
+    var priv = new WeakMap();     // ElementInternals / ValidityState / CustomStateSet → state
+    var FLAGS = ['valueMissing', 'typeMismatch', 'patternMismatch', 'tooLong', 'tooShort', 'rangeUnderflow', 'rangeOverflow', 'stepMismatch', 'badInput', 'customError'];
+    var building = false;
+    function illegal() { if (!building) throw new TypeError('Illegal constructor'); }
+    function notSupported(msg) { return new window.DOMException(msg, 'NotSupportedError'); }
+    function state(self) { var s = priv.get(self); if (!s) throw new TypeError('Illegal invocation'); return s; }
+    // Form-participation members throw unless the target is form-associated.
+    function formState(self) {
+      var s = state(self);
+      if (hook.kind(s.host) !== 2) throw notSupported('The target element is not a form-associated custom element.');
+      return s;
     }
+    function anyFlag(flags) { for (var i = 0; i < FLAGS.length; i++) if (flags[FLAGS[i]]) return true; return false; }
+    function accessor(proto, name, get, set) { Object.defineProperty(proto, name, { get: get, set: set, enumerable: true, configurable: true }); }
+
+    function ValidityState() { illegal(); }
+    FLAGS.forEach(function (f) { accessor(ValidityState.prototype, f, function () { return !!state(this).flags[f]; }); });
+    accessor(ValidityState.prototype, 'valid', function () { return !anyFlag(state(this).flags); });
+
+    function CustomStateSet() { illegal(); }
+    var CS = CustomStateSet.prototype;
+    CS.add = function (v) { state(this).set.add(String(v)); return this; };
+    CS['delete'] = function (v) { return state(this).set['delete'](String(v)); };
+    CS.has = function (v) { return state(this).set.has(String(v)); };
+    CS.clear = function () { state(this).set.clear(); };
+    CS.forEach = function (cb, thisArg) { var self = this; state(this).set.forEach(function (v) { cb.call(thisArg, v, v, self); }); };
+    CS.values = CS.keys = function () { return state(this).set.values(); };
+    CS.entries = function () { return state(this).set.entries(); };
+    CS[Symbol.iterator] = CS.values;
+    accessor(CS, 'size', function () { return state(this).set.size; });
+
+    function ElementInternals() { illegal(); }
+    var EI = ElementInternals.prototype;
+
+    // File | USVString | FormData | null; a FormData is copied (later edits to the
+    // caller's object must not change the submission value).
+    function normValue(v) {
+      if (v === null || v === undefined) return null;
+      if (v instanceof window.File) return v;
+      if (v instanceof window.FormData) { var c = new window.FormData(); c.__e = v.__e.slice(); return c; }
+      return String(v);
+    }
+    function entryPairs(s) {
+      var v = s.value, out = [];
+      if (v === null) return out;
+      if (v instanceof window.FormData) return v.__e.slice();
+      var name = s.host.getAttribute('name');
+      if (name) out.push([name, v]);
+      return out;
+    }
+    // Tell Go the submission value (a File travels as its name) for form.submit()
+    // serialization and for the extraction-side reflection.
+    function pushValue(s) {
+      var v = s.value, names = [], values = [], files = [];
+      var add = function (name, val) {
+        var isFile = val instanceof window.File;
+        names.push(name); values.push(isFile ? val.name : val); files.push(isFile);
+      };
+      if (v instanceof window.FormData) v.__e.forEach(function (p) { add(p[0], p[1]); });
+      else if (v !== null) add('', v);
+      hook.setValue(s.host, v === null ? 0 : (v instanceof window.FormData ? 2 : 1), names, values, files);
+    }
+
+    accessor(EI, 'shadowRoot', function () { return hook.shadowRoot(state(this).host); });
+    accessor(EI, 'states', function () { return state(this).states; });
+    accessor(EI, 'form', function () { return hook.form(formState(this).host); });
+    accessor(EI, 'labels', function () { return hook.labels(formState(this).host); });
+    accessor(EI, 'willValidate', function () { return hook.willValidate(formState(this).host); });
+    accessor(EI, 'validity', function () { return formState(this).validity; });
+    accessor(EI, 'validationMessage', function () { return formState(this).message; });
+    EI.setFormValue = function (value, formStateValue) {
+      var s = formState(this);
+      if (arguments.length === 0) throw new TypeError("Failed to execute 'setFormValue' on 'ElementInternals': 1 argument required, but only 0 present.");
+      s.value = normValue(value);
+      s.state = arguments.length > 1 ? normValue(formStateValue) : s.value;
+      pushValue(s);
+    };
+    EI.setValidity = function (flags, message, anchor) {
+      var s = formState(this);
+      if (flags === null || flags === undefined) flags = {};
+      if (typeof flags !== 'object') throw new TypeError("Failed to execute 'setValidity' on 'ElementInternals': The provided value is not of type 'ValidityStateFlags'.");
+      var next = {};
+      FLAGS.forEach(function (f) { next[f] = !!flags[f]; });
+      var bad = anyFlag(next);
+      if (bad && (message === undefined || message === '')) throw new TypeError("Failed to execute 'setValidity' on 'ElementInternals': The second argument should not be empty if one or more flags in the first argument are true.");
+      if (anchor !== null && anchor !== undefined && !hook.contains(s.host, anchor)) throw new window.DOMException('The anchor element is not a descendant of the target element.', 'NotFoundError');
+      s.flags = next;
+      s.message = bad ? String(message) : '';
+      s.anchor = (anchor === null || anchor === undefined) ? s.host : anchor;
+      hook.setInvalid(s.host, bad);
+    };
+    // No validation UI exists to report through, so reportValidity is checkValidity.
+    EI.checkValidity = EI.reportValidity = function () { return hook.checkValidity(formState(this).host); };
+
+    // ARIAMixin: default accessibility semantics, held as settable/readable state.
+    ['role', 'ariaAtomic', 'ariaAutoComplete', 'ariaBrailleLabel', 'ariaBrailleRoleDescription', 'ariaBusy', 'ariaChecked', 'ariaColCount', 'ariaColIndex', 'ariaColIndexText', 'ariaColSpan', 'ariaCurrent', 'ariaDescription', 'ariaDisabled', 'ariaExpanded', 'ariaHasPopup', 'ariaHidden', 'ariaInvalid', 'ariaKeyShortcuts', 'ariaLabel', 'ariaLevel', 'ariaLive', 'ariaModal', 'ariaMultiLine', 'ariaMultiSelectable', 'ariaOrientation', 'ariaPlaceholder', 'ariaPosInSet', 'ariaPressed', 'ariaReadOnly', 'ariaRelevant', 'ariaRequired', 'ariaRoleDescription', 'ariaRowCount', 'ariaRowIndex', 'ariaRowIndexText', 'ariaRowSpan', 'ariaSelected', 'ariaSetSize', 'ariaSort', 'ariaValueMax', 'ariaValueMin', 'ariaValueNow', 'ariaValueText'].forEach(function (name) {
+      accessor(EI, name, function () { var v = state(this).aria[name]; return v === undefined ? null : v; },
+        function (v) { state(this).aria[name] = (v === null || v === undefined) ? null : String(v); });
+    });
+    ['ariaActiveDescendantElement', 'ariaControlsElements', 'ariaDescribedByElements', 'ariaDetailsElements', 'ariaErrorMessageElements', 'ariaFlowToElements', 'ariaLabelledByElements', 'ariaOwnsElements'].forEach(function (name) {
+      accessor(EI, name, function () { var v = state(this).aria[name]; return v === undefined ? null : v; },
+        function (v) { state(this).aria[name] = (v === undefined) ? null : v; });
+    });
+
+    HP.attachInternals = function () {
+      var kind = hook.kind(this);
+      if (kind === 0) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': Unable to attach ElementInternals to non-custom elements.");
+      if (kind < 0) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': ElementInternals is disabled by disabledFeatures.");
+      if (attached.has(this)) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': ElementInternals for the specified element was already attached.");
+      var it, validity, states;
+      building = true;
+      try { it = new ElementInternals(); validity = new ValidityState(); states = new CustomStateSet(); } finally { building = false; }
+      var s = { host: this, value: null, state: null, flags: {}, message: '', anchor: null, validity: validity, states: states, aria: {} };
+      priv.set(it, s);
+      priv.set(validity, s);
+      priv.set(states, { set: new Set() });
+      attached.set(this, it);
+      return it;
+    };
+
+    faceEntriesOf = function (el) {
+      if (hook.kind(el) !== 2) return null;
+      var it = attached.get(el);
+      return (it && !hook.disabled(el)) ? entryPairs(priv.get(it)) : [];
+    };
+
+    // form.checkValidity()/reportValidity(): accessors so they exist on a <form>
+    // only (every element shares this prototype) and a component class or instance
+    // can still define its own. Only form-associated custom elements carry validity
+    // — native controls have no constraint-validation model here and count as valid.
+    ['checkValidity', 'reportValidity'].forEach(function (m) {
+      var impl = function () { return hook.validateForm(this); };
+      Object.defineProperty(HP, m, {
+        get: function () { return (this && this.tagName === 'FORM') ? impl : undefined; },
+        set: function (v) { Object.defineProperty(this, m, { value: v, writable: true, enumerable: true, configurable: true }); },
+        configurable: true
+      });
+    });
+
+    window.ElementInternals = ElementInternals;
+    window.CustomStateSet = CustomStateSet;
+    if (typeof window.ValidityState === 'undefined') window.ValidityState = ValidityState;
   })();
 
   // ---- reportError + cookieStore ----

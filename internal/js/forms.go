@@ -49,8 +49,9 @@ func (b *bridge) htmlCollection(nodes []*html.Node) *goja.Object {
 }
 
 // formControls returns a form's submittable controls in document order. Kept to the
-// form-associated elements a submit serializes; nested forms are not a real thing.
-func formControls(form *html.Node) []*html.Node {
+// form-associated elements a submit serializes — including form-associated custom
+// elements (forminternals.go); nested forms are not a real thing.
+func (b *bridge) formControls(form *html.Node) []*html.Node {
 	var out []*html.Node
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
@@ -59,6 +60,10 @@ func formControls(form *html.Node) []*html.Node {
 				switch c.Data {
 				case "input", "select", "textarea", "button", "fieldset", "output":
 					out = append(out, c)
+				default:
+					if b.formAssoc[c.Data] {
+						out = append(out, c)
+					}
 				}
 			}
 			walk(c)
@@ -92,9 +97,17 @@ func controlValue(n *html.Node) string {
 // serializeForm builds the successful-controls name/value set per the HTML form
 // submission algorithm (skips unnamed/disabled controls, unchecked checkboxes and
 // radios, and non-submitting button/reset types).
-func serializeForm(form *html.Node) url.Values {
+func (b *bridge) serializeForm(form *html.Node) url.Values {
 	vals := url.Values{}
-	for _, c := range formControls(form) {
+	for _, c := range b.formControls(form) {
+		if b.isFACE(c) {
+			// A form-associated custom element contributes its setFormValue entries
+			// (a File as its filename, per the urlencoded encoding algorithm).
+			for _, e := range b.faceEntries(c) {
+				vals.Add(e.name, e.value)
+			}
+			continue
+		}
 		name := getAttr(c, "name")
 		if name == "" || hasAttr(c, "disabled") {
 			continue
@@ -136,6 +149,11 @@ func (b *bridge) submitForm(form *html.Node, fireEvent bool) {
 	if form == nil || form.Data != "form" {
 		return
 	}
+	// requestSubmit() validates interactively first (unless novalidate): an invalid
+	// form-associated custom element fires `invalid` and blocks the submission.
+	if fireEvent && !hasAttr(form, "novalidate") && !b.validateForm(form) {
+		return
+	}
 	if fireEvent && !b.fireSubmitEvent(form) {
 		return // canceled
 	}
@@ -150,7 +168,7 @@ func (b *bridge) submitForm(form *html.Node, fireEvent bool) {
 		method = "GET"
 	}
 	if method == "GET" {
-		target.RawQuery = serializeForm(form).Encode()
+		target.RawQuery = b.serializeForm(form).Encode()
 		target.Fragment = "" // a GET submit drops any fragment
 	}
 	b.navigate(target.String())

@@ -26,7 +26,7 @@ var (
 	selAnchor   = cascadia.MustCompile("a[href]")
 	selImg      = cascadia.MustCompile("img[src]")
 	selForm     = cascadia.MustCompile("form")
-	selField    = cascadia.MustCompile("input, select, textarea")
+	selField    = cascadia.MustCompile("input, select, textarea, [" + page.FormValueAttr + "]")
 	selOption   = cascadia.MustCompile("option")
 	selHeadings = cascadia.MustCompile("h1, h2, h3, h4, h5, h6")
 	selPara     = cascadia.MustCompile("p")
@@ -192,6 +192,10 @@ func extractForms(doc *html.Node, base, pageURL *url.URL, res *idResolver, minte
 			Enctype: strings.ToLower(strings.TrimSpace(attr(f, "enctype"))),
 		}
 		for _, fld := range selField.MatchAll(f) {
+			if isCustomField(fld) {
+				form.Fields = append(form.Fields, extractCustomFields(fld, res, minter)...)
+				continue
+			}
 			form.Fields = append(form.Fields, extractField(fld, res, minter))
 		}
 		out = append(out, form)
@@ -235,6 +239,53 @@ func extractField(n *html.Node, res *idResolver, minter *idMinter) page.Field {
 	}
 	f.ID = minter.mint(fieldPrefix(f.Type), n, accessibleName(n, res), "")
 	return f
+}
+
+// isCustomField reports whether n is a form-associated custom element as reflected
+// onto the tree by the JS engine. A native control carrying the marker stays native.
+func isCustomField(n *html.Node) bool {
+	switch n.Data {
+	case "input", "select", "textarea":
+		return false
+	}
+	return hasAttr(n, page.FormValueAttr)
+}
+
+// extractCustomFields turns a form-associated custom element (a design-system
+// <my-input name="email">) into fields: one per entry it contributes to the form's
+// entry list — normally a single value under its name attribute, several when the
+// component submits a FormData — or one valueless field under its name when it
+// currently submits nothing, so the control is still discoverable and fillable.
+// Type is the element's tag name. The values come from page.FormValueAttr, which the
+// engine writes from ElementInternals.setFormValue; this never consults the JS heap.
+func extractCustomFields(n *html.Node, res *idResolver, minter *idMinter) []page.Field {
+	base := page.Field{
+		Type:        n.Data,
+		Placeholder: attr(n, "placeholder"),
+		Required:    hasAttr(n, "required") || strings.EqualFold(attr(n, "aria-required"), "true"),
+		Disabled:    hasAttr(n, "disabled"),
+		Invalid:     ariaInvalid(n) || hasAttr(n, page.FormInvalidAttr),
+	}
+	label := accessibleName(n, res)
+	var out []page.Field
+	for _, pair := range strings.Split(attr(n, page.FormValueAttr), "&") {
+		k, v, _ := strings.Cut(pair, "=")
+		name, err1 := url.QueryUnescape(k)
+		value, err2 := url.QueryUnescape(v)
+		if name == "" || err1 != nil || err2 != nil {
+			continue
+		}
+		f := base
+		f.Name, f.Value = name, value
+		f.ID = minter.mint(fieldPrefix(f.Type), n, label, "")
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		base.Name = attr(n, "name")
+		base.ID = minter.mint(fieldPrefix(base.Type), n, label, "")
+		out = append(out, base)
+	}
+	return out
 }
 
 func fieldPrefix(fieldType string) string {

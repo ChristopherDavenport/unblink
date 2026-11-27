@@ -165,6 +165,22 @@ type Image struct {
 	Src string `json:"src"`
 }
 
+// The JS engine reflects a form-associated custom element's state onto the node tree
+// with these attributes so form extraction — which reads only the tree, never the JS
+// heap — sees the control. They exist only on the tree handed to extraction (stamped
+// after page JS has finished, or on the snapshot of a live session), never in the DOM
+// page JS observes.
+const (
+	// FormValueAttr marks a form-associated custom element and carries what it
+	// currently contributes to its form's entry list (ElementInternals.setFormValue),
+	// as an application/x-www-form-urlencoded string in entry order. Empty when the
+	// element submits nothing: no value set, no name, or disabled.
+	FormValueAttr = "data-unblink-form-value"
+	// FormInvalidAttr is present when the element fails constraint validation
+	// (ElementInternals.setValidity).
+	FormInvalidAttr = "data-unblink-form-invalid"
+)
+
 // Form is an HTML form and its fields.
 type Form struct {
 	ID      string  `json:"id,omitempty"`

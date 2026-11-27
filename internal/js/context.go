@@ -195,6 +195,9 @@ func (c *Context) Snapshot(ctx context.Context) ([]byte, uint64, error) {
 	err := c.run(ctx, false, nil, nil, func(*goja.Runtime) {
 		root := c.doc
 		if c.bridge != nil {
+			// Form-associated custom elements' submission values ride on the snapshot
+			// as attributes, removed again below so page JS never observes them.
+			defer c.bridge.reflectFormValues()()
 			// Flatten shadow content (resolving <slot>) into a composed clone so the
 			// snapshot shows what a browser would render. Clone-based: the live tree
 			// keeps its separate shadow subtrees intact for the next Dispatch.
