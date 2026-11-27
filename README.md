@@ -99,7 +99,7 @@ The forfeits are design decisions, not gaps, so they're stated up front:
 
 ## Status
 
-**v0.24.0.** The full pipeline works end to end: 18 MCP tools covering reading,
+**v0.25.0.** The full pipeline works end to end: 18 MCP tools covering reading,
 navigation, sessions, forms, structured data, schema extraction, page
 inspection, site discovery, and search. The JavaScript engine is **on by
 default** (opt out with `--disable-js`); the static read path turns most
