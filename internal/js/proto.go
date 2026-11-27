@@ -327,6 +327,13 @@ func (b *bridge) installNodeProto() {
 		other := b.unwrap(call.Argument(0))
 		return vm.ToValue(contains(n, other))
 	})
+	b.protoMethod(p, "isSameNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		return vm.ToValue(b.unwrap(call.Argument(0)) == n)
+	})
+	b.protoMethod(p, "isEqualNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		other := b.unwrap(call.Argument(0))
+		return vm.ToValue(other != nil && equalNodes(n, other))
+	})
 	b.protoMethod(p, "compareDocumentPosition", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		other := b.unwrap(call.Argument(0))
 		switch {
@@ -830,4 +837,44 @@ func nullToEmptyString(v goja.Value) string {
 		return ""
 	}
 	return v.String()
+}
+
+// equalNodes implements the DOM Standard's "node A equals node B": same node
+// type; for elements the same namespace, local name and attribute set (order
+// does not matter); for text, comments and doctypes the same data; and the same
+// number of children, each equal to its counterpart.
+func equalNodes(a, b *html.Node) bool {
+	if a.Type != b.Type {
+		return false
+	}
+	switch a.Type {
+	case html.ElementNode:
+		if a.Data != b.Data || a.Namespace != b.Namespace || len(a.Attr) != len(b.Attr) {
+			return false
+		}
+		for _, x := range a.Attr {
+			found := false
+			for _, y := range b.Attr {
+				if x.Namespace == y.Namespace && x.Key == y.Key {
+					found = x.Val == y.Val
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+	case html.TextNode, html.CommentNode, html.DoctypeNode:
+		if a.Data != b.Data {
+			return false
+		}
+	}
+	ca, cb := a.FirstChild, b.FirstChild
+	for ca != nil && cb != nil {
+		if !equalNodes(ca, cb) {
+			return false
+		}
+		ca, cb = ca.NextSibling, cb.NextSibling
+	}
+	return ca == nil && cb == nil
 }

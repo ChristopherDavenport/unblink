@@ -81,7 +81,6 @@ type bridge struct {
 	// keys off the same sink (onMutate).
 	domVersion      uint64
 	observers       []*mutationObserver
-	pendingRecords  []mutationRecord
 	flushScheduled  bool
 	resolvedPromise *goja.Object  // a pre-resolved Promise, reused to schedule microtask flushes
 	promiseThen     goja.Callable // resolvedPromise.then
@@ -458,6 +457,9 @@ func (b *bridge) documentObject() *goja.Object {
 	b.defineGetter(d, "readyState", func() goja.Value { return vm.ToValue("complete") })
 	b.defineGetter(d, "hidden", func() goja.Value { return vm.ToValue(false) })
 	b.defineGetter(d, "visibilityState", func() goja.Value { return vm.ToValue("visible") })
+	// The one document is always the focused, visible one (visibilityState above),
+	// so hasFocus is true. Routers and data libraries gate refetch/prefetch on it.
+	_ = d.Set("hasFocus", func(goja.FunctionCall) goja.Value { return vm.ToValue(true) })
 	// title reads/writes the live <title> element so a SPA's document.title
 	// assignment lands in the tree extraction sees. The write goes through the
 	// mutation sink: domVersion is the settle/staleness signal.
