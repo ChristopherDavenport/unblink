@@ -39,9 +39,11 @@ var (
 			"input[type=reset], [onclick], [tabindex], summary, [role=tab], " +
 			"[" + page.AriaDefaultPrefix + "role=button]:not([role]), " +
 			"[" + page.AriaDefaultPrefix + "role=tab]:not([role])")
-	// A field that names its form owner by id rather than by ancestry.
+	// A field whose form owner is not (necessarily) its ancestor form: it names the
+	// form by id, or the JS engine stamped the owner it resolved.
 	selFormRef = cascadia.MustCompile(
-		"input[form], select[form], textarea[form], [" + page.FormValueAttr + "][form]")
+		"input[form], select[form], textarea[form], [" + page.FormValueAttr + "][form], " +
+			"[" + page.FormValueAttr + "][" + page.FormOwnerAttr + "]")
 )
 
 // Extract walks p.Doc and fills p.Meta (title, description, links, forms, images,
@@ -215,15 +217,28 @@ func extractForms(doc *html.Node, base, pageURL *url.URL, res *idResolver, minte
 // belongs to its form owner: the form its form="id" attribute names (the first
 // element with that id, if it is a form — otherwise it has no owner), else its
 // nearest ancestor form. The JS engine's form.elements applies the same rule.
+//
+// A form-associated custom element the engine stamped with page.FormOwnerAttr is the
+// exception: its owner is the form carrying that page.FormKeyAttr (none when empty).
+// The engine resolved it on the real trees; in the flattened tree extraction reads, a
+// control from a shadow root sits under forms — and beside ids — it never belonged to.
 func formFields(doc *html.Node, res *idResolver) func(form *html.Node) []*html.Node {
 	if selFormRef.MatchFirst(doc) == nil {
 		// No field names its form: every form owns exactly its descendants.
 		return selField.MatchAll
 	}
+	keyed := map[string]*html.Node{}
+	for _, f := range selForm.MatchAll(doc) {
+		if key := attr(f, page.FormKeyAttr); key != "" && keyed[key] == nil {
+			keyed[key] = f
+		}
+	}
 	owned := map[*html.Node][]*html.Node{}
 	for _, fld := range selField.MatchAll(doc) {
 		var owner *html.Node
-		if id, ok := lookupAttr(fld, "form"); ok {
+		if key, ok := lookupAttr(fld, page.FormOwnerAttr); ok && isCustomField(fld) {
+			owner = keyed[key]
+		} else if id, ok := lookupAttr(fld, "form"); ok {
 			if t := res.get(id); t != nil && t.Data == "form" {
 				owner = t
 			}

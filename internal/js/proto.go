@@ -387,6 +387,14 @@ func (b *bridge) installElementProto() {
 		func(n *html.Node) goja.Value { return vm.ToValue(innerHTML(n)) },
 		func(n *html.Node, v goja.Value) {
 			setInnerHTML(n, v.String())
+			// Parsed-in custom elements upgrade like inserted ones — when the
+			// markup lands in a connected tree (a shadow root's included); a
+			// detached parent's or a <template>'s stays inert until inserted.
+			if n.Data != "template" && b.isConnected(n) {
+				for _, c := range childNodes(n) { // a constructor may edit the list
+					b.upgradeTree(c)
+				}
+			}
 			b.onMutate(mutationRecord{typ: "childList", target: n})
 		})
 	b.protoGetter(p, "outerHTML", func(n *html.Node) goja.Value { return vm.ToValue(outerHTML(n)) })

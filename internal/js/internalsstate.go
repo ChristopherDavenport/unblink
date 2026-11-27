@@ -114,13 +114,46 @@ func (b *bridge) installInternalsState(h *goja.Object) {
 
 // reflectInternals stamps everything extraction needs from ElementInternals onto the
 // tree: form values (reflectFormValues) and default ARIA semantics. The returned
-// func removes it all again.
+// func puts the tree back exactly as it was; a live session calls it once the
+// snapshot is serialized, so page JS never observes the reflection.
 func (b *bridge) reflectInternals() (undo func()) {
-	undoForm, undoARIA := b.reflectFormValues(), b.reflectARIADefaults()
-	return func() {
-		undoForm()
-		undoARIA()
+	var s treeStamp
+	b.reflectFormValues(&s)
+	b.reflectARIADefaults(&s)
+	return s.undo
+}
+
+// treeStamp is the one way the reflection writes to the tree. The writes bypass the
+// mutation sink (no MutationObserver record, no attributeChangedCallback), and undo
+// restores each attribute's prior state — its previous value where the page had set
+// one of these names itself, absence otherwise — so a snapshot leaves nothing a page
+// could detect.
+type treeStamp struct {
+	prior []stampedAttr
+}
+
+type stampedAttr struct {
+	n        *html.Node
+	key, old string
+	had      bool
+}
+
+func (s *treeStamp) set(n *html.Node, key, val string) {
+	s.prior = append(s.prior, stampedAttr{n: n, key: key, old: getAttr(n, key), had: hasAttr(n, key)})
+	setAttr(n, key, val)
+}
+
+// undo unwinds newest-first. An attribute the page already had was overwritten in
+// place and one it lacked was appended, so attribute order comes back too.
+func (s *treeStamp) undo() {
+	for i := len(s.prior) - 1; i >= 0; i-- {
+		if p := s.prior[i]; p.had {
+			setAttr(p.n, p.key, p.old)
+		} else {
+			removeAttr(p.n, p.key)
+		}
 	}
+	s.prior = nil
 }
 
 // reflectARIADefaults writes each custom element's internals-provided default
@@ -128,24 +161,11 @@ func (b *bridge) reflectInternals() (undo func()) {
 // ariaLabelledByElements as page.AriaDefaultLabelledByAttr), so extraction — which
 // never reads the JS heap — can name and describe the control. Every default is
 // written; whether an explicit attribute overrides it is extraction's call, so the
-// two cannot disagree. Like reflectFormValues, the writes bypass the mutation sink
-// and the returned func removes them, so page JS never observes them.
-func (b *bridge) reflectARIADefaults() (undo func()) {
-	if len(b.ariaDefaults) == 0 {
-		return func() {}
-	}
-	type stamp struct {
-		n   *html.Node
-		key string
-	}
-	var stamped []stamp
-	put := func(n *html.Node, key, val string) {
-		setAttr(n, key, val)
-		stamped = append(stamped, stamp{n, key})
-	}
+// two cannot disagree.
+func (b *bridge) reflectARIADefaults(s *treeStamp) {
 	for n, d := range b.ariaDefaults {
 		for key, val := range d.attrs {
-			put(n, page.AriaDefaultPrefix+key, val)
+			s.set(n, page.AriaDefaultPrefix+key, val)
 		}
 		var parts []string
 		for _, ref := range d.labelledBy {
@@ -161,12 +181,7 @@ func (b *bridge) reflectARIADefaults() (undo func()) {
 			}
 		}
 		if len(parts) > 0 {
-			put(n, page.AriaDefaultLabelledByAttr, strings.Join(parts, " "))
-		}
-	}
-	return func() {
-		for _, s := range stamped {
-			removeAttr(s.n, s.key)
+			s.set(n, page.AriaDefaultLabelledByAttr, strings.Join(parts, " "))
 		}
 	}
 }
@@ -267,8 +282,13 @@ func (b *bridge) pageClosest(n *html.Node, selector string, self bool) *html.Nod
 func rewriteStateSelector(sel string) (string, error) {
 	var sb strings.Builder
 	brackets := 0
+	// afterColon: the previous character was a real ':' (so this one would make the
+	// "::" of a pseudo-element). An escaped colon — .a\: — is part of a name instead.
+	afterColon := false
 	for i := 0; i < len(sel); {
 		c := sel[i]
+		wasColon := afterColon
+		afterColon = false
 		switch {
 		case c == '\\' && i+1 < len(sel):
 			sb.WriteString(sel[i : i+2])
@@ -290,8 +310,7 @@ func rewriteStateSelector(sel string) (string, error) {
 			brackets++
 		case c == ']' && brackets > 0:
 			brackets--
-		case c == ':' && brackets == 0 && len(sel)-i >= 7 && strings.EqualFold(sel[i:i+7], ":state(") &&
-			(i == 0 || sel[i-1] != ':'):
+		case c == ':' && brackets == 0 && len(sel)-i >= 7 && strings.EqualFold(sel[i:i+7], ":state(") && !wasColon:
 			j := skipCSSSpace(sel, i+7)
 			name, end, ok := parseCSSIdent(sel, j)
 			if !ok {
@@ -304,6 +323,7 @@ func rewriteStateSelector(sel string) (string, error) {
 			i = end + 1
 			continue
 		}
+		afterColon = c == ':'
 		sb.WriteByte(c)
 		i++
 	}

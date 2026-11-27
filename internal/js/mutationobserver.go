@@ -65,6 +65,9 @@ func (b *bridge) onMutate(rec mutationRecord) {
 				b.syncFACE(rec.target)
 			}
 		}
+		if rec.typ == "childList" || rec.attr == "id" {
+			b.formRefEpoch++
+		}
 		b.syncFormRefs(rec)
 	}
 	if len(b.observers) == 0 {

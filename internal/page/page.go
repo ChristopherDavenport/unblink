@@ -179,6 +179,13 @@ const (
 	// FormInvalidAttr is present when the element fails constraint validation
 	// (ElementInternals.setValidity).
 	FormInvalidAttr = "data-unblink-form-invalid"
+	// FormOwnerAttr carries the element's form owner as the engine resolved it: the
+	// FormKeyAttr value of that <form>, or empty when it has none. Extraction takes
+	// it over ancestry and form="id", which stop describing the owner once shadow
+	// trees have been flattened into the light tree.
+	FormOwnerAttr = "data-unblink-form-owner"
+	// FormKeyAttr names a <form> for FormOwnerAttr.
+	FormKeyAttr = "data-unblink-form-key"
 	// AriaDefaultPrefix prefixes a custom element's default ARIA semantics, set
 	// through ElementInternals (internals.role, internals.ariaLabel, …): the prefix
 	// plus "role" or the aria-* attribute name, e.g. data-unblink-default-aria-label.

@@ -3,6 +3,7 @@ package js
 import (
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -38,7 +39,8 @@ type faceEntry struct {
 type faceState struct {
 	form     *html.Node
 	disabled bool
-	formRef  bool // carries a form attribute (so it is listed in bridge.faceFormRefs)
+	formRef  bool   // carries a form attribute (so it is listed in bridge.faceFormRefs)
+	refID    string // the id that attribute names: its key in bridge.faceFormRefs
 
 	// Submission value from internals.setFormValue: none (null), a single value
 	// submitted under the element's name attribute, or a FormData entry list.
@@ -65,6 +67,7 @@ func (b *bridge) faceStateOf(n *html.Node) *faceState {
 	if st == nil {
 		st = &faceState{}
 		b.faces[n] = st
+		b.faceOrder = append(b.faceOrder, n)
 	}
 	return st
 }
@@ -133,16 +136,34 @@ func faceWillValidate(n *html.Node) bool {
 // formOwner's: the form named by a form="id" attribute, else the nearest ancestor
 // <form>; both stop at a shadow boundary, as the standard's do.
 func (b *bridge) syncFACE(n *html.Node) {
+	b.syncFACEOwner(n, b.formOwner)
+}
+
+// syncFACEOwner is syncFACE with the owner lookup supplied, so a caller re-resolving
+// many elements against one id can share the lookup (resyncFormRef).
+func (b *bridge) syncFACEOwner(n *html.Node, formOwner func(*html.Node) *html.Node) {
 	st := b.faceStateOf(n)
-	if ref := hasAttr(n, "form"); ref != st.formRef {
-		st.formRef = ref
+	if id, ref := getAttr(n, "form"), hasAttr(n, "form"); ref != st.formRef || id != st.refID {
+		if st.formRef {
+			refs := b.faceFormRefs[st.refID]
+			if i := slices.Index(refs, n); i >= 0 {
+				refs = slices.Delete(refs, i, i+1)
+			}
+			if len(refs) == 0 {
+				delete(b.faceFormRefs, st.refID)
+			} else {
+				b.faceFormRefs[st.refID] = refs
+			}
+		}
+		st.formRef, st.refID = ref, id
 		if ref {
-			b.faceFormRefs = append(b.faceFormRefs, n)
-		} else if i := slices.Index(b.faceFormRefs, n); i >= 0 {
-			b.faceFormRefs = slices.Delete(b.faceFormRefs, i, i+1)
+			if b.faceFormRefs == nil {
+				b.faceFormRefs = make(map[string][]*html.Node)
+			}
+			b.faceFormRefs[id] = append(b.faceFormRefs[id], n)
 		}
 	}
-	if owner := b.formOwner(n); owner != st.form {
+	if owner := formOwner(n); owner != st.form {
 		st.form = owner
 		b.invokeLifecycleArgs(n, "formAssociatedCallback", b.wrap(owner))
 	}
@@ -171,39 +192,71 @@ func (b *bridge) syncFACETree(root *html.Node) {
 	walk(root)
 }
 
-// syncFormRefs re-resolves the owner of every form-associated custom element that
-// names its form by id, after a mutation that may have changed what an id resolves
-// to: an id attribute changed, or a subtree carrying a referenced id came or went.
+// syncFormRefs re-resolves the form owner of the form-associated custom elements
+// whose form attribute names an id that rec may have re-pointed: the old and new
+// value of a changed id attribute, and every id carried by a subtree that came or
+// went. Elements naming any other id are not touched, so the cost follows the change
+// rather than the number of form="id" elements on the page.
 func (b *bridge) syncFormRefs(rec mutationRecord) {
 	if len(b.faceFormRefs) == 0 {
 		return
 	}
-	hit := rec.typ == "attributes" && rec.attr == "id"
-	if !hit && (len(rec.added) > 0 || len(rec.removed) > 0) {
-		ids := make(map[string]bool, len(b.faceFormRefs))
-		for _, n := range b.faceFormRefs {
-			ids[getAttr(n, "form")] = true
+	var ids []string
+	note := func(id string) {
+		if id != "" && len(b.faceFormRefs[id]) > 0 && !slices.Contains(ids, id) {
+			ids = append(ids, id)
 		}
-		var carries func(*html.Node) bool
-		carries = func(nd *html.Node) bool {
-			if nd.Type == html.ElementNode && ids[getAttr(nd, "id")] && hasAttr(nd, "id") {
-				return true
-			}
-			for c := nd.FirstChild; c != nil; c = c.NextSibling {
-				if carries(c) {
-					return true
-				}
-			}
-			return false
-		}
-		hit = slices.ContainsFunc(rec.added, carries) || slices.ContainsFunc(rec.removed, carries)
 	}
-	if !hit {
-		return
+	if rec.typ == "attributes" && rec.attr == "id" {
+		note(rec.oldValue)
+		note(getAttr(rec.target, "id"))
+	}
+	var collect func(*html.Node)
+	collect = func(nd *html.Node) {
+		if nd.Type == html.ElementNode {
+			note(getAttr(nd, "id"))
+		}
+		for c := nd.FirstChild; c != nil; c = c.NextSibling {
+			collect(c)
+		}
+	}
+	for _, n := range rec.added {
+		collect(n)
+	}
+	for _, n := range rec.removed {
+		collect(n)
+	}
+	for _, id := range ids {
+		b.resyncFormRef(id)
+	}
+}
+
+// resyncFormRef runs syncFACE over the elements naming id, finding the form the id
+// names once per tree instead of once per element. A callback can mutate the tree
+// mid-loop; formRefEpoch then drops the shared lookups.
+func (b *bridge) resyncFormRef(id string) {
+	var named map[*html.Node]*html.Node // tree root → the <form> id names there, or nil
+	var epoch uint64
+	owner := func(n *html.Node) *html.Node {
+		if getAttr(n, "form") != id || !b.isConnected(n) {
+			return b.formOwner(n)
+		}
+		if named == nil || epoch != b.formRefEpoch {
+			named, epoch = make(map[*html.Node]*html.Node), b.formRefEpoch
+		}
+		root := treeRoot(n)
+		f, ok := named[root]
+		if !ok {
+			if f = findByID(root, id); f != nil && f.Data != "form" {
+				f = nil
+			}
+			named[root] = f
+		}
+		return f
 	}
 	// A callback may re-enter and edit the list.
-	for _, n := range slices.Clone(b.faceFormRefs) {
-		b.syncFACE(n)
+	for _, n := range slices.Clone(b.faceFormRefs[id]) {
+		b.syncFACEOwner(n, owner)
 	}
 }
 
@@ -458,18 +511,17 @@ func (b *bridge) installFormInternals() {
 // reflectFormValues writes each form-associated custom element's current entry-list
 // contribution onto the tree as page.FormValueAttr (and page.FormInvalidAttr when it
 // fails validation), so extraction — which reads only the *html.Node tree, never the
-// JS heap — sees the control and its value. The returned func removes the attributes
-// again; a live session calls it once the snapshot is serialized so page JS never
-// observes them. The writes bypass the mutation sink for the same reason.
+// JS heap — sees the control and its value. It also writes the element's form owner
+// (page.FormOwnerAttr, naming a page.FormKeyAttr stamped on that form): once shadow
+// trees are flattened into the light tree, ancestry and form="id" no longer say
+// which form an element belongs to — a control in a shadow root has no owner
+// outside it — so extraction is told rather than left to infer it.
 //
 // File values are left out: a filename is not the file, and submit_form takes file
 // content from its caller.
-func (b *bridge) reflectFormValues() (undo func()) {
-	if len(b.faces) == 0 {
-		return func() {}
-	}
-	stamped := make([]*html.Node, 0, len(b.faces))
-	for n, st := range b.faces {
+func (b *bridge) reflectFormValues(s *treeStamp) {
+	keys := map[*html.Node]string{}
+	for _, n := range b.faceOrder {
 		if !b.isFACE(n) {
 			continue
 		}
@@ -485,16 +537,18 @@ func (b *bridge) reflectFormValues() (undo func()) {
 			sb.WriteByte('=')
 			sb.WriteString(url.QueryEscape(e.value))
 		}
-		setAttr(n, page.FormValueAttr, sb.String())
-		if st.invalid && faceWillValidate(n) {
-			setAttr(n, page.FormInvalidAttr, "")
+		s.set(n, page.FormValueAttr, sb.String())
+		if b.faces[n].invalid && faceWillValidate(n) {
+			s.set(n, page.FormInvalidAttr, "")
 		}
-		stamped = append(stamped, n)
-	}
-	return func() {
-		for _, n := range stamped {
-			removeAttr(n, page.FormValueAttr)
-			removeAttr(n, page.FormInvalidAttr)
+		key := ""
+		if owner := b.formOwner(n); owner != nil {
+			if key = keys[owner]; key == "" {
+				key = strconv.Itoa(len(keys) + 1)
+				keys[owner] = key
+				s.set(owner, page.FormKeyAttr, key)
+			}
 		}
+		s.set(n, page.FormOwnerAttr, key)
 	}
 }

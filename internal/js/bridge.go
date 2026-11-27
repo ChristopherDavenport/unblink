@@ -137,7 +137,11 @@ type bridge struct {
 	formAssoc         map[string]bool
 	internalsDisabled map[string]bool
 	faces             map[*html.Node]*faceState
-	faceFormRefs      []*html.Node // form-associated custom elements carrying a form="id" attribute
+	faceOrder         []*html.Node // the keys of faces in creation order (deterministic iteration)
+	// Form-associated custom elements carrying a form attribute, by the id it names,
+	// so an id change re-resolves only the elements that name it (syncFormRefs).
+	faceFormRefs map[string][]*html.Node
+	formRefEpoch uint64 // bumped by every mutation that can change what an id names
 	// ElementInternals state every custom element can hold (internalsstate.go): its
 	// default ARIA semantics and its CustomStateSet. Both maps are created on first use.
 	ariaDefaults         map[*html.Node]*ariaDefaults
