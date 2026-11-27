@@ -3,7 +3,7 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
-## Unreleased
+## v0.25.0 — 2026-11-27
 
 ### Added
 
