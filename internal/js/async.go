@@ -180,12 +180,36 @@ func (b *bridge) responseObject(r *Response, respType string) goja.Value {
 	// bodyBytes carries the raw bytes for Response.arrayBuffer()/blob(); the
 	// string body above stays the fast path for text()/json().
 	_ = o.Set("bodyBytes", vm.NewArrayBuffer(r.Body))
+	// rawBytes hands out the pre-transcode octets, which XHR's x-user-defined
+	// decode needs (the binary-as-text idiom). It is present only when the body
+	// was transcoded, and wraps r.Raw without copying, on demand.
+	if raw := r.Raw; len(raw) > 0 && !sameBytes(raw, r.Body) {
+		_ = o.Set("rawBytes", func(goja.FunctionCall) goja.Value {
+			return vm.ToValue(vm.NewArrayBuffer(raw))
+		})
+	}
+	// Set-Cookie and Set-Cookie2 are forbidden response-header names (Fetch
+	// Standard): page script never sees them, whatever the CORS mode, or it
+	// could read HttpOnly cookies. This object is the only route response
+	// headers take to page JS (fetch and XHR both build on it), so they are
+	// dropped here. The cookie jar is fed by the HTTP client below the
+	// Transport and the requests log is operator-facing; neither reads this.
 	h := vm.NewObject()
 	for k, v := range r.Headers {
-		_ = h.Set(strings.ToLower(k), v)
+		k = strings.ToLower(k)
+		if k == "set-cookie" || k == "set-cookie2" {
+			continue
+		}
+		_ = h.Set(k, v)
 	}
 	_ = o.Set("headers", h)
 	return o
+}
+
+// sameBytes reports whether a and b are the same slice (same backing array and
+// length), without comparing contents.
+func sameBytes(a, b []byte) bool {
+	return len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
 }
 
 func (b *bridge) toStringMap(v goja.Value) map[string]string {

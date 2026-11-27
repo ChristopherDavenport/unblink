@@ -823,6 +823,10 @@ const preludeAPIJS = `
 
   var hasNet = (typeof __unblinkFetch === 'function');
 
+  // The engine's own console.error, captured before page code can replace it:
+  // it feeds the render diagnostics and the console tool, and never throws.
+  var engineConsoleError = (window.console && typeof window.console.error === 'function') ? window.console.error : noop;
+
   if (hasNet) {
     window.fetch = function (input, opts) {
       var req;
@@ -872,7 +876,7 @@ const preludeAPIJS = `
       this.readyState = 0; this.status = 0; this.statusText = '';
       this.responseText = ''; this.response = ''; this.responseType = '';
       this.responseURL = ''; this.withCredentials = false; this.timeout = 0;
-      this._method = 'GET'; this._url = ''; this._headers = {}; this._resHeaders = null;
+      this._method = 'GET'; this._url = ''; this._headers = {};
       this._listeners = {};
       this.onreadystatechange = null; this.onloadstart = null; this.onprogress = null;
       this.onload = null; this.onerror = null; this.onabort = null; this.ontimeout = null;
@@ -883,12 +887,15 @@ const preludeAPIJS = `
       // or re-opened the object) sees a stale token and does nothing.
       var gen = 0, sendFlag = false, inflight = null, mimeOverride = null;
       var xmlText = null, xmlDoc; // responseXML source text and its parsed-once cache
+      // Response headers live in this closure, not on the object: page code reads
+      // them only through getResponseHeader/getAllResponseHeaders.
+      var resHeaders = null;
       function invalidState(method, why) {
         return new window.DOMException("Failed to execute '" + method + "' on 'XMLHttpRequest': " + why, 'InvalidStateError');
       }
       function clearResponse() {
         self.status = 0; self.statusText = ''; self.responseURL = '';
-        self.responseText = ''; self._resHeaders = null;
+        self.responseText = ''; resHeaders = null;
         self.response = (self.responseType === '' || self.responseType === 'text') ? '' : null;
         xmlText = null; xmlDoc = undefined;
       }
@@ -902,7 +909,7 @@ const preludeAPIJS = `
       // else the Content-Type header.
       function finalMime() {
         if (mimeOverride !== null) return mimeOverride;
-        return (self._resHeaders && self._resHeaders['content-type']) || '';
+        return (resHeaders && resHeaders['content-type']) || '';
       }
       function essence(m) { return String(m).split(';')[0].trim().toLowerCase(); }
       function progressEvent(type, size, message) {
@@ -916,20 +923,21 @@ const preludeAPIJS = `
       };
       this.setRequestHeader = function (k, v) { self._headers[k] = v; };
       // Set-Cookie is a forbidden response-header name: page JS never reads it
-      // (it would expose HttpOnly cookies).
+      // (it would expose HttpOnly cookies). The Go side already drops it from the
+      // response object (responseObject in async.go); this is the second guard.
       function hiddenHeader(k) { return k === 'set-cookie' || k === 'set-cookie2'; }
       this.getResponseHeader = function (k) {
-        if (!self._resHeaders) return null;
+        if (!resHeaders) return null;
         k = String(k).toLowerCase();
         if (hiddenHeader(k)) return null;
-        var v = self._resHeaders[k];
+        var v = resHeaders[k];
         return v == null ? null : v;
       };
       this.getAllResponseHeaders = function () {
-        if (!self._resHeaders) return '';
-        var names = Object.keys(self._resHeaders).sort(), out = '';
+        if (!resHeaders) return '';
+        var names = Object.keys(resHeaders).sort(), out = '';
         for (var i = 0; i < names.length; i++) {
-          if (!hiddenHeader(names[i])) out += names[i] + ': ' + self._resHeaders[names[i]] + '\r\n';
+          if (!hiddenHeader(names[i])) out += names[i] + ': ' + resHeaders[names[i]] + '\r\n';
         }
         return out;
       };
@@ -957,14 +965,23 @@ const preludeAPIJS = `
         }
         return xmlDoc;
       } });
-      // Handler exceptions propagate (they surface as unhandled rejections in the
-      // render diagnostics rather than vanishing).
+      // Each handler/listener runs isolated, as in a browser: an exception from
+      // one is reported through the engine's console.error and the remaining
+      // listeners and delivery steps still run. Without this a handler that
+      // throws at HEADERS_RECEIVED would strand the request short of DONE.
+      function invoke(fn, type, evt) {
+        try {
+          if (typeof fn === 'function') fn.call(self, evt);
+          else if (fn && typeof fn.handleEvent === 'function') fn.handleEvent(evt);
+        } catch (e) {
+          try { engineConsoleError('Uncaught (in XMLHttpRequest ' + type + ' handler)', e); } catch (e2) {}
+        }
+      }
       function fire(type, evt) {
         evt = evt || progressEvent(type, 0);
-        var h = self['on' + type];
-        if (h) h.call(self, evt);
+        invoke(self['on' + type], type, evt);
         var a = (self._listeners[type] || []).slice();
-        for (var i = 0; i < a.length; i++) a[i].call(self, evt);
+        for (var i = 0; i < a.length; i++) invoke(a[i], type, evt);
       }
       // fail runs the standard's request error steps for error/timeout/abort.
       function fail(type, message) {
@@ -984,11 +1001,14 @@ const preludeAPIJS = `
       // bodyText decodes the response body for responseText. Bodies reach JS
       // already transcoded to UTF-8, so the charset of an overridden MIME type is
       // honoured only for x-user-defined (the binary-as-text idiom: each byte
-      // >= 0x80 maps to U+F700 + byte, read back with "& 0xff").
+      // >= 0x80 maps to U+F700 + byte, read back with "& 0xff"). That decode
+      // needs the octets the server sent: rawBytes() when the body was
+      // transcoded, else bodyBytes (which then are those octets).
       function bodyText(r) {
         var cs = /charset\s*=\s*"?([^";\s]+)/i.exec(mimeOverride === null ? '' : mimeOverride);
         if (!cs || cs[1].toLowerCase() !== 'x-user-defined' || !r.bodyBytes) return r.body;
-        var u8 = new Uint8Array(r.bodyBytes), parts = [];
+        var octets = typeof r.rawBytes === 'function' ? r.rawBytes() : r.bodyBytes;
+        var u8 = new Uint8Array(octets), parts = [];
         for (var i = 0; i < u8.length; i += 8192) {
           var codes = [], end = Math.min(i + 8192, u8.length);
           for (var j = i; j < end; j++) codes.push(u8[j] < 0x80 ? u8[j] : 0xF700 + u8[j]);
@@ -1001,7 +1021,7 @@ const preludeAPIJS = `
         var textual = type === '' || type === 'text';
         var size = r.bodyBytes ? r.bodyBytes.byteLength : 0;
         self.status = r.status; self.statusText = r.statusText || '';
-        self.responseURL = r.url || self._url; self._resHeaders = r.headers || {};
+        self.responseURL = r.url || self._url; resHeaders = r.headers || {};
         self.readyState = 2; fire('readystatechange');
         if (token !== gen) return;
         var text = bodyText(r);
