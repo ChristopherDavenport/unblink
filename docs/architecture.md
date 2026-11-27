@@ -68,7 +68,7 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
 - Parse/extract: `golang.org/x/net/html` + `github.com/andybalholm/cascadia` (selectors)
 - Reduce: `codeberg.org/readeck/go-readability/v2`, `github.com/microcosm-cc/bluemonday`
 - Emit: `github.com/JohannesKaufmann/html-to-markdown/v2`
-- MCP: `github.com/modelcontextprotocol/go-sdk` (official; requires Go ≥ 1.25)
+- MCP: `github.com/modelcontextprotocol/go-sdk` (official; the module as a whole requires Go ≥ 1.26 via `golang.org/x/*`)
 - JS: `github.com/dop251/goja` + `github.com/dop251/goja_nodejs` (eventloop) — pure Go, no cgo
 - JS modules: `github.com/evanw/esbuild/pkg/api` (bundles ESM → classic IIFE) — pure Go, no cgo
 - Robustness: `github.com/andybalholm/brotli` (decode), `golang.org/x/time/rate` (per-host limit),

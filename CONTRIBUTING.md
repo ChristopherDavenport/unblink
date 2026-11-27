@@ -24,7 +24,7 @@ make tidy      # go mod tidy
 ```
 
 Before opening a PR: `make fmt vet lint test eval` must be clean, and new
-behavior needs a test. The MCP SDK needs Go ≥ 1.25; the Makefile exports `GOTOOLCHAIN=auto`
+behavior needs a test. The dependencies need Go ≥ 1.26; the Makefile exports `GOTOOLCHAIN=auto`
 so the toolchain is downloaded automatically — if you invoke `go` directly,
 prefix with `GOTOOLCHAIN=auto`.
 

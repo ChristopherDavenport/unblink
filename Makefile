@@ -1,6 +1,6 @@
 # unblink — pure-Go "browser for AI"
 #
-# The official MCP SDK requires Go >= 1.25, newer than the Go that may be
+# The dependencies (golang.org/x/*) require Go >= 1.26, possibly newer than the Go that may be
 # installed locally. We set GOTOOLCHAIN=auto so the go command downloads and
 # uses the toolchain pinned in go.mod automatically, without touching your
 # global `go env` configuration.

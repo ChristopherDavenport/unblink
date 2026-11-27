@@ -50,7 +50,7 @@ Include the benchstat table in the PR. JS renders settle on two tiers (ADR
 0004): provably-idle pages (no in-flight network, no live timers) close in
 ~1-3ms; anything armed pays the ~60ms quiet window after its last activity.
 
-**Go-version gotcha:** the MCP SDK needs Go ≥ 1.25. The Makefile exports
+**Go-version gotcha:** the `golang.org/x/*` dependencies need Go ≥ 1.26. The Makefile exports
 `GOTOOLCHAIN=auto` so `go` downloads the toolchain pinned in `go.mod`
 automatically. If you invoke `go` directly instead of via `make`, prefix it with
 `GOTOOLCHAIN=auto`.
