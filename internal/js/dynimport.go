@@ -52,6 +52,9 @@ func (b *bridge) importPromise(referrer, spec string) goja.Value {
 		_ = reject(vm.ToValue("import(): JS networking is disabled"))
 		return vm.ToValue(promise)
 	}
+	// The first import() is where module loading may begin: fix the import map now,
+	// so one a classic script inserted before this call is honoured (acquireImportMap).
+	b.acquireImportMap(b.doc)
 	// Resolve on-loop: a relative specifier reads docBaseNow, which must not be
 	// touched from the off-loop goroutine (it races on-loop navigation updates).
 	abs, err := b.moduleResolve(referrer, spec)

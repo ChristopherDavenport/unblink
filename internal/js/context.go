@@ -137,8 +137,6 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.injectContentScriptCSS()
 		b.injectContentScripts(webext.RunAtStart)
 		b.installCSPEvalGate() // CSP unsafe-eval gate before page scripts
-		// Parsed before classic scripts too: their import() honours the import map.
-		b.importMap = parseImportMap(doc, b.docBaseNow())
 		b.runScripts(scripts)
 		if len(modules) > 0 {
 			b.runModules(modules)

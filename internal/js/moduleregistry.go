@@ -128,6 +128,11 @@ func (r *moduleRegistry) instantiateSelf(b *bridge, url string) *moduleInstance 
 	}
 	inst.cjs = cjs
 	for _, spec := range staticRequires(cjs) {
+		// Off-loop and sized by the page: stop once the render is cancelled.
+		if err := b.ctx.Err(); err != nil {
+			inst.instErr = err
+			return inst
+		}
 		if abs, err := b.moduleResolve(url, spec); err == nil {
 			inst.deps = append(inst.deps, abs)
 		}

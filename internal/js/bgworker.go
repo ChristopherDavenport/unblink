@@ -153,7 +153,9 @@ func (w *bgWorker) runBackgroundPage(b *bridge, page string) {
 		b.recordError(fmt.Errorf("background page %q: %w", page, err))
 		return
 	}
-	b.importMap = parseImportMap(pageDoc, b.docBaseNow())
+	// The map lives in the background page, not in the bridge's own document, so it
+	// is registered here rather than lazily when module loading begins.
+	b.acquireImportMap(pageDoc)
 	b.runScripts(collectScripts(pageDoc))
 	b.runModules(collectModuleScripts(pageDoc))
 }

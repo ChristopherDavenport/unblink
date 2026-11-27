@@ -465,15 +465,22 @@ func (c *cspContext) blocksEval() bool {
 // cspAllowInline reports whether an inline script may run, recording an enforced
 // block or a report-only would-block as a diagnostic.
 func (b *bridge) cspAllowInline(text, nonce string) bool {
+	return b.cspAllowInlineElement("inline <script>", text, nonce)
+}
+
+// cspAllowInlineElement is the one inline-script decision, shared by every kind of
+// inline <script> the policy governs: classic and module scripts (cspAllowInline)
+// and import maps (acquireImportMap). what names the element in the diagnostic.
+func (b *bridge) cspAllowInlineElement(what, text, nonce string) bool {
 	if b.csp == nil {
 		return true
 	}
 	if !b.csp.allowsInlineScript(b.base, text, nonce) {
-		b.recordError(fmt.Errorf("blocked by Content-Security-Policy: inline <script> (no matching nonce/hash/'unsafe-inline')"))
+		b.recordError(fmt.Errorf("blocked by Content-Security-Policy: %s (no matching nonce/hash/'unsafe-inline')", what))
 		return false
 	}
 	if b.csp.reportOnlyBlocksInline(b.base, text, nonce) {
-		b.recordError(fmt.Errorf("Content-Security-Policy report-only: would block inline <script>"))
+		b.recordError(fmt.Errorf("Content-Security-Policy report-only: would block %s", what))
 	}
 	return true
 }

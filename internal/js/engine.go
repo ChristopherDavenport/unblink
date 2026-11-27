@@ -294,8 +294,6 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// CSP unsafe-eval gate installs just before page scripts (after trusted
 		// extension content scripts, which keep eval).
 		b.installCSPEvalGate()
-		// Parsed before classic scripts too: their import() honours the import map.
-		b.importMap = parseImportMap(doc, b.docBaseNow())
 		b.runScripts(scripts)
 		if len(modules) > 0 {
 			b.runModules(modules)

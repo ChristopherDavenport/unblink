@@ -3,12 +3,12 @@ package js
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/andybalholm/cascadia"
 	esbuild "github.com/evanw/esbuild/pkg/api"
+	urlpkg "github.com/nlnwa/whatwg-url/url"
 	"golang.org/x/net/html"
 )
 
@@ -16,7 +16,7 @@ const moduleNamespace = "unblink-url"
 
 var (
 	selModuleScript = cascadia.MustCompile("script[type=module]")
-	selImportMap    = cascadia.MustCompile("script[type=importmap]")
+	selAnyScript    = cascadia.MustCompile("script")
 	selPreload      = cascadia.MustCompile("link[rel~=modulepreload], link[rel~=preload]")
 )
 
@@ -88,6 +88,7 @@ func (b *bridge) runModules(modules []*html.Node) {
 	if b.transport == nil {
 		return
 	}
+	b.acquireImportMap(b.doc) // module loading begins: the import map is now fixed
 	importMap := b.importMap
 	plugin := b.modulePlugin()
 	for _, m := range modules {
@@ -292,11 +293,9 @@ func (b *bridge) modulePlugin() esbuild.Plugin {
 // An absolute importer never reads docBaseNow, so the off-loop registry instantiate
 // (always called with a module URL) cannot race on-loop navigation updates.
 func (b *bridge) moduleResolve(importer, spec string) (string, error) {
-	var base *url.URL
-	if iu, err := url.Parse(importer); err == nil && iu.IsAbs() {
-		base = iu
-	} else {
-		base = b.docBaseNow()
+	base, err := urlpkg.Parse(importer)
+	if err != nil {
+		base = whatwgURL(b.docBaseNow())
 	}
-	return b.importMap.resolve(spec, base)
+	return b.importMap.resolve(b.ctx, spec, base)
 }

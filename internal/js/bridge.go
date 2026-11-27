@@ -210,9 +210,11 @@ type bridge struct {
 	reg *moduleRegistry
 
 	// importMap is the document's parsed <script type="importmap"> (nil when it has
-	// none). Set once on the loop before any page script runs and immutable after,
-	// so the off-loop module instantiate may read it.
-	importMap *importMap
+	// none). acquireImportMap sets it once, on the loop, when module loading begins
+	// (importMapAcquired); it is immutable after, so the off-loop module instantiate,
+	// which only starts later, may read it.
+	importMap         *importMap
+	importMapAcquired bool
 }
 
 // resetTransportBudget clears the per-dispatch download budget on the counting
