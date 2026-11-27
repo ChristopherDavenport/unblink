@@ -112,9 +112,9 @@ Lightpanda).
 
 ## Requirements
 
-The dependencies (`golang.org/x/*`) require **Go ≥ 1.26**. The `Makefile` sets
+unblink requires **Go ≥ 1.27**. The `Makefile` sets
 `GOTOOLCHAIN=auto`, so the `go` command downloads the toolchain pinned in
-`go.mod` automatically — you do not need to install Go 1.26 yourself, and your
+`go.mod` automatically — you do not need to install Go 1.27 yourself, and your
 global `go env` is left untouched. (If you run `go` directly rather than via
 `make`, prefix commands with `GOTOOLCHAIN=auto`.)
 

@@ -68,7 +68,7 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
 - Parse/extract: `golang.org/x/net/html` + `github.com/andybalholm/cascadia` (selectors)
 - Reduce: `codeberg.org/readeck/go-readability/v2`, `github.com/microcosm-cc/bluemonday`
 - Emit: `github.com/JohannesKaufmann/html-to-markdown/v2`
-- MCP: `github.com/modelcontextprotocol/go-sdk` (official; the module as a whole requires Go ≥ 1.26 via `golang.org/x/*`)
+- MCP: `github.com/modelcontextprotocol/go-sdk` (official; the module as a whole requires Go ≥ 1.27)
 - JS: `github.com/dop251/goja` + `github.com/dop251/goja_nodejs` (eventloop) — pure Go, no cgo
 - JS modules: `github.com/evanw/esbuild/pkg/api` (bundles ESM → classic IIFE) — pure Go, no cgo
 - Robustness: `github.com/andybalholm/brotli` (decode), `golang.org/x/time/rate` (per-host limit),
@@ -845,7 +845,7 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   engine and buckets every subtest, as an on-demand report rather than a CI gate
   ([ADR 0016](decisions/0016-wpt-conformance.md)). Its roadmap,
   [wpt-compatibility.md](wpt-compatibility.md), drove three fixes in the same release: a native
-  WHATWG `URL` parser (`github.com/nlnwa/whatwg-url`, bound in `internal/js/urlnative.go`)
+  WHATWG `URL` parser (`github.com/nationallibraryofnorway/whatwg-url`, bound in `internal/js/urlnative.go`)
   replacing the regex one, `TextDecoder`/`TextEncoder` correctness, and a DOM batch
   (`DOMException`, `CharacterData` methods, `dispatchEvent` checks).
 

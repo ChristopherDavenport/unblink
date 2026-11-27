@@ -94,7 +94,7 @@ The post-fix 0.979 has no such conflict.
 
 | # | Item | Status | Conformance |
 |---|---|---|---|
-| **P1** | Native WHATWG URL parser (`nlnwa/whatwg-url` via `urlnative.go`) | ✅ done | url **0.115 → 0.979** |
+| **P1** | Native WHATWG URL parser (`nationallibraryofnorway/whatwg-url` via `urlnative.go`) | ✅ done | url **0.115 → 0.979** |
 | **P2** | TextDecoder/TextEncoder correctness (fatal, options, labels, surrogates) | ✅ done | encoding **0.504 → 0.873** |
 | **P3** | DOM fidelity — DOMException + CharacterData + DOMTokenList/createHTMLDocument branding + dispatchEvent; passive-by-default added later (reflected token lists still open) | ✅ done | dom **0.488 → 0.648** (measured before passive-by-default; not re-run since) |
 | **P4** | HTML tree-construction — **maintain only** | already strong | html/syntax **0.944** |
@@ -124,7 +124,7 @@ page that constructs it). The fix is self-contained: swap the regex `URL`/`URLSe
 for a WHATWG state-machine implementation.
 
 **Shipped (v0.23.0):** `window.URL` is now a thin class over a native Go WHATWG
-parser (`github.com/nlnwa/whatwg-url`, bound in `internal/js/urlnative.go`), and
+parser (`github.com/nationallibraryofnorway/whatwg-url`, bound in `internal/js/urlnative.go`), and
 `URLSearchParams` is linked live to `url.search`. The Go-side link/fetch pipeline
 still uses `net/url`.
 

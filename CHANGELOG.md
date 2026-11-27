@@ -41,9 +41,9 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Changed
 
-- **Go 1.26 is now the minimum.** The refreshed `golang.org/x/*` dependencies require
-  it; the `go` directive moved 1.25 → 1.26. `GOTOOLCHAIN=auto` (set by the Makefile)
-  still downloads the toolchain automatically.
+- **Go 1.27 is now the minimum.** The refreshed `golang.org/x/*` dependencies need
+  1.26 and `whatwg-url` 0.9 needs 1.27; the `go` directive moved 1.25 → 1.27.
+  `GOTOOLCHAIN=auto` (set by the Makefile) still downloads the toolchain automatically.
 - **Dependencies refreshed**, including releases that clear govulncheck findings, and a
   reviewed goja/goja_nodejs bump ([ADR 0002](docs/decisions/0002-dependency-pinning-policy.md))
   that picks up upstream fixes for out-of-bounds access through detached TypedArray

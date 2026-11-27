@@ -85,7 +85,7 @@ parentheses. Full detail lives in the [architecture roadmap](architecture.md).
 
 | API | Treatment | Shipped |
 |---|---|---|
-| `URL` / `URLSearchParams` | FULL (native WHATWG parser, `nlnwa/whatwg-url` via `internal/js/urlnative.go`, since v0.23.0; a pragmatic regex parser before that) | Phase 8 — react-router `ReferenceError` at hydration |
+| `URL` / `URLSearchParams` | FULL (native WHATWG parser, `nationallibraryofnorway/whatwg-url` via `internal/js/urlnative.go`, since v0.23.0; a pragmatic regex parser before that) | Phase 8 — react-router `ReferenceError` at hydration |
 | `crypto.getRandomValues` / `randomUUID` | FULL (`Math.random`-backed, non-cryptographic) | Phase 15 — react-aria uuid crash |
 | `structuredClone` | FULL | Phase 8 |
 | `matchMedia` + constant viewport | FULL evaluator vs 1280×720@1x | Phase 21 — was blanket-false, every page took its narrowest branch |
@@ -149,7 +149,7 @@ Regression nets for the shipped items: `internal/js/webapi_tier2_test.go` and th
   [wpt-compatibility.md](wpt-compatibility.md)). The policy was "upgrade only on a
   demonstrated parse divergence"; the WPT `url/` run supplied it (the flagship tests timed
   out in the regex parser). `window.URL` is now a thin class in `globals.go` over the native
-  Go parser `github.com/nlnwa/whatwg-url`, bound in `internal/js/urlnative.go`.
+  Go parser `github.com/nationallibraryofnorway/whatwg-url`, bound in `internal/js/urlnative.go`.
 - ✅ **`DOMMatrix`/`DOMPoint`/`DOMRect`/`DOMQuad`/`Path2D`** (Phase 25) — real pure-JS math
   (matrix compose/inverse/`transformPoint`); `Path2D` records ops, consumed no-op by the canvas
   stub.
