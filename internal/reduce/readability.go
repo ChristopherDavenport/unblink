@@ -54,7 +54,8 @@ func Article(p *page.Page, stripHidden bool) error {
 	// not an article: on a section front or a link directory that block is one
 	// card or the footer blurb. Check the extraction against the page before
 	// trusting it (see partialArticle).
-	if main, partial := partialArticle(src, art.Node); partial {
+	main, partial, coverage := partialArticle(src, art.Node)
+	if partial {
 		return fallback(p, stripHidden, main, page.FallbackPartialArticle)
 	}
 
@@ -84,6 +85,7 @@ func Article(p *page.Page, stripHidden bool) error {
 		ContentNode: art.Node,
 		TextLength:  len(cleanHTML),
 		Source:      "readability",
+		Coverage:    coverage,
 	}
 	if p.Meta.Title == "" {
 		p.Meta.Title = art.Title()
@@ -112,6 +114,14 @@ const (
 	// partialMinDropped: below this much left-out text (~250 tokens) the loss is
 	// too small to act on, and tiny pages must not flip on measurement noise.
 	partialMinDropped = 1000
+	// noteCoverage: an extraction the rule accepts but that holds under this
+	// share of the content region (with at least partialMinDropped left out) is
+	// reported, so the caller can tell "the article" from "most of the page" and
+	// ask for mode=full. It changes nothing about what is returned. On the
+	// real-page corpus the accepted extractions under it are a package reference
+	// that lost its index, a news front that lost its briefs and a landing page
+	// that lost a section — and no page whose article mode is simply right.
+	noteCoverage = 0.85
 	// chromeSlack: an extraction more than this much larger than the whole
 	// content region did not come from it — readability picked a block inside
 	// chrome (a footer "about" blurb, a sidebar). It is then measured against
@@ -122,14 +132,24 @@ const (
 // partialArticle reports whether art, extracted from doc, fails the rule above.
 // When it does and the page has a main landmark that holds the content, main is
 // that landmark (a node of doc); a nil main means "fall back to the whole page".
-func partialArticle(doc, art *html.Node) (main *html.Node, partial bool) {
+// When it passes, coverage is the share of the content region art holds if that
+// is worth reporting (see noteCoverage), else 0.
+func partialArticle(doc, art *html.Node) (main *html.Node, partial bool, coverage float64) {
 	m := dom.MeasureContent(doc)
 	kept, keptLinks, keptAll := dom.ContentText(art)
 	partial, wholePage := isPartial(kept, keptLinks, keptAll, m)
-	if !partial || wholePage {
-		return nil, partial
+	if !partial {
+		if !wholePage && m.Region > 0 && m.Region-kept >= partialMinDropped {
+			if c := float64(kept) / float64(m.Region); c < noteCoverage {
+				coverage = c
+			}
+		}
+		return nil, false, coverage
 	}
-	return m.Main, true
+	if wholePage {
+		return nil, true, 0
+	}
+	return m.Main, true, 0
 }
 
 // isPartial is the arithmetic of the rule, separated so it reads on numbers

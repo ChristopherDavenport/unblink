@@ -323,6 +323,12 @@ type Article struct {
 	// Fallback says why an article reduction returned something else: "" (it did
 	// not), FallbackNoArticle or FallbackPartialArticle.
 	Fallback string
+	// Coverage is the share of the page's content region (dom.MeasureContent)
+	// that a readability extraction holds, set only when the extraction was
+	// accepted but left a noticeable part out — under PartialNoteCoverage, with at
+	// least the partial-article rule's minimum left out. 0 means "nothing to
+	// report": a full or main reduction, or an extraction that holds the page.
+	Coverage float64
 }
 
 // Why an article reduction fell back to a wider one (Article.Fallback).

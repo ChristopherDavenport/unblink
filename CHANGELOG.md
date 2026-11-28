@@ -95,6 +95,11 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   (a browser lets `<input name="submit">` shadow `form.submit`), and
   `'fieldname' in form` is false. Window named access (a global per element id)
   is deliberately not provided.
+- **`read` says how much it did not return.** A paginated result carries
+  `total_tokens` and its note reads "Page 1 of 5 of a document of about 28,452
+  tokens", with the cursor and the `find`/`browse` alternatives. An article-mode
+  result that holds under 85% of the page's main content carries
+  `article_coverage` and a note pointing at `mode=full`.
 
 - **`mode=article` no longer returns a fragment of a hub page.** On a section
   front, a link directory or an index, readability's best block is one card or
@@ -183,6 +188,11 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   and stores are instances of `IDBRequest`, `IDBOpenDBRequest`, `IDBDatabase`,
   `IDBTransaction` and `IDBObjectStore`, which wrapper libraries test with
   `instanceof`; a missing `IDBRequest` was an unhandled `ReferenceError`.
+- **The first page of a paginated `read` is no longer cut short before a long
+  block.** A list, table or code block larger than `max_tokens` made everything
+  before it a page of its own, so some reads returned only the site menu. Such a
+  block is now packed line by line into the page being filled.
+
 - **Inline SVG chart labels are separate.** The `<text>` elements of an inline
   SVG ran together (`EmberReactAngular 1Angular 2`); each is now its own label,
   joined with ` · `, and SVG `<style>`/`<defs>` content never reaches the output.

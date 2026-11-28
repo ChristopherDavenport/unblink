@@ -2,6 +2,7 @@ package tokens_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -83,5 +84,64 @@ func TestFingerprintCoversWholeContent(t *testing.T) {
 	b := tokens.Fingerprint(prefix + "tail-two")
 	if a == b {
 		t.Error("fingerprints collide for same-prefix same-length content")
+	}
+}
+
+// longBlock is one block (no blank lines) of n lines, far over any small budget.
+func longBlock(n int) string {
+	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("- item %d of a long list with enough words to weigh something", i)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// A block larger than the budget is packed into the running chunk, not flushed
+// around: the small preamble before it does not become a page of its own, and
+// the block's tail shares a chunk with what follows.
+func TestPaginateOversizedBlockFillsChunks(t *testing.T) {
+	const budget = 200
+	md := "# Title\n\nA short preamble.\n\n" + longBlock(60) + "\n\nA closing paragraph."
+	chunks := tokens.Paginate(md, budget)
+	if len(chunks) < 3 {
+		t.Fatalf("chunks = %d, want several", len(chunks))
+	}
+	first := chunks[0]
+	if !strings.Contains(first, "A short preamble.") || !strings.Contains(first, "- item 0 ") {
+		t.Errorf("first chunk does not run on into the long block:\n%s", first)
+	}
+	if got := tokens.Estimate(first); got < budget/2 {
+		t.Errorf("first chunk is only %d tokens of a %d budget", got, budget)
+	}
+	last := chunks[len(chunks)-1]
+	if !strings.Contains(last, "- item 59 ") || !strings.Contains(last, "A closing paragraph.") {
+		t.Errorf("the block's tail and the following block are not together:\n%s", last)
+	}
+	for i, c := range chunks {
+		if got := tokens.Estimate(c); got > budget+budget/10 {
+			t.Errorf("chunk %d over budget: %d > %d", i, got, budget)
+		}
+	}
+	// Nothing is lost or reordered: every line appears once, in order.
+	joined := strings.Join(chunks, "\n")
+	prev := -1
+	for i := 0; i < 60; i++ {
+		at := strings.Index(joined, fmt.Sprintf("- item %d of", i))
+		if at <= prev {
+			t.Fatalf("item %d missing or out of order", i)
+		}
+		prev = at
+	}
+	if strings.Count(joined, "- item ") != 60 {
+		t.Errorf("lines duplicated or dropped")
+	}
+}
+
+// A single line over the budget still gets through, alone.
+func TestPaginateOversizedLine(t *testing.T) {
+	line := strings.Repeat("word ", 400)
+	chunks := tokens.Paginate("intro\n\n"+line+"\n\noutro", 50)
+	if got := strings.Join(chunks, " "); !strings.Contains(got, "intro") || !strings.Contains(got, "outro") || strings.Count(got, "word") != 400 {
+		t.Errorf("content lost: %d chunks", len(chunks))
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,8 +85,7 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 	// notes stay outside the fence so they read as trusted server output.
 	text := s.frame(r.Markdown)
 	if r.Truncated {
-		text += fmt.Sprintf("\n\n---\n_Page %d of %d. To continue, call read again with cursor %q._\n",
-			r.Page, r.TotalPages, r.NextCursor)
+		text += continuationNote(r)
 	}
 	if r.WaitMet != nil && !*r.WaitMet {
 		text += "\n\n---\n_wait_for/wait_text never appeared within the timeout; the expected content may be missing from this render._\n"
@@ -122,6 +122,10 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 			why = "the page is a hub or listing, not a single article (the article extraction held only a small part of its content)"
 		}
 		text += fmt.Sprintf("\n\n---\n_mode=article was requested but %s; this is %s._\n", why, what)
+	}
+	if r.ArticleCoverage > 0 {
+		text += fmt.Sprintf("\n\n---\n_mode=article returned the page's article, which holds about %d%% of its main content; the rest (other sections, an index, shorter items beside it) was left out. Call read with mode=full for all of it._\n",
+			int(r.ArticleCoverage*100+0.5))
 	}
 	if r.RenderDiscarded {
 		text += "\n\n---\n_The page's JavaScript ran but left almost none of the server-rendered content (a crashed hydration, or an error/consent shell), so its result was discarded: this is the page as the server sent it, as with render=false. Content only JavaScript adds is absent._\n"
@@ -726,6 +730,29 @@ func (s *Server) handleSession(ctx context.Context, _ *mcp.CallToolRequest, args
 			sessionResult{}, nil
 	}
 	return jsonResult(out), out, nil
+}
+
+// continuationNote tells the agent that this is one page of several, how much
+// of the document it has seen, and the two ways on: follow the cursor, or go
+// straight to the part it wants. A first page is routinely a small share of a
+// long document (a spec, an API reference), and the bare "page 1 of 22" did not
+// say whether what remained was a paragraph or two hundred thousand tokens.
+func continuationNote(r *browser.ReadResult) string {
+	size := ""
+	if r.TotalTokens > 0 {
+		size = fmt.Sprintf(" of a document of about %s tokens", groupThousands(r.TotalTokens))
+	}
+	return fmt.Sprintf("\n\n---\n_Page %d of %d%s — the content above is incomplete. To continue, call read again with cursor %q. To go to one part instead, use find (text search) or browse (heading outline)._\n",
+		r.Page, r.TotalPages, size, r.NextCursor)
+}
+
+// groupThousands formats n with comma thousands separators.
+func groupThousands(n int) string {
+	s := strconv.Itoa(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
 }
 
 // --- untrusted-content framing ---

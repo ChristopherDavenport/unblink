@@ -949,10 +949,14 @@ func deriveNonHTMLMeta(p *page.Page) {
 
 // ReadResult is the paginated Markdown rendering of a page.
 type ReadResult struct {
-	Markdown    string `json:"-"`
-	Mode        string `json:"mode"`
-	Page        int    `json:"page"`
-	TotalPages  int    `json:"total_pages"`
+	Markdown   string `json:"-"`
+	Mode       string `json:"mode"`
+	Page       int    `json:"page"`
+	TotalPages int    `json:"total_pages"`
+	// TotalTokens estimates the whole document across every page, set when the
+	// content is paginated, so the caller can see how much lies beyond this page
+	// before deciding to follow the cursor.
+	TotalTokens int    `json:"total_tokens,omitempty"`
 	NextCursor  string `json:"next_cursor,omitempty"`
 	Truncated   bool   `json:"truncated"`
 	ContentType string `json:"content_type,omitempty"`
@@ -968,6 +972,12 @@ type ReadResult struct {
 	// article and didn't get one.
 	ArticleFallback       bool   `json:"article_fallback,omitempty"`
 	ArticleFallbackReason string `json:"article_fallback_reason,omitempty"`
+	// ArticleCoverage is set when mode=article returned a real article that
+	// nevertheless holds only part of the page's main content: the share it holds
+	// (under 0.85). The rest did not look like part of the article — a second
+	// section, an index, briefs beside the lead — and mode=full returns it. Absent
+	// when the article is essentially the page, and on any fallback.
+	ArticleCoverage float64 `json:"article_coverage,omitempty"`
 
 	// WaitMet is set only when the request carried a wait_for/wait_text gate: true if
 	// the condition appeared before the render returned, false if it never did (the
@@ -1062,6 +1072,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	}
 
 	articleFallback, fallbackReason := false, ""
+	coverage := 0.0
 	pc := *p
 	switch format {
 	case "raw_html", "text":
@@ -1090,6 +1101,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 			// Repeat read or pagination cursor page within the cache TTL: the
 			// reduced+emitted Markdown is already known for this exact page.
 			pc.Markdown, mode, articleFallback, fallbackReason = v.markdown, v.mode, v.articleFallback, v.fallbackReason
+			coverage = v.coverage
 		} else {
 			switch pc.Kind {
 			case "", page.KindHTML:
@@ -1110,6 +1122,9 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 				if mode == "article" && pc.Article != nil && pc.Article.Fallback != "" {
 					mode, articleFallback, fallbackReason = pc.Article.Source, true, pc.Article.Fallback
 				}
+				if mode == "article" && pc.Article != nil {
+					coverage = pc.Article.Coverage
+				}
 				te := time.Now()
 				if err := emit.Markdown(&pc); err != nil {
 					return nil, fmt.Errorf("emit: %w", err)
@@ -1127,7 +1142,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 			if b.safeOutput {
 				pc.Markdown = emit.DefangImages(pc.Markdown)
 			}
-			memo.store(mkey, memoVal{markdown: pc.Markdown, mode: mode, articleFallback: articleFallback, fallbackReason: fallbackReason})
+			memo.store(mkey, memoVal{markdown: pc.Markdown, mode: mode, articleFallback: articleFallback, fallbackReason: fallbackReason, coverage: coverage})
 		}
 	}
 
@@ -1156,6 +1171,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		Mode:                  mode,
 		ArticleFallback:       articleFallback,
 		ArticleFallbackReason: fallbackReason,
+		ArticleCoverage:       coverage,
 		Page:                  idx + 1,
 		TotalPages:            len(chunks),
 		ContentType:           pc.ContentType,
@@ -1165,6 +1181,9 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	if idx+1 < len(chunks) {
 		res.NextCursor = tokens.EncodeCursor(idx+1, fp)
 		res.Truncated = true
+	}
+	if len(chunks) > 1 {
+		res.TotalTokens = tokens.Estimate(pc.Markdown)
 	}
 	if d := pc.RenderDiag; d != nil {
 		if d.WaitRequested {

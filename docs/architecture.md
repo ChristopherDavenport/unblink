@@ -470,6 +470,24 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     contributes that title only when it is the sole name of the link or button it
     sits in (`[GitHub](…)` where there was `[](…)`); beside visible text it adds
     nothing, as in a browser. A wordless drawing is removed.
+  - **A paginated read fills its first page and says what is left.**
+    `tokens.Paginate` flushed the running chunk before any block larger than the
+    budget, so a page whose body is one long list or table opened with a first
+    chunk holding only what preceded it — the site menu (698 of 6,000 tokens on a
+    jQuery API page, recall 0.004). An oversized block is now packed line by line
+    into the running chunk like any other content. The result carries
+    `total_tokens` (the whole document's estimate) when it has more than one
+    page, and the trailing note says so, with the two ways on: the cursor, or
+    `find`/`browse` to go to one part.
+  - **An accepted article that left part of the page out reports it.** The
+    partial-article rule tolerates an extraction holding half to two thirds of the
+    content region when the rest is prose, and anything above. When such an
+    extraction holds under 85% and at least 1000 bytes were left out,
+    `page.Article.Coverage` → `read`'s `article_coverage` carries the share and a
+    note points at `mode=full`. Nothing about what is returned changes; on the
+    real-page corpus three pages get the note (a package reference missing its
+    index, a news front missing its briefs, a landing page missing a section) and
+    no page where article mode is simply right.
   - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
     24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
     cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at
