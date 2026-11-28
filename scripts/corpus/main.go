@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,7 @@ func main() {
 		only         = flag.String("only", "", "comma-separated manifest ids to capture")
 		force        = flag.Bool("force", false, "recapture pages that already have a capture")
 		pause        = flag.Duration("pause", 2*time.Second, "pause between page loads")
+		markdown     = flag.Bool("markdown", true, "also ask each origin once for text/markdown and store what it answers (never scored)")
 	)
 	flag.Parse()
 
@@ -62,6 +64,7 @@ func main() {
 	version := chromeVersion(bin)
 	fmt.Fprintf(os.Stderr, "corpus: capturing with %s (%s)\n", version, bin)
 
+	mdClient := &http.Client{Timeout: 25 * time.Second}
 	var okN, skipN int
 	var failed []string
 	first := true
@@ -93,8 +96,18 @@ func main() {
 			continue
 		}
 		okN++
-		fmt.Fprintf(os.Stderr, "  ok   %-28s status=%d reqs=%d main=%dB body=%dB settled=%v\n",
-			p.ID, o.DocStatus, o.Requests, len(o.MainText), len(o.BodyText), o.Settled)
+		md := ""
+		if *markdown {
+			v := fetchMarkdown(context.Background(), mdClient, p.URL, o.UserAgent, dir)
+			if err := writeMarkdown(dir, v); err != nil {
+				fmt.Fprintf(os.Stderr, "  warn %-28s markdown.json: %v\n", p.ID, err)
+			}
+			if v.Served {
+				md = fmt.Sprintf(" markdown=%dB", v.Size)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "  ok   %-28s status=%d reqs=%d main=%dB body=%dB settled=%v cap=%v inflight=%d errs=%d%s\n",
+			p.ID, o.DocStatus, o.Requests, len(o.MainText), len(o.BodyText), o.Settled, o.HitCap, o.InflightAtSnapshot, len(o.ConsoleErrors), md)
 	}
 	fmt.Fprintf(os.Stderr, "corpus: captured %d, already present %d, failed %d → %s\n", okN, skipN, len(failed), *out)
 	for _, f := range failed {
