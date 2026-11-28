@@ -66,6 +66,7 @@ func Article(p *page.Page, stripHidden bool) error {
 	if stripHidden {
 		dom.StripHidden(art.Node)
 	}
+	dom.MarkCollapsedDetails(art.Node)
 	dom.SeparateInlineSiblings(art.Node)
 
 	cleanHTML, err := sanitizeNode(art.Node)
@@ -184,6 +185,7 @@ func mainRegion(p *page.Page, main *html.Node, stripHidden bool) error {
 		dom.StripHidden(clone)
 	}
 	dom.StripDuplicateBlocks(clone)
+	dom.MarkCollapsedDetails(clone)
 	dom.SeparateInlineSiblings(clone)
 
 	cleanHTML, err := sanitizeNode(clone)
@@ -216,6 +218,7 @@ func Full(p *page.Page, stripHidden bool) error {
 		dom.StripHidden(clone)
 	}
 	dom.StripDuplicateBlocks(clone)
+	dom.MarkCollapsedDetails(clone)
 	dom.SeparateInlineSiblings(clone)
 
 	cleanHTML, err := sanitizeNode(clone)

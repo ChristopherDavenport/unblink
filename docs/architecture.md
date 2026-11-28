@@ -450,6 +450,16 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     paragraphs, with touching cells kept apart by `dom.SeparateInlineSiblings`.
     Undeclared layout tables with single-line cells do come out as grids (Hacker
     News); that reads no worse than before and keeps each row's cells together.
+  - **A closed `<details>` is kept and marked (`dom.MarkCollapsedDetails`).** Its
+    summary gets a leading `▸ `, and its content follows as before. This is
+    deliberately different from the hidden rules (`dom.IsHidden`: `hidden`,
+    `aria-hidden`, inline `display:none`, a closed `<dialog>`), whose subtrees are
+    dropped: those are not part of what the page shows, while a `<details>` is
+    in-flow content one click away and is where FAQ answers and member lists
+    live. Dropping the content was measured on the real-page corpus and rejected
+    — mean recall −0.008, one page 0.99 → 0.30, since pages open `<details>` from
+    CSS and script without the attribute — for a precision gain of 0.004. Article
+    mode and full mode behave the same.
   - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
     24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
     cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at

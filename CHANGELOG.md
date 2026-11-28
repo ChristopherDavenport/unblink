@@ -56,6 +56,10 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   The work itself is unchanged, so a cold render (pool disabled, or a burst past
   the pool) costs what it did, and an idle pooled runtime holds about 1.6 MiB of
   heap where a bare loop held far less.
+- **A collapsed `<details>` is marked in `read` output.** Its summary line now
+  starts with `▸ `, so an agent can tell content the page shows from content the
+  page keeps behind a disclosure. The content itself is still emitted, in every
+  mode.
 
 - **Module scripts load through the module registry.** One instance per module URL is
   now shared by every importer in a render, static or dynamic. A literal `import()`

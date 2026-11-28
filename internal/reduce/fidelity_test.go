@@ -64,3 +64,21 @@ func TestFullTables(t *testing.T) {
 		}
 	}
 }
+
+// A closed <details> keeps its content and is labelled as collapsed; a closed
+// <dialog> is not part of the page and stays out.
+func TestCollapsedDetailsKeptAndMarked(t *testing.T) {
+	body := `<main><h1>FAQ</h1>
+		<details><summary>How do I reset it?</summary><p>Hold the button for ten seconds.</p></details>
+		<details open><summary>Already open</summary><p>Visible answer.</p></details>
+		<dialog><p>DIALOG-TEXT</p></dialog></main>`
+	md := fullMarkdown(t, body)
+	for _, want := range []string{"▸ How do I reset it?", "Hold the button for ten seconds.", "Already open", "Visible answer."} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown missing %q:\n%s", want, md)
+		}
+	}
+	if strings.Contains(md, "▸ Already open") || strings.Contains(md, "DIALOG-TEXT") {
+		t.Errorf("open details marked, or closed dialog emitted:\n%s", md)
+	}
+}
