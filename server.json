@@ -6,11 +6,11 @@
     "url": "https://github.com/ChristopherDavenport/unblink",
     "source": "github"
   },
-  "version": "0.25.0",
+  "version": "0.26.0",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/christopherdavenport/unblink:0.25.0",
+      "identifier": "ghcr.io/christopherdavenport/unblink:0.26.0",
       "runtimeHint": "docker",
       "transport": {
         "type": "stdio"
