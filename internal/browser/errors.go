@@ -26,6 +26,7 @@ const (
 	ErrRobots         ErrorCode = "robots_disallowed" // --respect-robots: the site's robots.txt disallows the URL
 	ErrCursorExpired  ErrorCode = "cursor_expired"    // page content changed; restart without a cursor
 	ErrTimeout        ErrorCode = "timeout"           // the operation ran out of time
+	ErrLiveStopped    ErrorCode = "live_js_stopped"   // the page's scripts ran away; its live runtime was shut down
 	ErrFetchFailed    ErrorCode = "fetch_failed"      // network-level fetch failure
 	ErrInternal       ErrorCode = "internal"          // unexpected failure inside unblink
 )

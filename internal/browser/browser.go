@@ -154,6 +154,7 @@ type options struct {
 	jsConcurrency      int
 	jsMaxLive          int
 	jsMemLimit         uint64
+	jsLiveTaskBudget   time.Duration // see WithJSLiveTaskBudget
 	jsAssetCache       bool
 	rateRPS            float64
 	rateBurst          int
@@ -278,6 +279,14 @@ func WithoutCSP(disable bool) Option { return func(o *options) { o.jsDisableCSP 
 // session and page survive — the next interact reopens it). 0 keeps the default.
 func WithJSMaxLive(n int) Option { return func(o *options) { o.jsMaxLive = n } }
 
+// WithJSLiveTaskBudget sets how long one page task may run on a session's live
+// runtime while no tool call is in flight before it is interrupted; a page whose
+// tasks keep exceeding it has its runtime shut down (js.ErrRunaway, reported as
+// live_js_stopped). 0 keeps js.DefaultLiveTaskBudget. Not wired to a flag.
+func WithJSLiveTaskBudget(d time.Duration) Option {
+	return func(o *options) { o.jsLiveTaskBudget = d }
+}
+
 // WithJSMemoryLimit caps the Go heap running page JS may grow before every live
 // runtime is interrupted (ADR-0003). 0 disables the guard. Negative is treated
 // as 0 by the flag layer.
@@ -375,7 +384,7 @@ func New(opts ...Option) (*Browser, error) {
 		if conc <= 0 {
 			conc = DefaultJSConcurrency()
 		}
-		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithConcurrency(conc), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic), js.WithMemoryLimit(o.jsMemLimit)}
+		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithConcurrency(conc), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic), js.WithMemoryLimit(o.jsMemLimit), js.WithLiveTaskBudget(o.jsLiveTaskBudget)}
 		if o.jsAssetCache {
 			jsOpts = append(jsOpts, js.WithAssetCache(DefaultCacheTTL))
 		}
@@ -1790,6 +1799,10 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 	// read, so first-interact bracketing still covers only the dispatch.
 	v0, v0err := lc.DOMVersion(ctx)
 	res, err := lc.Dispatch(ctx, js.Action{Selector: selector, Type: event, Value: value, Key: key})
+	if errors.Is(err, js.ErrRunaway) {
+		b.liveStopped(sess, lc)
+		return nil, errLiveStopped(sessionID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1884,12 +1897,16 @@ func (b *Browser) trimLiveContexts(opening *session.Session) {
 // full path (SetLive resets the recorded version).
 func (b *Browser) refreshFromLive(ctx context.Context, sess *session.Session, lc js.LiveContext) (*page.Page, error) {
 	cur := sess.Current()
-	if v, err := lc.DOMVersion(ctx); err == nil {
+	v, verr := lc.DOMVersion(ctx)
+	if verr == nil {
 		if pv, ok := sess.LiveSyncVersion(); ok && pv == v {
 			return cur, nil
 		}
 	}
 	snap, ver, err := lc.Snapshot(ctx)
+	if errors.Is(verr, js.ErrRunaway) || errors.Is(err, js.ErrRunaway) {
+		return b.liveStopped(sess, lc), nil
+	}
 	if err != nil {
 		return cur, nil
 	}
@@ -1909,6 +1926,47 @@ func (b *Browser) refreshFromLive(ctx context.Context, sess *session.Session, lc
 	sess.ReplaceCurrentPage(&np)
 	sess.SetLiveSyncVersion(ver)
 	return &np, nil
+}
+
+// liveStoppedNote is the js_errors line a session page carries once its live
+// runtime has been stopped by the idle watchdog (js.ErrRunaway).
+const liveStoppedNote = "live JavaScript runtime stopped: the page's scripts kept running without yielding; this is the last page state captured before that"
+
+// liveStopped handles a live runtime the js idle watchdog shut down: the handle
+// is dropped (so the next interact opens a fresh runtime from the page's
+// original bytes) and the session's current page — the last state that was
+// snapshotted — is marked, so a read says its JavaScript is no longer running
+// instead of passing a frozen snapshot off as live.
+func (b *Browser) liveStopped(sess *session.Session, lc js.LiveContext) *page.Page {
+	sess.DropLive(lc)
+	cur := sess.Current()
+	if cur == nil {
+		return nil
+	}
+	if cur.RenderDiag != nil {
+		for _, e := range cur.RenderDiag.Errors {
+			if e == liveStoppedNote {
+				return cur
+			}
+		}
+	}
+	np := *cur
+	var d page.RenderDiag
+	if cur.RenderDiag != nil {
+		d = *cur.RenderDiag
+	}
+	d.Errors = append([]string{liveStoppedNote}, d.Errors...) // first: js_errors is capped
+	np.RenderDiag = &d
+	sess.ReplaceCurrentPage(&np)
+	return &np
+}
+
+// errLiveStopped is interact's answer when the runtime it was about to drive (or
+// was driving) has been stopped. Retryable: the next interact reloads the page's
+// scripts from scratch — which the message says, since in-page state is gone.
+func errLiveStopped(sessionID string) *Error {
+	return &Error{Code: ErrLiveStopped, Retryable: true, Err: js.ErrRunaway,
+		Message: fmt.Sprintf("session %q: the page's JavaScript kept running without yielding and its live runtime was shut down; in-page state (variables, timers, listeners) is lost. The session's page is the last state captured. Calling interact again reloads the page's scripts from the start", sessionID)}
 }
 
 func selectForm(forms []page.Form, ref string) (page.Form, bool) {

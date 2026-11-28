@@ -1017,9 +1017,27 @@ the event it is waiting for has happened: the render watchdog and context
 cancellation until the settle closes, and `Render`/`Context.Close` until
 `loop.Terminate()` has joined (Terminate can only stop a loop between jobs).
 `TestRenderReturnsWhenASecondRunawayTaskIsQueued` and
-`TestLiveContextSurvivesRunawayCallbacks` hold it. One gap remains: a live
-session's loop is unwatched *between* operations, so a runaway callback there
-spins a core until the next operation or the close.
+`TestLiveContextSurvivesRunawayCallbacks` hold it.
+
+**A live session between operations** (`Context.watch`, `internal/js/context.go`).
+An operation has its own wall-clock guard, but between tool calls a live runtime
+keeps serving the page's timers and network callbacks with nobody waiting on it,
+and a session can sit idle for a long time. An idle watchdog bounds that: every
+250 ms it queues a no-op job on the loop, and a job not run within the task budget
+(2 s, `js.DefaultLiveTaskBudget`) means the loop has been inside one page task
+that long. The task is interrupted — unless an operation owns the loop, in which
+case the operation's guard applies and a legitimately long `Dispatch` is left
+alone; a mutex orders the watchdog's interrupt against the operation's start, so
+the interrupt can never land on the operation that follows a runaway task. An
+interrupt unwinds one task and the page can schedule another, so over-budget
+tasks are counted: three in a row with no promptly-answered probe between them and
+the runtime is shut down. Every later operation returns `js.ErrRunaway`; the
+browser drops the handle, `interact` answers `live_js_stopped` (retryable — the
+next interact reloads the page's scripts, in-page state lost), and a `read` of the
+session returns the last captured page with a `js_errors` line saying its
+JavaScript is no longer running. A single long task costs that task, not the
+runtime. An operation queued behind a context that closes (eviction, or this stop)
+now returns instead of waiting on a job the terminated loop will never run.
 
 **Timer clamp, bounded after its deadline.** A one-shot timer whose delay would
 outlast the render budget is pulled in to fire 600 ms before the budget ends, so

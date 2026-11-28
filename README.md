@@ -281,7 +281,8 @@ re-created via `session(action=new)` — credentials are never carried over
 silently. Errors follow a stable `error [code]: message` convention
 (`bad_input`, `session_expired`, `no_current_page`, `js_required`,
 `not_configured`, `blocked` (SSRF guard), `cursor_expired`, `timeout`,
-`fetch_failed`…), and every tool carries MCP annotations (read-only vs
+`live_js_stopped` (a session page's scripts ran away and its runtime was shut
+down; retry reloads them), `fetch_failed`…), and every tool carries MCP annotations (read-only vs
 state-changing) so hosts can gate sensitive actions. JS render diagnostics
 (`framework`, `js_errors`, `render_discarded`) and reduction fallbacks
 (`article_fallback`, `article_fallback_reason`) are reported in `read`/`interact`

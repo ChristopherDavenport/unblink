@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,24 @@ const (
 const SettleTaskHoldMax = settleTaskHoldMax
 
 var errContextClosed = errors.New("js: live context is closed")
+
+// ErrRunaway is returned by every operation on a live context the idle watchdog
+// has stopped: page code kept running tasks that never yielded while no operation
+// was in flight (see Context.watch). The runtime is gone; the caller should drop
+// the handle and say so, not treat it as an ordinary close.
+var ErrRunaway = errors.New("js: live context stopped: page script kept running without yielding")
+
+// Idle-watchdog defaults (see Context.watch). A task is one event-loop job: a
+// timer callback, a fetch continuation, a listener.
+const (
+	// DefaultLiveTaskBudget is how long one page task may run between operations
+	// before it is interrupted.
+	DefaultLiveTaskBudget = 2 * time.Second
+	// liveMaxStrikes consecutive over-budget tasks stop the context.
+	liveMaxStrikes = 3
+	// liveProbeEvery is how often the watchdog checks that the loop still turns.
+	liveProbeEvery = 250 * time.Millisecond
+)
 
 // LiveContext is a persistent per-session JavaScript runtime bound to one page.
 // Unlike Render (one-shot), the runtime, its event loop, the DOM bridge, and all
@@ -102,6 +121,15 @@ type Context struct {
 
 	closed    atomic.Bool
 	closeOnce sync.Once
+	closedCh  chan struct{} // closed by Close; stops the idle watchdog
+
+	// Idle watchdog state (see watch). wdMu orders the watchdog's Interrupt
+	// against an operation's start, so an interrupt aimed at a runaway page task
+	// can never land on the operation that follows it.
+	taskBudget time.Duration
+	wdMu       sync.Mutex
+	opRunning  bool // an operation's job (fn + settle) is on the loop; guarded by wdMu
+	runaway    atomic.Bool
 }
 
 // Open starts a persistent runtime, loads doc into it (scripts + lifecycle), and
@@ -113,7 +141,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 	}
 	loop := e.takeLoop()
 	loop.Start()
-	c := &Context{loop: loop, timeout: e.timeout, memGuard: e.memGuard, doc: doc}
+	c := &Context{loop: loop, timeout: e.timeout, memGuard: e.memGuard, doc: doc, closedCh: make(chan struct{}), taskBudget: e.liveTaskBudget}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
 	scripts := collectScripts(doc)
@@ -165,7 +193,96 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		c.Close()
 		return nil, err
 	}
+	go c.watch()
 	return c, nil
+}
+
+// watch is the idle watchdog: it bounds page code that runs while no operation
+// is in flight. An operation has its own wall-clock guard (run), but between
+// operations a live context's loop keeps serving the page's timers and network
+// callbacks with nobody waiting on it — a callback that never returns
+// (setInterval(function(){for(;;){}},10)) would spin a core until the next
+// operation or the close, and a session can sit idle for a long time.
+//
+// The loop is single-goroutine, so "is a task stuck?" is asked the only way that
+// cannot race it: a no-op job is queued, and if it has not run within the task
+// budget the loop has been inside one job that long. Unless an operation owns
+// the loop (its guard applies, and a long Dispatch within its budget is
+// legitimate), that job is page code and is interrupted. An interrupt unwinds
+// one task only — the page may schedule another — so consecutive over-budget
+// tasks are counted, and at liveMaxStrikes the context is stopped: the runtime
+// is closed and every later operation returns ErrRunaway. A probe answered in
+// time resets the count, so occasional long tasks never add up to a stop.
+func (c *Context) watch() {
+	tick := time.NewTicker(liveProbeEvery)
+	defer tick.Stop()
+	strikes := 0
+	for {
+		select {
+		case <-c.closedCh:
+			return
+		case <-tick.C:
+		}
+		ack := make(chan struct{})
+		if !c.loop.RunOnLoop(func(vm *goja.Runtime) {
+			// Whatever task the watchdog interrupted has unwound by the time this
+			// runs; drop a flag that arrived just after it returned on its own so
+			// it cannot unwind the next, innocent task.
+			c.wdMu.Lock()
+			if !c.opRunning {
+				vm.ClearInterrupt()
+			}
+			c.wdMu.Unlock()
+			close(ack)
+		}) {
+			return
+		}
+		prompt := true
+		budget := time.NewTimer(c.taskBudget)
+	wait:
+		for {
+			select {
+			case <-ack:
+				break wait
+			case <-c.closedCh:
+				budget.Stop()
+				return
+			case <-budget.C:
+				prompt = false
+				if c.interruptIdleTask() {
+					strikes++
+					if strikes >= liveMaxStrikes {
+						c.runaway.Store(true)
+						slog.Warn("js: live context stopped: page tasks kept exceeding the idle task budget", "budget", c.taskBudget, "strikes", strikes)
+						c.Close()
+						return
+					}
+				}
+				budget.Reset(c.taskBudget)
+			}
+		}
+		budget.Stop()
+		// Only a probe answered within the budget clears the count. One that
+		// was slow because an operation owned the loop says nothing about the
+		// page's own tasks either way.
+		if prompt {
+			strikes = 0
+		}
+	}
+}
+
+// interruptIdleTask interrupts the task on the loop unless an operation owns it,
+// and reports whether it did.
+func (c *Context) interruptIdleTask() bool {
+	c.wdMu.Lock()
+	defer c.wdMu.Unlock()
+	if c.opRunning {
+		return false
+	}
+	if vm := c.vm.Load(); vm != nil {
+		vm.Interrupt("unblink: live task budget")
+	}
+	return true
 }
 
 // Dispatch fires one event on the live DOM and waits for it to settle, holding the
@@ -252,6 +369,7 @@ func (c *Context) PendingNavigation(ctx context.Context) (string, error) {
 func (c *Context) Close() {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
+		close(c.closedCh)
 		if b := c.bridge; b != nil {
 			b.extHost.notifyTabRemoved(b.tabID) // drop the extension's page store for this session
 		}
@@ -277,13 +395,23 @@ func (c *Context) Close() {
 func (c *Context) run(ctx context.Context, waitSettle bool, cond *WaitCondition, stats *settleStats, fn func(vm *goja.Runtime)) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.runaway.Load() {
+		return ErrRunaway
+	}
 	if c.closed.Load() {
 		return errContextClosed
 	}
 
 	done := make(chan struct{})
 	var once sync.Once
-	closeDone := func() { once.Do(func() { close(done) }) }
+	closeDone := func() {
+		once.Do(func() {
+			c.wdMu.Lock()
+			c.opRunning = false
+			c.wdMu.Unlock()
+			close(done)
+		})
+	}
 
 	scheduled := c.loop.RunOnLoop(func(vm *goja.Runtime) {
 		// A Go panic here would crash the loop goroutine; recover and unblock the
@@ -293,7 +421,13 @@ func (c *Context) run(ctx context.Context, waitSettle bool, cond *WaitCondition,
 				closeDone()
 			}
 		}()
-		vm.ClearInterrupt() // clear any flag a previously-interrupted op left armed
+		// From here the operation owns the loop: the idle watchdog stands down,
+		// and any flag a previously-interrupted op or the watchdog left armed is
+		// cleared under the same lock so neither can unwind this operation.
+		c.wdMu.Lock()
+		c.opRunning = true
+		vm.ClearInterrupt()
+		c.wdMu.Unlock()
 		fn(vm)
 		if waitSettle {
 			settlePoll(vm, c.loop, c.bridge, c.timeout, cond, stats, closeDone)
@@ -302,19 +436,45 @@ func (c *Context) run(ctx context.Context, waitSettle bool, cond *WaitCondition,
 		}
 	})
 	if !scheduled {
+		if c.runaway.Load() {
+			return ErrRunaway
+		}
+		return errContextClosed
+	}
+
+	// The job is dropped, not run, if the context closes first (eviction, or the
+	// idle watchdog stopping a runaway page): wait on the close too, or this
+	// operation would wait on done forever.
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-c.closedCh:
+		}
+		close(stop)
+	}()
+	closedErr := func() error {
+		select {
+		case <-done:
+			return nil
+		default:
+		}
+		if c.runaway.Load() {
+			return ErrRunaway
+		}
 		return errContextClosed
 	}
 
 	hard := time.NewTimer(c.timeout + settleGrace)
 	defer hard.Stop()
 	select {
-	case <-done:
-		return nil
+	case <-stop:
+		return closedErr()
 	case <-hard.C:
-		interruptUntil(c.vm.Load(), "unblink: live op timeout", done)
-		return nil
+		interruptUntil(c.vm.Load(), "unblink: live op timeout", stop)
+		return closedErr()
 	case <-ctx.Done():
-		interruptUntil(c.vm.Load(), "unblink: cancelled", done)
+		interruptUntil(c.vm.Load(), "unblink: cancelled", stop)
 		return ctx.Err()
 	}
 }

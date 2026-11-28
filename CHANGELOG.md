@@ -23,8 +23,9 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   access). See the 2026-11-27 amendment to
   [ADR 0018](docs/decisions/0018-module-instance-registry.md).
 
-- **Untrusted page JavaScript could hang a render forever.** Confirmed on v0.25.0;
-  earlier releases were not checked. The render watchdog stops a script that never
+- **Untrusted page JavaScript could hang a render forever.** Affected versions:
+  v0.16.0 (the first public release) through v0.25.0 — reproduced on every tagged
+  release. The render watchdog stops a script that never
   yields by interrupting the engine, and an interrupt unwinds exactly one call. If
   another callback that never returns was already queued — the next tick of
   `setInterval(function () { for (;;) {} }, 10)` is enough — the event loop started
@@ -32,9 +33,18 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   released and one CPU core spun until the process exited; a few such pages exhaust
   the render concurrency limit. A live session's operations and its close could hang
   the same way. The engine now keeps interrupting until the render's settle has
-  closed and until its event loop has stopped. Not fixed here: between two
-  operations of a live session a runaway callback still spins a core until the next
-  operation or the session's close interrupts it. `--disable-js` was not affected.
+  closed and until its event loop has stopped. `--disable-js` was not affected.
+
+- **A session page could spin a CPU core between tool calls.** Present on `main`
+  after v0.25.0; tagged releases were not individually tested. A session's live JavaScript
+  runtime keeps serving the page's timers between tool calls, and nothing watched
+  it then: a timer callback that never returns spun one core until the next call or
+  the session's close. An idle watchdog now interrupts any page task that runs
+  longer than 2 s while no tool call is in flight, and shuts the runtime down after
+  three in a row. `interact` then reports `live_js_stopped` (retrying reloads the
+  page's scripts; in-page state is lost) and `read` returns the last captured page
+  with a `js_errors` line saying its JavaScript is no longer running. A tool call
+  queued behind a runtime that closes now returns instead of waiting forever.
 
 ### Changed
 

@@ -164,7 +164,11 @@ the agent via the `requests` tool); only the page-JS *read* is denied. The layer
   — so never follow it with a bare `<-done` or `loop.Terminate()`: a second
   never-returning callback (`setInterval(() => { for (;;) {} }, 10)`) would run
   uninterrupted and the wait would never end. Use `interruptUntil`
-  (`internal/js/engine.go`).
+  (`internal/js/engine.go`). A live session's loop is also watched *between*
+  operations (`Context.watch`): a page task over the 2 s idle budget is
+  interrupted, three in a row shut the runtime down (`js.ErrRunaway` →
+  `live_js_stopped`), and the watchdog stands down while an operation owns the
+  loop — keep any new on-loop engine work inside `Context.run` so it counts as one.
 
 Shared implementation pattern for the JS-side policies: an `Env` field
 (`AllowCrossOrigin`/`DisableSRI`/`DisableCSP`/`ResponseHeaders`) → a bridge field →

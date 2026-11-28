@@ -51,6 +51,8 @@ type Engine struct {
 	webdriver bool           // navigator.webdriver; true unless the operator opted into --tls-mimic parity
 	memGuard  *memGuard      // heap watchdog over all live/one-shot runtimes; nil when disabled
 	extHost   *ExtensionHost // loaded WebExtensions (network rules); nil when none configured
+
+	liveTaskBudget time.Duration // idle-watchdog task budget for live contexts (Context.watch)
 }
 
 // Option configures an Engine.
@@ -64,10 +66,16 @@ type config struct {
 	webdriver  bool
 	memLimit   uint64
 	extensions []*webext.Bundle
+	liveTask   time.Duration
 }
 
 // WithTimeout sets the wall-clock budget for a single render.
 func WithTimeout(d time.Duration) Option { return func(c *config) { c.timeout = d } }
+
+// WithLiveTaskBudget sets how long one page task may run on a live context
+// between operations before the idle watchdog interrupts it (default
+// DefaultLiveTaskBudget). Repeated offenders stop the context; see Context.watch.
+func WithLiveTaskBudget(d time.Duration) Option { return func(c *config) { c.liveTask = d } }
 
 // WithConcurrency caps how many renders may run at once.
 func WithConcurrency(n int) Option { return func(c *config) { c.concurrent = n } }
@@ -114,6 +122,10 @@ func New(opts ...Option) *Engine {
 		c.concurrent = DefaultMaxConcurrent
 	}
 	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent), assets: newAssetCache(c.assetTTL), webdriver: c.webdriver, memGuard: newMemGuard(c.memLimit), extHost: newExtensionHost(c.extensions)}
+	e.liveTaskBudget = c.liveTask
+	if e.liveTaskBudget <= 0 {
+		e.liveTaskBudget = DefaultLiveTaskBudget
+	}
 	if c.prewarm > 0 {
 		e.pool = make(chan *eventloop.EventLoop, c.prewarm)
 		e.stop = make(chan struct{})

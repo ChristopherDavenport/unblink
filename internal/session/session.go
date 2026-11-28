@@ -166,6 +166,21 @@ func (s *Session) dropLiveLocked() js.LiveContext {
 	return lc
 }
 
+// DropLive detaches lc if it is still the session's live runtime and closes it.
+// Used when the runtime has stopped on its own (js.ErrRunaway): the session keeps
+// its current page, and the next interact opens a fresh runtime from it.
+func (s *Session) DropLive(lc js.LiveContext) {
+	s.mu.Lock()
+	var old js.LiveContext
+	if s.live != nil && s.live == lc {
+		old = s.dropLiveLocked()
+	}
+	s.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+}
+
 // Close tears down the session's live runtime (if any). Used by the manager on
 // eviction/close and at shutdown.
 func (s *Session) Close() {
