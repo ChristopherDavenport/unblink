@@ -1098,7 +1098,7 @@ case the operation's guard applies and a legitimately long `Dispatch` is left
 alone; a mutex orders the watchdog's interrupt against the operation's start, so
 the interrupt can never land on the operation that follows a runaway task. An
 interrupt unwinds one task and the page can schedule another, so over-budget
-tasks are counted: three in a row with no promptly-answered probe between them and
+tasks are counted: three without a full task budget of quiet between them and
 the runtime is shut down. Every later operation returns `js.ErrRunaway`; the
 browser drops the handle, `interact` answers `live_js_stopped` (retryable — the
 next interact reloads the page's scripts, in-page state lost), and a `read` of the

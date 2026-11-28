@@ -2044,8 +2044,37 @@ const preludeAPIJS = `
   };
   window.CSSStyleSheet.prototype.replaceSync = function (text) { this.__text = String(text); };
   window.CSSStyleSheet.prototype.replace = function (text) { this.__text = String(text); return Promise.resolve(this); };
-  window.CSSStyleSheet.prototype.insertRule = function () { return 0; };
-  window.CSSStyleSheet.prototype.deleteRule = noop;
+  // insertRule/deleteRule keep the rule text in order — a store, not a CSSOM:
+  // nothing is parsed or applied. CSS-in-JS libraries in their production mode
+  // write every rule through insertRule and read it back by index.
+  window.CSSStyleSheet.prototype.insertRule = function (rule, index) {
+    index = index === undefined ? 0 : (index >>> 0);
+    if (index > this.cssRules.length) throw new window.DOMException('The index provided (' + index + ') is larger than the maximum index (' + this.cssRules.length + ').', 'IndexSizeError');
+    var text = String(rule), brace = text.indexOf('{');
+    this.cssRules.splice(index, 0, { cssText: text, selectorText: brace >= 0 ? text.slice(0, brace).trim() : '', style: {}, type: 1, parentStyleSheet: this });
+    return index;
+  };
+  window.CSSStyleSheet.prototype.deleteRule = function (index) {
+    index = index >>> 0;
+    if (index >= this.cssRules.length) throw new window.DOMException('The index provided (' + index + ') is larger than the maximum index (' + (this.cssRules.length - 1) + ').', 'IndexSizeError');
+    this.cssRules.splice(index, 1);
+  };
+  // <style>.sheet: the element's own (empty) rule store while it is in the
+  // document, null otherwise. styled-components and Emotion look their tag's
+  // sheet up here and treat its absence as fatal ("CSSStyleSheet could not be
+  // found on HTMLStyleElement"), which took the whole app down with it.
+  if (window.HTMLStyleElement && !('sheet' in window.HTMLStyleElement.prototype) && typeof WeakMap === 'function') {
+    var styleSheets = new WeakMap();
+    Object.defineProperty(window.HTMLStyleElement.prototype, 'sheet', {
+      get: function () {
+        if (!this.isConnected) return null;
+        var sh = styleSheets.get(this);
+        if (!sh) { sh = new window.CSSStyleSheet(); sh.ownerNode = this; sh.href = null; sh.type = 'text/css'; sh.title = null; sh.parentStyleSheet = null; styleSheets.set(this, sh); }
+        return sh;
+      },
+      enumerable: true, configurable: true
+    });
+  }
   window.CSSStyleSheet.prototype.addRule = function () { return -1; };
   window.CSSStyleSheet.prototype.removeRule = noop;
   // Lit feature-detects adoptedStyleSheets on Document.prototype (and ShadowRoot

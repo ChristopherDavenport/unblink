@@ -141,9 +141,10 @@ func (w *bgWorker) runBackgroundScripts(b *bridge) {
 	}
 }
 
-// runBackgroundPage runs an MV2 background HTML page's scripts: classic scripts first
-// (they set up the globals the module entry expects), then module scripts (loaded via
-// the module registry, their imports fetched from the extension through the bundle transport).
+// runBackgroundPage runs an MV2 background HTML page's scripts in document order as a
+// page's are (runDocumentScripts): classic scripts, then deferred scripts and
+// modules (loaded via the module registry, their imports fetched from the extension
+// through the bundle transport).
 func (w *bgWorker) runBackgroundPage(b *bridge, page string) {
 	data, err := w.bundle.ReadResource(page)
 	if err != nil {
@@ -158,8 +159,9 @@ func (w *bgWorker) runBackgroundPage(b *bridge, page string) {
 	// The map lives in the background page, not in the bridge's own document, so it
 	// is registered here rather than lazily when module loading begins.
 	b.acquireImportMap(pageDoc)
-	b.runScripts(collectScripts(pageDoc))
-	b.runModules(collectModuleScripts(pageDoc))
+	// Same order as a page: immediate classic scripts, then deferred classic
+	// scripts and modules interleaved by document position.
+	b.runDocumentScripts(collectScripts(pageDoc), collectModuleScripts(pageDoc))
 }
 
 // deliver dispatches one message to the background's onMessage listeners on the

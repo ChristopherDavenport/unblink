@@ -314,6 +314,11 @@ func (c *Context) Dispatch(ctx context.Context, action Action) (DispatchResult, 
 	}
 	var st settleStats
 	var before int
+	// matched is written on the loop and read here: when run returns early (the
+	// runtime was stopped, the context ended) the loop may still be inside
+	// runActions, so the result is handed over atomically rather than read out of
+	// the action it is still writing.
+	var matched atomic.Bool
 	err := c.run(ctx, true, cond, &st, func(*goja.Runtime) {
 		// Each dispatch is one agent action; give it a fresh download budget so a
 		// long-lived live session isn't starved by a cumulative cap (the one-shot
@@ -321,8 +326,9 @@ func (c *Context) Dispatch(ctx context.Context, action Action) (DispatchResult, 
 		c.bridge.resetTransportBudget()
 		before = len(c.bridge.diagErrors)
 		c.bridge.runActions(acts)
+		matched.Store(acts[0].Matched)
 	})
-	res := DispatchResult{Matched: acts[0].Matched, WaitMet: st.met}
+	res := DispatchResult{Matched: matched.Load(), WaitMet: st.met}
 	// Read errors recorded during the dispatch + settle window on the loop (which
 	// serializes with the settle above). Best-effort: a failure here loses only
 	// diagnostics, never the dispatch outcome.

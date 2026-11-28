@@ -143,6 +143,16 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **A connected `<style>` element has a `sheet`** that stores inserted rules in
+  order (`insertRule`, `deleteRule`, `cssRules`). It is a store, not a CSSOM —
+  nothing is parsed or applied — but styled-components and Emotion in production
+  mode treat its absence as fatal, which replaced bbc.com's app with Next's
+  error page.
+- **A data race in live-session `Dispatch`** when the runtime was stopped while
+  the action was still running: the matched flag is now handed over atomically.
+- **An MV2 extension background page's scripts run in the page order**
+  (deferred scripts and modules after immediate ones, by document position).
+
 - **`Intl.NumberFormat` formats compact notation and significant digits.**
   `notation: 'compact'` ("61.1K", "1.2M"; `compactDisplay: 'long'` gives
   "61 thousand") and `minimumSignificantDigits`/`maximumSignificantDigits` were
