@@ -460,6 +460,16 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     — mean recall −0.008, one page 0.99 → 0.30, since pages open `<details>` from
     CSS and script without the attribute — for a precision gain of 0.004. Article
     mode and full mode behave the same.
+  - **An inline SVG contributes its words, as labels (`dom.FlattenSVGText`).**
+    Sibling `<text>` elements are placed by coordinates, so stripping tags ran
+    them together (`EmberReactAngular 1Angular 2Elm1000…`). Each top-level
+    `<svg>` is replaced by its `<text>` contents joined with ` · ` (`<tspan>`s of
+    one `<text>` are one label), plus any `<title>`/`<desc>` that does not merely
+    repeat a label; `<style>`, `<defs>` and the drawing itself contribute
+    nothing. A chart becomes a paragraph. An icon — an SVG with only a `<title>` —
+    contributes that title only when it is the sole name of the link or button it
+    sits in (`[GitHub](…)` where there was `[](…)`); beside visible text it adds
+    nothing, as in a browser. A wordless drawing is removed.
   - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
     24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
     cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at

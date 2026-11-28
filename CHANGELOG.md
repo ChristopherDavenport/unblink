@@ -183,6 +183,10 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   and stores are instances of `IDBRequest`, `IDBOpenDBRequest`, `IDBDatabase`,
   `IDBTransaction` and `IDBObjectStore`, which wrapper libraries test with
   `instanceof`; a missing `IDBRequest` was an unhandled `ReferenceError`.
+- **Inline SVG chart labels are separate.** The `<text>` elements of an inline
+  SVG ran together (`EmberReactAngular 1Angular 2`); each is now its own label,
+  joined with ` · `, and SVG `<style>`/`<defs>` content never reaches the output.
+
 - **Tables in `read` output are Markdown tables.** A `<table>` was emitted as its
   cell text run together on one line. Data tables are now GFM tables (header row,
   one line per row); `role="presentation"` tables and tables whose cells hold

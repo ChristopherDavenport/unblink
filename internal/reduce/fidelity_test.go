@@ -82,3 +82,21 @@ func TestCollapsedDetailsKeptAndMarked(t *testing.T) {
 		t.Errorf("open details marked, or closed dialog emitted:\n%s", md)
 	}
 }
+
+// An inline SVG chart contributes its labels, each separate, and none of its
+// drawing markup; an icon contributes its title.
+func TestSVGTextIsLabels(t *testing.T) {
+	md := fullMarkdown(t, `<main><p>Benchmarks:</p>
+		<svg viewBox="0 0 10 10"><style>.bar{fill:#1293D8}</style>
+			<text x="1">Ember</text><text x="2">React</text><text x="3">Angular 1</text>
+			<rect class="bar" width="4"/><text x="9">4326</text></svg>
+		<p><a href="/gh"><svg><title>GitHub</title><path d="M0 0h1"/></svg></a></p></main>`)
+	for _, want := range []string{"Ember · React · Angular 1 · 4326", "[GitHub](https://example.com/gh)"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown missing %q:\n%s", want, md)
+		}
+	}
+	if strings.Contains(md, "fill") || strings.Contains(md, "EmberReact") {
+		t.Errorf("SVG source or run-together labels in output:\n%s", md)
+	}
+}

@@ -66,6 +66,7 @@ func Article(p *page.Page, stripHidden bool) error {
 	if stripHidden {
 		dom.StripHidden(art.Node)
 	}
+	dom.FlattenSVGText(art.Node)
 	dom.MarkCollapsedDetails(art.Node)
 	dom.SeparateInlineSiblings(art.Node)
 
@@ -185,6 +186,7 @@ func mainRegion(p *page.Page, main *html.Node, stripHidden bool) error {
 		dom.StripHidden(clone)
 	}
 	dom.StripDuplicateBlocks(clone)
+	dom.FlattenSVGText(clone)
 	dom.MarkCollapsedDetails(clone)
 	dom.SeparateInlineSiblings(clone)
 
@@ -218,6 +220,7 @@ func Full(p *page.Page, stripHidden bool) error {
 		dom.StripHidden(clone)
 	}
 	dom.StripDuplicateBlocks(clone)
+	dom.FlattenSVGText(clone)
 	dom.MarkCollapsedDetails(clone)
 	dom.SeparateInlineSiblings(clone)
 
