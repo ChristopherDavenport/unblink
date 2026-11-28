@@ -47,6 +47,16 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   is true and the new `article_fallback_reason` is `partial_article`
   (`no_article` for the existing nothing-found fallback). Real article pages are
   unchanged.
+- **Render-collapse guard.** When a server-rendered page's JavaScript leaves
+  under a tenth of its content — a hydration crash that puts the framework's
+  error boundary where the document was, an error or consent shell — the
+  rendered DOM is discarded and the page is the server's HTML, as with
+  `render=false`. `read` and `browse` report `render_discarded`; in a session,
+  `interact` still acts on the live JavaScript DOM and says so
+  (`render_was_discarded`). A client-rendered app (nothing to fall back to), a
+  render that merely shortens or hides content, and a render whose
+  `wait_for`/`wait_text` gate was met are never discarded. See
+  [ADR 0023](docs/decisions/0023-render-collapse-guard.md).
 - **Markdown content negotiation (`read`'s `prefer_markdown`,
   `--prefer-markdown`).** A `text/markdown` response is now returned as-is
   (`kind: "markdown"`), no longer wrapped in a code fence as plain text. `read`

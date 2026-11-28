@@ -91,6 +91,17 @@ type RenderDiag struct {
 	DOMBusy       bool  // the DOM was still mutating when the snapshot was taken
 	TimersPending int   // one-shot timers still scheduled at snapshot (content may be behind one)
 
+	// The render-collapse guard (ADR 0023). TextBefore/TextAfter are the bytes of
+	// content text the document held before its scripts ran and after (0/0 when
+	// the guard is off). Discarded is true when the scripts left under a tenth of
+	// a substantial server-rendered page — a hydration crash, an error or consent
+	// shell — so the rendered DOM was thrown away and the page is the server's
+	// HTML again: Page.Rendered is then false, while everything else here still
+	// describes the render that ran.
+	TextBefore int
+	TextAfter  int
+	Discarded  bool
+
 	// Requests/Console are the page-JS network log and console output captured
 	// during the render, surfaced by the requests/console tools (not dumped on
 	// every read, for token budget). Both are capped; *Truncated flags drops.

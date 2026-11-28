@@ -398,6 +398,10 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     (`no_article` | `partial_article`) to `read`'s `article_fallback_reason`.
     Chrome is excluded from the denominator so a real article is never
     penalised for the site's menus, sidebar or footer.
+  - **Render-collapse guard (ADR 0023).** A one-shot render that leaves under a
+    tenth of a substantial server-rendered page's content text is discarded and
+    the server's document restored (`internal/browser/collapse.go`); the result
+    reports `render_discarded`. Live session runtimes are never swapped.
   - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
     24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
     cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at

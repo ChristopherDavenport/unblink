@@ -109,6 +109,8 @@ type Browser struct {
 	// DefaultPreferMarkdown; ADR 0021, see markdownneg.go).
 	preferMarkdown bool
 	safeOutput     bool // strip hidden content + defang image beacons in emitted content
+	// noCollapseGuard turns off the render-collapse guard (ADR 0023, collapse.go).
+	noCollapseGuard bool
 
 	renderer       Renderer     // nil when JavaScript rendering is disabled
 	liveEngine     liveRenderer // non-nil when the renderer supports persistent per-session runtimes
@@ -161,6 +163,7 @@ type options struct {
 	respectRobots      bool
 	preferMarkdown     bool
 	safeOutput         bool
+	noCollapseGuard    bool // see WithRenderCollapseGuard (collapse.go)
 	allowPrivate       bool
 	search             search.Provider
 	sessionTTL         time.Duration
@@ -431,6 +434,7 @@ func New(opts ...Option) (*Browser, error) {
 		respectRobots:      o.respectRobots,
 		preferMarkdown:     o.preferMarkdown,
 		safeOutput:         o.safeOutput,
+		noCollapseGuard:    o.noCollapseGuard,
 		renderer:           o.renderer,
 		jsNetwork:          o.jsNetwork,
 		jsMaxBytes:         o.jsMaxBytes,
@@ -779,6 +783,9 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 	var renderDur time.Duration
 	if ro.render && b.renderer != nil {
 		var diag js.RenderResult
+		// Size the server-rendered document before its scripts run, so a render
+		// that destroys it can be told from one that builds it (ADR 0023).
+		textBefore := b.measureForCollapse(p)
 		// Origin-partition session storage by the final page origin (SOP, ADR 0015).
 		var localStore, sessStore js.Storage
 		if ro.storageFor != nil {
@@ -804,6 +811,7 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 			p.RenderDiag.NetDenied = gt.Denied()
 		}
 		renderDur = p.RenderDiag.TotalDur
+		b.guardRenderCollapse(p, textBefore)
 	} else {
 		// No JS: flatten declarative Shadow DOM (<template shadowrootmode>) into composed
 		// light content so SSR web components render and their links/forms/headings are
@@ -979,6 +987,13 @@ type ReadResult struct {
 	RenderBudgetHit bool  `json:"render_budget_hit,omitempty"`
 	DOMBusy         bool  `json:"dom_busy,omitempty"`
 	TimersPending   int   `json:"timers_pending,omitempty"`
+
+	// RenderDiscarded is true when the page's JavaScript ran but left almost none
+	// of a substantial server-rendered page (a hydration crash, an error or
+	// consent shell), so its DOM was discarded and this content comes from the
+	// server's HTML, as with render=false (ADR 0023). The other render
+	// diagnostics still describe the render that ran.
+	RenderDiscarded bool `json:"render_discarded,omitempty"`
 
 	// ImageBytes/ImageMIME carry the raw image for the MCP layer to base64-encode,
 	// set only when the page is an image and the request asked for include_bytes.
@@ -1158,6 +1173,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		res.RenderBudgetHit = d.DeadlineHit
 		res.DOMBusy = d.DOMBusy
 		res.TimersPending = d.TimersPending
+		res.RenderDiscarded = d.Discarded
 	}
 	if req.IncludeBytes && pc.Kind == page.KindImage {
 		res.ImageBytes = pc.Raw
@@ -1283,6 +1299,9 @@ type BrowseResult struct {
 	// rendered (browse/click/submit with render=true) — same contract as read.
 	Framework string   `json:"framework,omitempty"`
 	JSErrors  []string `json:"js_errors,omitempty"`
+	// RenderDiscarded: the JavaScript render lost the server-rendered content, so
+	// this summary describes the server's HTML (ADR 0023) — same contract as read.
+	RenderDiscarded bool `json:"render_discarded,omitempty"`
 }
 
 // summarize builds a BrowseResult from a page.
@@ -1322,6 +1341,7 @@ func summarize(p *page.Page) *BrowseResult {
 	if d := p.RenderDiag; d != nil {
 		res.Framework = d.Framework
 		res.JSErrors = capErrors(d.Errors)
+		res.RenderDiscarded = d.Discarded
 	}
 	return res
 }
@@ -1717,6 +1737,13 @@ type InteractResult struct {
 	// location.href/assign/replace (interact never navigates itself); follow it with
 	// read/click. Empty when the interaction requested no cross-document navigation.
 	PendingNavigation string `json:"pending_navigation,omitempty"`
+	// RenderWasDiscarded is true when, before this interaction, the session's page
+	// was the server's HTML because its JavaScript render had lost the content
+	// (render_discarded on read/browse, ADR 0023). interact always runs against
+	// the live JavaScript DOM, so the page this call acted on — and the session's
+	// current page from here on, as Summary shows — is that live DOM, not the
+	// content earlier reads returned.
+	RenderWasDiscarded bool `json:"render_was_discarded,omitempty"`
 }
 
 // Interact dispatches a DOM event (event, default "click") at selector on the
@@ -1749,6 +1776,7 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 		event = "click"
 	}
 
+	wasDiscarded := cur.RenderDiag != nil && cur.RenderDiag.Discarded
 	lc, err := b.ensureLive(ctx, sess)
 	if err != nil {
 		return nil, err
@@ -1776,14 +1804,15 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 	v1, v1err := lc.DOMVersion(ctx)
 
 	return &InteractResult{
-		Summary:           summarize(np),
-		Selector:          selector,
-		Event:             event,
-		Matched:           res.Matched,
-		Changed:           v0err != nil || v1err != nil || v1 != v0,
-		Controls:          np.Meta.Controls,
-		JSErrors:          capErrors(res.Errors),
-		PendingNavigation: nav,
+		Summary:            summarize(np),
+		Selector:           selector,
+		Event:              event,
+		Matched:            res.Matched,
+		Changed:            v0err != nil || v1err != nil || v1 != v0,
+		Controls:           np.Meta.Controls,
+		JSErrors:           capErrors(res.Errors),
+		PendingNavigation:  nav,
+		RenderWasDiscarded: wasDiscarded,
 	}, nil
 }
 
@@ -1873,6 +1902,7 @@ func (b *Browser) refreshFromLive(ctx context.Context, sess *session.Session, lc
 	np.Article = nil
 	np.Markdown = ""
 	np.Rendered = true
+	np.RenderDiag = liveRenderDiag(cur.RenderDiag)
 	if err := dom.Extract(&np); err != nil {
 		return cur, nil
 	}

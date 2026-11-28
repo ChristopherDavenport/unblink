@@ -283,11 +283,11 @@ silently. Errors follow a stable `error [code]: message` convention
 `not_configured`, `blocked` (SSRF guard), `cursor_expired`, `timeout`,
 `fetch_failed`…), and every tool carries MCP annotations (read-only vs
 state-changing) so hosts can gate sensitive actions. JS render diagnostics
-(`framework`, `js_errors`) and reduction fallbacks
+(`framework`, `js_errors`, `render_discarded`) and reduction fallbacks
 (`article_fallback`, `article_fallback_reason`) are reported in `read`/`interact`
 results rather than logged away.
 
-One case where `read` returns something other than what was literally asked
+Two cases where `read` returns something other than what was literally asked
 for, and says so:
 
 - **`mode=article` on a page that is not an article.** On a section front, a
@@ -298,6 +298,16 @@ for, and says so:
   with `mode: "main"`/`"full"`, `article_fallback: true` and
   `article_fallback_reason: "partial_article"` (`"no_article"` when nothing was
   found at all). A real article is unaffected.
+- **A JavaScript render that destroys the page.** When a server-rendered page's
+  scripts leave under a tenth of its content — hydration crashed into an error
+  boundary, or the app booted into an error or consent shell — the rendered DOM
+  is discarded and the page is the server's HTML, as with `render=false`.
+  `read` and `browse` report `render_discarded: true`; `js_errors` and the
+  `requests`/`console` logs still describe the render that ran. In a session,
+  `interact` still runs against the live JavaScript DOM and reports
+  `render_was_discarded: true` the first time, after which the session's page is
+  that live DOM. A met `wait_for`/`wait_text` gate always keeps the render. See
+  [ADR 0023](docs/decisions/0023-render-collapse-guard.md).
 
 | Tool          | Input                                              | Returns                                                                 |
 | ------------- | -------------------------------------------------- | ----------------------------------------------------------------------- |

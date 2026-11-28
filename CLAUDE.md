@@ -324,7 +324,15 @@ not `doFetch`).
   scores main-content recall per feature-matrix cell; only a *consequential* replay
   loss — script, document, data, style — excuses a low score, an unusable oracle is
   refused rather than scored, and `CORPUS_ONLY`/`CORPUS_DEBUG`/`CORPUS_DUMP`/
-  `CORPUS_OUT` drive one page; on-demand measurement, not a CI gate). Add a new
+  `CORPUS_OUT` drive one page; on-demand measurement, not a CI gate); 0023 is the
+  render-collapse guard (`internal/browser/collapse.go`: if the content-region text
+  was ≥1000 bytes before scripts ran and is under 10% of that after, the render is
+  discarded, the server HTML is re-parsed and returned, and `read`/`browse` report
+  `render_discarded`; `Page.Rendered` then means "the tree is the rendered DOM" —
+  scripts having run is `RenderDiag != nil`; a met `wait_for`/`wait_text` gate is
+  never discarded and a live session's runtime tree is never swapped; because the
+  guard hides an engine crash behind the static score, check `render_discarded`
+  when judging a corpus page). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)

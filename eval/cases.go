@@ -590,6 +590,7 @@ const (
 	fxStructured = "../testdata/structured.input.html"
 	fxJSRender   = "../testdata/js_render.input.html"
 	fxHub        = "../testdata/hub.input.html"
+	fxCollapse   = "../testdata/render_collapse.input.html"
 	fxLongread   = "corpus/longread.input.html"
 	fxJunky      = "corpus/junky.input.html"
 	fxJSON       = "corpus/data.input.json"
@@ -946,6 +947,25 @@ func cases() []Case {
 			},
 			Floor:    0.9,
 			MustPass: true, // the JS engine is a headline capability; regressions gate
+		},
+		{
+			// A server-rendered page whose client app crashes on load and replaces
+			// the content with an apology (ADR 0023). The render is worse than the
+			// HTML it started from, so the read must return the server's page and
+			// report that the render was discarded.
+			Name:    "render-collapse-guard",
+			Host:    htmlHost(fxCollapse),
+			Browser: []browser.Option{browser.WithJS(2 * time.Second)},
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
+			},
+			Scorers: []Scorer{
+				Recall(0, "Keeping the tide log", "Tide station step 01", "Tide station step 30"),
+				NotRecall(0, "Something went wrong", "viewer crashed"),
+				RenderDiscarded(0, true),
+			},
+			Floor:    0.95,
+			MustPass: true,
 		},
 		{
 			Name:    "preact-render",

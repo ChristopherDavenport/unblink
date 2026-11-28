@@ -123,6 +123,9 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 		}
 		text += fmt.Sprintf("\n\n---\n_mode=article was requested but %s; this is %s._\n", why, what)
 	}
+	if r.RenderDiscarded {
+		text += "\n\n---\n_The page's JavaScript ran but left almost none of the server-rendered content (a crashed hydration, or an error/consent shell), so its result was discarded: this is the page as the server sent it, as with render=false. Content only JavaScript adds is absent._\n"
+	}
 	if len(r.JSErrors) > 0 {
 		text += fmt.Sprintf("\n\n---\n_%d uncaught JavaScript error(s) during render — the page may not be fully hydrated (see js_errors in the structured result)._\n", len(r.JSErrors))
 	}

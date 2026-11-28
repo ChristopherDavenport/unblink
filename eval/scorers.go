@@ -810,6 +810,23 @@ func ReadMode(at int, wantMode, wantReason string) Scorer {
 	}}
 }
 
+// RenderDiscarded asserts the render-collapse diagnostic on a read step
+// (ADR 0023): whether the JavaScript render was thrown away because it left
+// almost none of the server-rendered page.
+func RenderDiscarded(at int, want bool) Scorer {
+	return Scorer{Name: "render-discarded", Axis: AxisRender, Fn: func(tr *Transcript) (float64, string) {
+		r, why, ok := resultAt(tr, at)
+		if !ok {
+			return 0, why
+		}
+		var rr browser.ReadResult
+		if err := into(r.sr.Result, &rr); err != nil {
+			return 0, "decode read: " + err.Error()
+		}
+		return boolScore(rr.RenderDiscarded == want), fmt.Sprintf("render_discarded=%v (want %v)", rr.RenderDiscarded, want)
+	}}
+}
+
 // RenderSaturation asserts the starved-render diagnostics on a read step: the
 // render_budget_hit / dom_busy flags and a minimum net_denied count. These are
 // the "visible failure modes" the engine emits when a snapshot is taken while
