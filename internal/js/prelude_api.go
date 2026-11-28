@@ -3238,20 +3238,57 @@ const preludeAPIJS = `
       var isPct = o.style === 'percent';
       var isCur = o.style === 'currency';
       if (isPct) n *= 100;
-      var min = o.minimumFractionDigits != null ? Number(o.minimumFractionDigits) : (isCur ? 2 : 0);
-      var max = o.maximumFractionDigits != null ? Number(o.maximumFractionDigits) : Math.max(min, isCur ? 2 : (isPct ? 0 : 3));
       var neg = n < 0;
-      var fixed = Math.abs(n).toFixed(max);
-      // trim trailing zeros down to min fraction digits
-      if (max > min) {
-        var dotAt = fixed.indexOf('.');
-        if (dotAt >= 0) {
-          var need = dotAt + (min > 0 ? min + 1 : 0);
-          var endAt = fixed.length;
-          while (endAt > need && (fixed.charAt(endAt - 1) === '0')) endAt--;
-          if (fixed.charAt(endAt - 1) === '.') endAt--;
-          fixed = fixed.slice(0, endAt);
+      var abs = Math.abs(n);
+      var fracGiven = o.minimumFractionDigits != null || o.maximumFractionDigits != null;
+      var sigGiven = o.minimumSignificantDigits != null || o.maximumSignificantDigits != null;
+      // trimZeros drops trailing fraction zeros down to keep fraction digits.
+      var trimZeros = function (str, keep) {
+        var dotAt = str.indexOf('.');
+        if (dotAt < 0) return str;
+        var need = dotAt + (keep > 0 ? keep + 1 : 0), endAt = str.length;
+        while (endAt > need && str.charAt(endAt - 1) === '0') endAt--;
+        if (str.charAt(endAt - 1) === '.') endAt--;
+        return str.slice(0, endAt);
+      };
+      var round = function (v, compact) {
+        if (sigGiven) {
+          var maxS = Math.min(21, Math.max(1, Number(o.maximumSignificantDigits != null ? o.maximumSignificantDigits : 21)));
+          var minS = Math.min(maxS, Math.max(1, Number(o.minimumSignificantDigits != null ? o.minimumSignificantDigits : 1)));
+          if (v === 0) return minS > 1 ? (0).toFixed(minS - 1) : '0';
+          var r = Number(v.toPrecision(maxS));
+          var digits = Math.floor(Math.log10(r)) + 1; // <= 0 below 1
+          return trimZeros(r.toFixed(Math.min(20, Math.max(0, maxS - digits))), Math.max(0, minS - digits));
         }
+        if (compact && !fracGiven) {
+          // Compact default: two significant digits, never fewer than the integer part.
+          if (v >= 10 || v === 0) return String(Math.round(v));
+          return trimZeros(Number(v.toPrecision(2)).toFixed(Math.min(20, Math.max(0, 1 - Math.floor(Math.log10(v))))), 0);
+        }
+        var min = o.minimumFractionDigits != null ? Number(o.minimumFractionDigits) : (isCur ? 2 : 0);
+        var max = o.maximumFractionDigits != null ? Number(o.maximumFractionDigits) : Math.max(min, isCur ? 2 : (isPct ? 0 : (compact ? 0 : 3)));
+        if (max < min) max = min;
+        var f = v.toFixed(Math.min(20, max));
+        return max > min ? trimZeros(f, min) : f;
+      };
+      // notation: 'compact' — "61.1K", "1.2M"; compactDisplay 'long' — "61 thousand".
+      var suffix = '';
+      var fixed;
+      if (o.notation === 'compact') {
+        var longForm = o.compactDisplay === 'long';
+        var steps = [[1e12, 'T', ' trillion'], [1e9, 'B', ' billion'], [1e6, 'M', ' million'], [1e3, 'K', ' thousand']];
+        var idx = -1;
+        for (var si = 0; si < steps.length; si++) { if (abs >= steps[si][0]) { idx = si; break; } }
+        if (idx < 0 && Number(round(abs, true)) >= 1000) idx = steps.length - 1; // 999.9 rounds up into K
+        if (idx >= 0) {
+          fixed = round(abs / steps[idx][0], true);
+          if (Number(fixed) >= 1000 && idx > 0) { idx--; fixed = round(abs / steps[idx][0], true); }
+          suffix = longForm ? steps[idx][2] : steps[idx][1];
+        } else {
+          fixed = round(abs, true);
+        }
+      } else {
+        fixed = round(abs, false);
       }
       var pieces = fixed.split('.');
       if (o.useGrouping !== false && pieces[0].length > 3) {
@@ -3265,7 +3302,7 @@ const preludeAPIJS = `
         }
         pieces[0] = grouped;
       }
-      var s = pieces.join('.');
+      var s = pieces.join('.') + suffix;
       if (isPct) return (neg ? '-' : '') + s + '%';
       if (isCur) {
         var cur = String(o.currency || 'USD').toUpperCase();
