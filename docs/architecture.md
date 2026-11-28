@@ -431,6 +431,16 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     measured and rejected: it fixed fewer joins and cannot run after readability,
     which strips classes. Runs on the reduce clone in `Full`, the main-region
     fallback and the extracted article.
+  - **Page text is literal in Markdown, by backslash (`internal/emit/escape.go`).**
+    The converter wrote a text `<`/`>` as `&lt;`/`&gt;`, so link text
+    `<svelte:window>` reached the agent as `&lt;svelte:window&gt;`, and a literal
+    `&lt;` in page text was indistinguishable from a real `<`. A text `<` is now
+    `\<`, a `>` is bare except where it would open a block quote (`\>`), and an
+    `&` is escaped (`\&`) only when it begins a character reference. The
+    property that matters is unchanged and tested: no `<` that came from page
+    text is ever unescaped, in the body or the title, so a host that renders the
+    Markdown builds no element or autolink from it. Code spans and blocks stay
+    verbatim.
   - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
     24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
     cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at

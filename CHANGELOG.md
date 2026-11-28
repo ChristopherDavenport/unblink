@@ -179,6 +179,14 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   and stores are instances of `IDBRequest`, `IDBOpenDBRequest`, `IDBDatabase`,
   `IDBTransaction` and `IDBObjectStore`, which wrapper libraries test with
   `instanceof`; a missing `IDBRequest` was an unhandled `ReferenceError`.
+- **Angle brackets in page text are no longer HTML entities in Markdown.** Link
+  text `<svelte:window>` came out as `&lt;svelte:window&gt;`. Text `<` is now
+  `\<`, `>` is bare (or `\>` where it would open a block quote), and `&` is
+  escaped only when it begins a character reference, so literal `&lt;` in a page
+  stays distinguishable from `<`. Page text still can never become raw HTML or an
+  autolink, and the title — previously written unescaped — now follows the same
+  rule.
+
 - **Adjacent inline elements no longer run together in Markdown.** Markup such as
   `<span>01</span><span>Getting Started</span>` or a row of touching links is laid
   out apart by CSS, but came out as `01Getting Started` / `JanMarMay`. Two

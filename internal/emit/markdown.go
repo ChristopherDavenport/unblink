@@ -20,7 +20,7 @@ import (
 // documented safe for concurrent use (internally mutex-guarded); per-call
 // options like WithDomain are passed to ConvertString, not baked in here.
 var mdConverter = converter.NewConverter(
-	converter.WithPlugins(base.NewBasePlugin(), commonmark.NewCommonmarkPlugin()),
+	converter.WithPlugins(base.NewBasePlugin(), commonmark.NewCommonmarkPlugin(), literalText{}),
 )
 
 // mdImage matches a Markdown inline image: ![alt](url) with an optional title.
@@ -75,7 +75,7 @@ func Markdown(p *page.Page) error {
 	var b strings.Builder
 	if title := strings.TrimSpace(p.Article.Title); title != "" {
 		b.WriteString("# ")
-		b.WriteString(title)
+		b.WriteString(escapeInline(title))
 		b.WriteString("\n\n")
 	}
 	b.WriteString(body)
