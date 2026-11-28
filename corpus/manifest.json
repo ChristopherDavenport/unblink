@@ -1,0 +1,758 @@
+{
+ "_comment": "Real-page differential corpus (ADR 0022). Only this manifest is checked in; captures live under testdata/corpus/ (gitignored). Cells are group:name. Stack attributions come from each project's public description of its own site and can drift: the replay scorecard reports the framework the engine detected, and docs/corpus.md says how to re-verify.",
+ "pages": [
+  {
+   "id": "react-learn",
+   "url": "https://react.dev/learn",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "hydration:next",
+    "shape:docs"
+   ],
+   "note": "React docs; Next.js pages router, statically generated then hydrated"
+  },
+  {
+   "id": "react-blog",
+   "url": "https://react.dev/blog",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "hydration:next",
+    "shape:docs"
+   ],
+   "note": "Same stack, index-style page"
+  },
+  {
+   "id": "nextjs-docs",
+   "url": "https://nextjs.org/docs",
+   "cells": [
+    "framework:react",
+    "hydration:next",
+    "hydration:streaming",
+    "shape:docs"
+   ],
+   "note": "Next.js App Router: RSC payload streamed in inline scripts"
+  },
+  {
+   "id": "nextjs-learn",
+   "url": "https://nextjs.org/learn",
+   "cells": [
+    "framework:react",
+    "hydration:next",
+    "hydration:streaming"
+   ],
+   "note": "App Router marketing/course page"
+  },
+  {
+   "id": "tailwind-docs",
+   "url": "https://tailwindcss.com/docs/installation",
+   "cells": [
+    "framework:react",
+    "hydration:next",
+    "shape:docs"
+   ],
+   "note": "Next.js docs site"
+  },
+  {
+   "id": "storybook-docs",
+   "url": "https://storybook.js.org/docs",
+   "cells": [
+    "framework:react",
+    "hydration:next",
+    "shape:docs"
+   ],
+   "note": "Next.js docs site"
+  },
+  {
+   "id": "docusaurus-docs",
+   "url": "https://docusaurus.io/docs",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "bundler:webpack",
+    "arrival:client-routing",
+    "shape:docs"
+   ],
+   "note": "Docusaurus: React SSG + webpack runtime + client router"
+  },
+  {
+   "id": "jest-docs",
+   "url": "https://jestjs.io/docs/getting-started",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "bundler:webpack",
+    "shape:docs"
+   ],
+   "note": "Docusaurus"
+  },
+  {
+   "id": "redux-docs",
+   "url": "https://redux.js.org/introduction/getting-started",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "bundler:webpack",
+    "shape:docs"
+   ],
+   "note": "Docusaurus"
+  },
+  {
+   "id": "webpack-concepts",
+   "url": "https://webpack.js.org/concepts/",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "bundler:webpack",
+    "arrival:client-routing",
+    "shape:docs"
+   ],
+   "note": "webpack's own site, built with webpack"
+  },
+  {
+   "id": "typescript-handbook",
+   "url": "https://www.typescriptlang.org/docs/handbook/intro.html",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "bundler:webpack",
+    "shape:docs"
+   ],
+   "note": "Gatsby (React SSG + webpack)"
+  },
+  {
+   "id": "reactrouter-home",
+   "url": "https://reactrouter.com/home",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "hydration:streaming",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "React Router framework mode: streamed SSR, Vite build"
+  },
+  {
+   "id": "tanstack-query",
+   "url": "https://tanstack.com/query/latest/docs/framework/react/overview",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "hydration:streaming",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "TanStack Start: streamed SSR"
+  },
+  {
+   "id": "vue-guide",
+   "url": "https://vuejs.org/guide/introduction.html",
+   "cells": [
+    "framework:vue",
+    "hydration:vue-ssr",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "VitePress: Vue SSG + hydration, Vite/Rollup ESM chunks"
+  },
+  {
+   "id": "vitepress-guide",
+   "url": "https://vitepress.dev/guide/what-is-vitepress",
+   "cells": [
+    "framework:vue",
+    "hydration:vue-ssr",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "VitePress"
+  },
+  {
+   "id": "vite-guide",
+   "url": "https://vite.dev/guide/",
+   "cells": [
+    "framework:vue",
+    "hydration:vue-ssr",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "VitePress"
+  },
+  {
+   "id": "rollup-intro",
+   "url": "https://rollupjs.org/introduction/",
+   "cells": [
+    "framework:vue",
+    "hydration:vue-ssr",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "VitePress"
+  },
+  {
+   "id": "nuxt-docs",
+   "url": "https://nuxt.com/docs/getting-started/introduction",
+   "cells": [
+    "framework:vue",
+    "hydration:nuxt",
+    "hydration:vue-ssr",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "Nuxt 3/4: SSR + payload hydration"
+  },
+  {
+   "id": "nuxt-home",
+   "url": "https://nuxt.com/",
+   "cells": [
+    "framework:vue",
+    "hydration:nuxt",
+    "hydration:vue-ssr",
+    "bundler:vite"
+   ],
+   "note": "Nuxt marketing page"
+  },
+  {
+   "id": "svelte-docs",
+   "url": "https://svelte.dev/docs/svelte/overview",
+   "cells": [
+    "framework:svelte",
+    "hydration:svelte-ssr",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "SvelteKit on Svelte 5"
+  },
+  {
+   "id": "sveltekit-docs",
+   "url": "https://svelte.dev/docs/kit/introduction",
+   "cells": [
+    "framework:svelte",
+    "hydration:svelte-ssr",
+    "bundler:vite",
+    "arrival:client-routing",
+    "shape:docs"
+   ],
+   "note": "SvelteKit on Svelte 5"
+  },
+  {
+   "id": "solid-docs",
+   "url": "https://docs.solidjs.com/",
+   "cells": [
+    "framework:solid",
+    "hydration:solid-ssr",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "SolidStart"
+  },
+  {
+   "id": "solid-home",
+   "url": "https://www.solidjs.com/",
+   "cells": [
+    "framework:solid",
+    "bundler:vite"
+   ],
+   "note": "Solid marketing site"
+  },
+  {
+   "id": "angular-home",
+   "url": "https://angular.dev/",
+   "cells": [
+    "framework:angular",
+    "hydration:angular-ssr",
+    "bundler:esbuild"
+   ],
+   "note": "Angular (application builder: esbuild) with SSR hydration"
+  },
+  {
+   "id": "angular-overview",
+   "url": "https://angular.dev/overview",
+   "cells": [
+    "framework:angular",
+    "hydration:angular-ssr",
+    "bundler:esbuild",
+    "shape:docs"
+   ],
+   "note": "Angular docs page"
+  },
+  {
+   "id": "qwik-docs",
+   "url": "https://qwik.dev/docs/",
+   "cells": [
+    "framework:qwik",
+    "hydration:resumable",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "Qwik: resumability instead of hydration"
+  },
+  {
+   "id": "astro-docs",
+   "url": "https://docs.astro.build/en/getting-started/",
+   "cells": [
+    "hydration:astro-islands",
+    "components:custom-elements",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "Starlight: mostly static HTML + custom-element islands"
+  },
+  {
+   "id": "starlight-docs",
+   "url": "https://starlight.astro.build/getting-started/",
+   "cells": [
+    "hydration:astro-islands",
+    "components:custom-elements",
+    "bundler:vite",
+    "shape:docs"
+   ],
+   "note": "Starlight"
+  },
+  {
+   "id": "astro-home",
+   "url": "https://astro.build/",
+   "cells": [
+    "hydration:astro-islands",
+    "bundler:vite"
+   ],
+   "note": "Astro marketing page"
+  },
+  {
+   "id": "preact-home",
+   "url": "https://preactjs.com/",
+   "cells": [
+    "framework:preact",
+    "hydration:preact-ssr",
+    "bundler:vite"
+   ],
+   "note": "Preact site: prerendered then hydrated"
+  },
+  {
+   "id": "preact-guide",
+   "url": "https://preactjs.com/guide/v10/getting-started/",
+   "cells": [
+    "framework:preact",
+    "hydration:preact-ssr",
+    "bundler:vite",
+    "arrival:fetch-after-load",
+    "shape:docs"
+   ],
+   "note": "Preact docs: content loaded as data after navigation"
+  },
+  {
+   "id": "ember-guides",
+   "url": "https://guides.emberjs.com/release/",
+   "cells": [
+    "framework:ember",
+    "hydration:ember-ssr",
+    "shape:docs"
+   ],
+   "note": "Ember guides (prember/FastBoot static render + boot)"
+  },
+  {
+   "id": "alpine-home",
+   "url": "https://alpinejs.dev/",
+   "cells": [
+    "framework:alpine"
+   ],
+   "note": "Alpine.js site (Alpine directives on server HTML)"
+  },
+  {
+   "id": "alpine-start",
+   "url": "https://alpinejs.dev/start-here",
+   "cells": [
+    "framework:alpine",
+    "shape:docs"
+   ],
+   "note": "Alpine.js docs"
+  },
+  {
+   "id": "htmx-home",
+   "url": "https://htmx.org/",
+   "cells": [
+    "framework:htmx",
+    "shape:static-article"
+   ],
+   "note": "htmx site"
+  },
+  {
+   "id": "htmx-docs",
+   "url": "https://htmx.org/docs/",
+   "cells": [
+    "framework:htmx",
+    "shape:docs",
+    "shape:large-dom"
+   ],
+   "note": "htmx docs: one long page"
+  },
+  {
+   "id": "htmx-lazy-load",
+   "url": "https://htmx.org/examples/lazy-load/",
+   "cells": [
+    "framework:htmx",
+    "arrival:lazy",
+    "arrival:fetch-after-load"
+   ],
+   "note": "htmx example: content swapped in on load via a mocked XHR"
+  },
+  {
+   "id": "jquery-home",
+   "url": "https://jquery.com/",
+   "cells": [
+    "framework:jquery"
+   ],
+   "note": "jQuery site"
+  },
+  {
+   "id": "jquery-ajax-api",
+   "url": "https://api.jquery.com/jQuery.ajax/",
+   "cells": [
+    "framework:jquery",
+    "shape:docs",
+    "shape:large-dom"
+   ],
+   "note": "jQuery API reference page"
+  },
+  {
+   "id": "jquery-learn",
+   "url": "https://learn.jquery.com/",
+   "cells": [
+    "framework:jquery",
+    "shape:docs"
+   ],
+   "note": "jQuery learning center"
+  },
+  {
+   "id": "lit-home",
+   "url": "https://lit.dev/",
+   "cells": [
+    "framework:lit",
+    "components:shadow-dom",
+    "components:custom-elements"
+   ],
+   "note": "Lit site"
+  },
+  {
+   "id": "lit-docs",
+   "url": "https://lit.dev/docs/",
+   "cells": [
+    "framework:lit",
+    "components:shadow-dom",
+    "components:custom-elements",
+    "shape:docs"
+   ],
+   "note": "Lit docs"
+  },
+  {
+   "id": "shoelace-button",
+   "url": "https://shoelace.style/components/button",
+   "cells": [
+    "framework:lit",
+    "components:shadow-dom",
+    "components:custom-elements",
+    "shape:docs"
+   ],
+   "note": "Shoelace: live Lit components with shadow roots in the page"
+  },
+  {
+   "id": "material-web",
+   "url": "https://material-web.dev/about/intro/",
+   "cells": [
+    "framework:lit",
+    "components:shadow-dom",
+    "components:custom-elements",
+    "shape:docs"
+   ],
+   "note": "Material Web: Lit components, declarative shadow DOM"
+  },
+  {
+   "id": "open-wc-guides",
+   "url": "https://open-wc.org/guides/",
+   "cells": [
+    "components:custom-elements",
+    "shape:docs"
+   ],
+   "note": "Open Web Components guides"
+  },
+  {
+   "id": "webdev-vitals",
+   "url": "https://web.dev/articles/vitals",
+   "cells": [
+    "components:custom-elements",
+    "shape:static-article"
+   ],
+   "note": "web.dev article: server HTML + custom elements"
+  },
+  {
+   "id": "mdn-dialog",
+   "url": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/dialog",
+   "cells": [
+    "components:custom-elements",
+    "shape:docs"
+   ],
+   "note": "MDN reference page"
+  },
+  {
+   "id": "github-repo",
+   "url": "https://github.com/golang/go",
+   "cells": [
+    "components:custom-elements",
+    "framework:react",
+    "shape:large-dom"
+   ],
+   "note": "GitHub repository page: server HTML, custom elements, React partials"
+  },
+  {
+   "id": "hn-algolia",
+   "url": "https://hn.algolia.com/?q=web+browser",
+   "cells": [
+    "framework:react",
+    "hydration:client-only",
+    "arrival:fetch-after-load"
+   ],
+   "note": "Client-only React app; results fetched after boot"
+  },
+  {
+   "id": "mastodon-explore",
+   "url": "https://mastodon.social/explore",
+   "cells": [
+    "framework:react",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "shape:noscript"
+   ],
+   "note": "Client-only React SPA with a noscript notice"
+  },
+  {
+   "id": "discourse-meta",
+   "url": "https://meta.discourse.org/latest",
+   "cells": [
+    "framework:ember",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "shape:forum",
+    "shape:noscript"
+   ],
+   "note": "Discourse: Ember SPA with a crawler/noscript fallback"
+  },
+  {
+   "id": "devto-home",
+   "url": "https://dev.to/",
+   "cells": [
+    "framework:preact",
+    "arrival:lazy",
+    "arrival:fetch-after-load",
+    "shape:forum"
+   ],
+   "note": "Forem: server HTML + Preact islands, feed fetched after load"
+  },
+  {
+   "id": "elm-home",
+   "url": "https://elm-lang.org/",
+   "cells": [
+    "framework:elm",
+    "hydration:client-only"
+   ],
+   "note": "Elm program rendering the whole page client-side"
+  },
+  {
+   "id": "wikipedia-web-browser",
+   "url": "https://en.wikipedia.org/wiki/Web_browser",
+   "cells": [
+    "shape:static-article",
+    "framework:jquery"
+   ],
+   "note": "MediaWiki article (ResourceLoader + jQuery)"
+  },
+  {
+   "id": "wikipedia-http-status",
+   "url": "https://en.wikipedia.org/wiki/List_of_HTTP_status_codes",
+   "cells": [
+    "shape:static-article",
+    "shape:large-dom",
+    "framework:jquery"
+   ],
+   "note": "Long MediaWiki list article"
+  },
+  {
+   "id": "wikipedia-ja",
+   "url": "https://ja.wikipedia.org/wiki/%E3%82%A6%E3%82%A7%E3%83%96%E3%83%96%E3%83%A9%E3%82%A6%E3%82%B6",
+   "cells": [
+    "shape:static-article",
+    "shape:cjk"
+   ],
+   "note": "Japanese article: per-rune tokenisation path"
+  },
+  {
+   "id": "whatwg-html-intro",
+   "url": "https://html.spec.whatwg.org/multipage/introduction.html",
+   "cells": [
+    "shape:static-article",
+    "shape:docs",
+    "shape:large-dom"
+   ],
+   "note": "WHATWG HTML multipage spec chapter"
+  },
+  {
+   "id": "whatwg-dom",
+   "url": "https://dom.spec.whatwg.org/",
+   "cells": [
+    "shape:docs",
+    "shape:large-dom"
+   ],
+   "note": "WHATWG DOM single-page spec"
+  },
+  {
+   "id": "rfc9110",
+   "url": "https://www.rfc-editor.org/rfc/rfc9110.html",
+   "cells": [
+    "shape:static-article",
+    "shape:large-dom"
+   ],
+   "note": "RFC 9110 HTML rendering"
+  },
+  {
+   "id": "wcag22",
+   "url": "https://www.w3.org/TR/WCAG22/",
+   "cells": [
+    "shape:docs",
+    "shape:large-dom"
+   ],
+   "note": "W3C Recommendation (ReSpec output)"
+  },
+  {
+   "id": "go-effective",
+   "url": "https://go.dev/doc/effective_go",
+   "cells": [
+    "shape:static-article",
+    "shape:large-dom"
+   ],
+   "note": "Long static document"
+  },
+  {
+   "id": "pkg-go-dev-http",
+   "url": "https://pkg.go.dev/net/http",
+   "cells": [
+    "shape:docs",
+    "shape:large-dom"
+   ],
+   "note": "Go package reference: very large DOM"
+  },
+  {
+   "id": "python-asyncio",
+   "url": "https://docs.python.org/3/library/asyncio.html",
+   "cells": [
+    "shape:docs",
+    "shape:static-article"
+   ],
+   "note": "Sphinx output"
+  },
+  {
+   "id": "rust-book",
+   "url": "https://doc.rust-lang.org/book/ch01-00-getting-started.html",
+   "cells": [
+    "shape:docs",
+    "shape:static-article"
+   ],
+   "note": "mdBook output"
+  },
+  {
+   "id": "esbuild-docs",
+   "url": "https://esbuild.github.io/getting-started/",
+   "cells": [
+    "shape:docs",
+    "shape:static-article"
+   ],
+   "note": "Static docs with a little vanilla JS"
+  },
+  {
+   "id": "cern-first-page",
+   "url": "http://info.cern.ch/hypertext/WWW/TheProject.html",
+   "cells": [
+    "shape:static-article"
+   ],
+   "note": "The first web page: no doctype, no charset, plain http"
+  },
+  {
+   "id": "lwn-home",
+   "url": "https://lwn.net/",
+   "cells": [
+    "shape:news"
+   ],
+   "note": "LWN front page: server-rendered news"
+  },
+  {
+   "id": "arstechnica-home",
+   "url": "https://arstechnica.com/",
+   "cells": [
+    "shape:news",
+    "arrival:lazy"
+   ],
+   "note": "Ars Technica front page"
+  },
+  {
+   "id": "npr-news",
+   "url": "https://www.npr.org/sections/news/",
+   "cells": [
+    "shape:news",
+    "arrival:lazy"
+   ],
+   "note": "NPR news section"
+  },
+  {
+   "id": "bbc-news",
+   "url": "https://www.bbc.com/news",
+   "cells": [
+    "shape:news",
+    "framework:react",
+    "hydration:react-ssr"
+   ],
+   "note": "BBC News front page"
+  },
+  {
+   "id": "hackernews-home",
+   "url": "https://news.ycombinator.com/",
+   "cells": [
+    "shape:forum",
+    "shape:static-article"
+   ],
+   "note": "Hacker News: table layout, almost no JS"
+  },
+  {
+   "id": "lobsters-home",
+   "url": "https://lobste.rs/",
+   "cells": [
+    "shape:forum"
+   ],
+   "note": "Lobsters front page"
+  },
+  {
+   "id": "phpbb-forum",
+   "url": "https://www.phpbb.com/community/viewforum.php?f=46",
+   "cells": [
+    "shape:forum",
+    "framework:jquery"
+   ],
+   "note": "phpBB topic list"
+  },
+  {
+   "id": "aozora-kokoro",
+   "url": "https://www.aozora.gr.jp/cards/000148/files/773_14560.html",
+   "cells": [
+    "shape:non-utf8",
+    "shape:cjk",
+    "shape:static-article"
+   ],
+   "note": "Aozora Bunko text served as Shift_JIS (replay presents it as UTF-8: see docs/corpus.md)"
+  },
+  {
+   "id": "libru-proza",
+   "url": "http://lib.ru/PROZA/",
+   "cells": [
+    "shape:non-utf8"
+   ],
+   "note": "lib.ru index served as KOI8-R over plain http (same replay caveat)"
+  }
+ ]
+}

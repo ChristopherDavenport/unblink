@@ -167,6 +167,7 @@ type options struct {
 	sessionCap         int
 	extensionPaths     []string
 	extensionDirs      []string
+	jsRoundTripper     http.RoundTripper // see WithJSRoundTripper (replay.go)
 }
 
 // WithFetchOptions forwards options to the underlying fetch clients (default and
@@ -448,6 +449,9 @@ func New(opts ...Option) (*Browser, error) {
 		limiter: limiter,
 		retries: o.retries,
 		search:  o.search,
+	}
+	if o.jsRoundTripper != nil {
+		b.jsRT = cookieStripper{inner: o.jsRoundTripper}
 	}
 	if lr, ok := o.renderer.(liveRenderer); ok {
 		b.liveEngine = lr

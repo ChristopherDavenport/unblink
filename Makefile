@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval wpt wpt-sync fuzz bench membench crossbench vet lint fmt tidy clean
+.PHONY: all build run version test eval wpt wpt-sync corpus corpus-capture fuzz bench membench crossbench vet lint fmt tidy clean
 
 all: build
 
@@ -48,6 +48,18 @@ wpt:
 # corpus bump is its own reviewed, re-run-the-report change (ADRs 0001/0002 posture).
 wpt-sync:
 	./scripts/wpt-sync.sh
+
+# Offline real-page differential report (ADR 0022): replays the captured pages in
+# testdata/corpus/ through the full pipeline and scores them against the Chromium
+# oracle saved at capture time. On-demand like `make wpt`, never a CI gate; skips
+# when there are no captures.
+corpus:
+	go test -tags corpus ./corpus -run '^TestCorpus$$' -count=1 -v -timeout 50m
+
+# Capture corpus/manifest.json with a local headless Chromium (needs network;
+# local-only — captures are third-party content and are not committed).
+corpus-capture:
+	cd scripts/corpus && go run . $(if $(CHROME),-chrome $(CHROME)) $(ARGS)
 
 # Short coverage-guided fuzzing over every parser that consumes untrusted
 # bytes (HTML, reduction, PDF, robots.txt, pagination cursors). The seed

@@ -26,6 +26,8 @@ make test      # go test ./... (includes every fuzz target's seed corpus)
 make eval      # offline in-process MCP eval gate (build tag `eval`; scorecard on stderr)
 make wpt       # offline web-platform-tests conformance report (build tag `wpt`; on-demand, not a gate)
 make wpt-sync  # refresh the vendored WPT subset in testdata/wpt/ (needs network; local-only)
+make corpus    # offline real-page differential report vs. a Chromium oracle (build tag `corpus`; on-demand, not a gate)
+make corpus-capture # capture corpus/manifest.json with local headless Chromium into testdata/corpus/ (needs network; local-only, not committed)
 make fuzz      # coverage-guided fuzzing of the untrusted-input parsers (FUZZTIME=15s each)
 make bench     # perf benchmarks over the hot-path packages (narrow: BENCH=regexp, repeat: BENCHCOUNT=N)
 make membench  # unblink vs. headless Chromium footprint/latency (scripts/membench, separate module)
@@ -306,7 +308,17 @@ not `doFetch`).
   constant `browser.DefaultPreferMarkdown` in `internal/browser/markdownneg.go`; the
   operator default reaches stateless reads only, a session negotiates only on an
   explicit per-call true; the two representations cache under separate keys; it is
-  not suppressed under `--tls-mimic`, where it breaks the Chrome header persona). Add a new
+  not suppressed under `--tls-mimic`, where it breaks the Chrome header persona);
+  0022 is the real-page differential corpus (the `corpus/` package + `make corpus`,
+  build tag `corpus`, mirroring `wpt/`: `scripts/corpus` — a separate module —
+  captures each `corpus/manifest.json` page's network responses and Chromium's
+  rendered text into the gitignored `testdata/corpus/`; replay runs the full
+  pipeline offline over an archive-backed transport (`browser.WithJSRoundTripper`,
+  test-only in intent — it replaces the pool carrying the SSRF dial guard) and
+  scores main-content recall per feature-matrix cell; only a *consequential* replay
+  loss — script, document, data, style — excuses a low score, an unusable oracle is
+  refused rather than scored, and `CORPUS_ONLY`/`CORPUS_DEBUG`/`CORPUS_DUMP`/
+  `CORPUS_OUT` drive one page; on-demand measurement, not a CI gate). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
