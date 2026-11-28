@@ -93,6 +93,14 @@ type oracle struct {
 	// BodyRendered is false when document.body had no layout box at the snapshot,
 	// which makes innerText fall back to textContent (hidden text included).
 	BodyRendered *bool `json:"body_rendered,omitempty"`
+	// Page-shape counts taken from Chromium's DOM (captures from 2026-11-28 on);
+	// nil in an older capture. verifyShapeCell checks the feature cells with them.
+	Tables       *int   `json:"tables,omitempty"`
+	Details      *int   `json:"details,omitempty"`
+	SVGTexts     *int   `json:"svg_texts,omitempty"`
+	HandlerAttrs *int   `json:"handler_attrs,omitempty"`
+	Dir          string `json:"dir,omitempty"`
+	Lang         string `json:"lang,omitempty"`
 }
 
 // manifestPage is one checked-in corpus entry: where to capture, and which

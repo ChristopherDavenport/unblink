@@ -267,6 +267,8 @@ var cellRules = map[string]cellRule{
 	"bundler:vite":               {any: []string{"vite"}},
 	"bundler:webpack":            {any: []string{"webpack"}},
 	"bundler:esbuild":            {any: []string{"esbuild"}},
+	"bundler:turbopack":          {any: []string{"turbopack"}},
+	"framework:astro":            {any: []string{"astro"}, reliable: true},
 	"arrival:lazy":               {any: []string{"lazy"}},
 	"shape:noscript":             {any: []string{"noscript"}, reliable: true},
 	"hydration:client-only":      {},
@@ -377,6 +379,10 @@ func verifyCell(cell string, ev *evidence, static float64, haveStatic bool) cell
 		return set(verdictNoEvidence, fmt.Sprintf("static recall %.2f", static))
 	}
 
+	if chk, ok := verifyShapeCell(cell, o); ok {
+		return chk
+	}
+
 	rule, ok := cellRules[cell]
 	if !ok || len(rule.any) == 0 {
 		return set(verdictUnchecked, "")
@@ -425,4 +431,57 @@ func unclaimedStacks(cells []string, ev *evidence) []string {
 		}
 	}
 	return out
+}
+
+// verifyShapeCell checks the cells that describe what is on the page rather
+// than how it is built, against counts the capture took from Chromium's DOM. A
+// capture made before those counts were recorded leaves the cell unchecked.
+func verifyShapeCell(cell string, o *oracle) (cellCheck, bool) {
+	chk := cellCheck{Cell: cell}
+	count := func(n *int, what string) (cellCheck, bool) {
+		switch {
+		case n == nil:
+			chk.Verdict, chk.Evidence = verdictUnchecked, "capture predates the page-shape counts"
+		case *n > 0:
+			chk.Verdict, chk.Evidence = verdictSupported, fmt.Sprintf("%d %s in Chromium's DOM", *n, what)
+		default:
+			chk.Verdict, chk.Evidence = verdictContradicted, "no "+what+" in Chromium's DOM"
+		}
+		return chk, true
+	}
+	switch cell {
+	case "feature:tables":
+		return count(o.Tables, "visible table(s) of two rows or more")
+	case "feature:details":
+		return count(o.Details, "<details> element(s)")
+	case "feature:svg-chart":
+		return count(o.SVGTexts, "<text> element(s) inside inline SVG")
+	case "feature:event-handler-attrs":
+		return count(o.HandlerAttrs, "element(s) with an on* handler attribute")
+	case "feature:forms":
+		n := o.Forms + o.Controls
+		return count(&n, "form(s) and visible control(s)")
+	case "shape:rtl":
+		switch o.Dir {
+		case "":
+			chk.Verdict, chk.Evidence = verdictUnchecked, "capture predates the page-shape counts"
+		case "rtl":
+			chk.Verdict, chk.Evidence = verdictSupported, "the body's computed direction is rtl"
+		default:
+			chk.Verdict, chk.Evidence = verdictContradicted, "the body's computed direction is "+o.Dir
+		}
+		return chk, true
+	case "shape:non-english":
+		lang := strings.ToLower(o.Lang)
+		switch {
+		case lang == "":
+			chk.Verdict, chk.Evidence = verdictUnchecked, "the document declares no language"
+		case lang == "en" || strings.HasPrefix(lang, "en-"):
+			chk.Verdict, chk.Evidence = verdictContradicted, "the document language is "+o.Lang
+		default:
+			chk.Verdict, chk.Evidence = verdictSupported, "the document language is "+o.Lang
+		}
+		return chk, true
+	}
+	return chk, false
 }
