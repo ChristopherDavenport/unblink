@@ -1,5 +1,5 @@
 {
- "_comment": "Real-page differential corpus (ADR 0022). Only this manifest is checked in; captures live under testdata/corpus/ (gitignored). Cells are group:name. Stack attributions come from each project's public description of its own site and can drift: the replay scorecard reports the framework the engine detected, and docs/corpus.md says how to re-verify.",
+ "_comment": "Real-page differential corpus (ADR 0022). Only this manifest is checked in; captures live under testdata/corpus/ (gitignored). Cells are group:name. Labels were checked against the 2026-11-28 captures with the offline verifier (every run reprints its verdicts); sites get rebuilt, so they drift. Each note records the robots.txt check for the page. Left out on purpose: lobste.rs (robots.txt disallows / for *), docs.solidjs.com (serves this client a page whose content is not rendered), httpbin.org/forms/post (25 tokens, too thin to score).",
  "pages": [
   {
    "id": "react-learn",
@@ -8,7 +8,8 @@
     "framework:react",
     "hydration:react-ssr",
     "hydration:next",
-    "shape:docs"
+    "shape:docs",
+    "bundler:turbopack"
    ],
    "note": "React docs; Next.js pages router, statically generated then hydrated"
   },
@@ -19,7 +20,8 @@
     "framework:react",
     "hydration:react-ssr",
     "hydration:next",
-    "shape:docs"
+    "shape:docs",
+    "bundler:turbopack"
    ],
    "note": "Same stack, index-style page"
   },
@@ -30,7 +32,8 @@
     "framework:react",
     "hydration:next",
     "hydration:streaming",
-    "shape:docs"
+    "shape:docs",
+    "bundler:turbopack"
    ],
    "note": "Next.js App Router: RSC payload streamed in inline scripts"
   },
@@ -40,7 +43,8 @@
    "cells": [
     "framework:react",
     "hydration:next",
-    "hydration:streaming"
+    "hydration:streaming",
+    "bundler:turbopack"
    ],
    "note": "App Router marketing/course page"
   },
@@ -50,7 +54,8 @@
    "cells": [
     "framework:react",
     "hydration:next",
-    "shape:docs"
+    "shape:docs",
+    "bundler:turbopack"
    ],
    "note": "Next.js docs site"
   },
@@ -60,7 +65,8 @@
    "cells": [
     "framework:react",
     "hydration:next",
-    "shape:docs"
+    "shape:docs",
+    "bundler:turbopack"
    ],
    "note": "Next.js docs site"
   },
@@ -70,11 +76,11 @@
    "cells": [
     "framework:react",
     "hydration:react-ssr",
-    "bundler:webpack",
     "arrival:client-routing",
-    "shape:docs"
+    "shape:docs",
+    "bundler:rspack"
    ],
-   "note": "Docusaurus: React SSG + webpack runtime + client router"
+   "note": "Docusaurus: React SSG + webpack runtime + client router (The site is now built with Rspack: no webpack runtime marker in the capture.)"
   },
   {
    "id": "jest-docs",
@@ -127,7 +133,6 @@
    "cells": [
     "framework:react",
     "hydration:react-ssr",
-    "hydration:streaming",
     "bundler:vite",
     "shape:docs"
    ],
@@ -137,13 +142,10 @@
    "id": "tanstack-query",
    "url": "https://tanstack.com/query/latest/docs/framework/react/overview",
    "cells": [
-    "framework:react",
-    "hydration:react-ssr",
-    "hydration:streaming",
     "bundler:vite",
     "shape:docs"
    ],
-   "note": "TanStack Start: streamed SSR"
+   "note": "TanStack Start: streamed SSR (2026-11-28: the capture shows TanStack Router SSR markers and no React runtime marker, so no framework is claimed.)"
   },
   {
    "id": "vue-guide",
@@ -236,17 +238,6 @@
    "note": "SvelteKit on Svelte 5"
   },
   {
-   "id": "solid-docs",
-   "url": "https://docs.solidjs.com/",
-   "cells": [
-    "framework:solid",
-    "hydration:solid-ssr",
-    "bundler:vite",
-    "shape:docs"
-   ],
-   "note": "SolidStart"
-  },
-  {
    "id": "solid-home",
    "url": "https://www.solidjs.com/",
    "cells": [
@@ -260,8 +251,7 @@
    "url": "https://angular.dev/",
    "cells": [
     "framework:angular",
-    "hydration:angular-ssr",
-    "bundler:esbuild"
+    "hydration:angular-ssr"
    ],
    "note": "Angular (application builder: esbuild) with SSR hydration"
   },
@@ -271,7 +261,6 @@
    "cells": [
     "framework:angular",
     "hydration:angular-ssr",
-    "bundler:esbuild",
     "shape:docs"
    ],
    "note": "Angular docs page"
@@ -291,10 +280,9 @@
    "id": "astro-docs",
    "url": "https://docs.astro.build/en/getting-started/",
    "cells": [
-    "hydration:astro-islands",
     "components:custom-elements",
-    "bundler:vite",
-    "shape:docs"
+    "shape:docs",
+    "framework:astro"
    ],
    "note": "Starlight: mostly static HTML + custom-element islands"
   },
@@ -302,10 +290,10 @@
    "id": "starlight-docs",
    "url": "https://starlight.astro.build/getting-started/",
    "cells": [
-    "hydration:astro-islands",
     "components:custom-elements",
     "bundler:vite",
-    "shape:docs"
+    "shape:docs",
+    "framework:astro"
    ],
    "note": "Starlight"
   },
@@ -313,8 +301,7 @@
    "id": "astro-home",
    "url": "https://astro.build/",
    "cells": [
-    "hydration:astro-islands",
-    "bundler:vite"
+    "framework:astro"
    ],
    "note": "Astro marketing page"
   },
@@ -335,7 +322,6 @@
     "framework:preact",
     "hydration:preact-ssr",
     "bundler:vite",
-    "arrival:fetch-after-load",
     "shape:docs"
    ],
    "note": "Preact docs: content loaded as data after navigation"
@@ -346,7 +332,8 @@
    "cells": [
     "framework:ember",
     "hydration:ember-ssr",
-    "shape:docs"
+    "shape:docs",
+    "bundler:webpack"
    ],
    "note": "Ember guides (prember/FastBoot static render + boot)"
   },
@@ -391,10 +378,9 @@
    "url": "https://htmx.org/examples/lazy-load/",
    "cells": [
     "framework:htmx",
-    "arrival:lazy",
-    "arrival:fetch-after-load"
+    "arrival:lazy"
    ],
-   "note": "htmx example: content swapped in on load via a mocked XHR"
+   "note": "htmx example: content swapped in on load via a mocked XHR; the demo's 'server' is an in-page fake XHR, so nothing arrives over the network"
   },
   {
    "id": "jquery-home",
@@ -471,7 +457,8 @@
    "url": "https://open-wc.org/guides/",
    "cells": [
     "components:custom-elements",
-    "shape:docs"
+    "shape:docs",
+    "framework:lit"
    ],
    "note": "Open Web Components guides"
   },
@@ -489,7 +476,8 @@
    "url": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/dialog",
    "cells": [
     "components:custom-elements",
-    "shape:docs"
+    "shape:docs",
+    "framework:lit"
    ],
    "note": "MDN reference page"
   },
@@ -509,7 +497,8 @@
    "cells": [
     "framework:react",
     "hydration:client-only",
-    "arrival:fetch-after-load"
+    "arrival:fetch-after-load",
+    "bundler:webpack"
    ],
    "note": "Client-only React app; results fetched after boot"
   },
@@ -520,7 +509,8 @@
     "framework:react",
     "hydration:client-only",
     "arrival:fetch-after-load",
-    "shape:noscript"
+    "shape:noscript",
+    "bundler:vite"
    ],
    "note": "Client-only React SPA with a noscript notice"
   },
@@ -540,7 +530,6 @@
    "id": "devto-home",
    "url": "https://dev.to/",
    "cells": [
-    "framework:preact",
     "arrival:lazy",
     "arrival:fetch-after-load",
     "shape:forum"
@@ -650,12 +639,12 @@
   },
   {
    "id": "rust-book",
-   "url": "https://doc.rust-lang.org/book/ch01-00-getting-started.html",
+   "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
    "cells": [
     "shape:docs",
     "shape:static-article"
    ],
-   "note": "mdBook output"
+   "note": "mdBook output; a full-length chapter (the earlier ch01-00 page had 48 tokens of content beside a whole-book sidebar)"
   },
   {
    "id": "esbuild-docs",
@@ -665,14 +654,6 @@
     "shape:static-article"
    ],
    "note": "Static docs with a little vanilla JS"
-  },
-  {
-   "id": "cern-first-page",
-   "url": "http://info.cern.ch/hypertext/WWW/TheProject.html",
-   "cells": [
-    "shape:static-article"
-   ],
-   "note": "The first web page: no doctype, no charset, plain http"
   },
   {
    "id": "lwn-home",
@@ -720,23 +701,6 @@
    "note": "Hacker News: table layout, almost no JS"
   },
   {
-   "id": "lobsters-home",
-   "url": "https://lobste.rs/",
-   "cells": [
-    "shape:forum"
-   ],
-   "note": "Lobsters front page"
-  },
-  {
-   "id": "phpbb-forum",
-   "url": "https://www.phpbb.com/community/viewforum.php?f=46",
-   "cells": [
-    "shape:forum",
-    "framework:jquery"
-   ],
-   "note": "phpBB topic list"
-  },
-  {
    "id": "aozora-kokoro",
    "url": "https://www.aozora.gr.jp/cards/000148/files/773_14560.html",
    "cells": [
@@ -753,6 +717,453 @@
     "shape:non-utf8"
    ],
    "note": "lib.ru index served as KOI8-R over plain http (same replay caveat)"
+  },
+  {
+   "id": "freebsd-forums",
+   "url": "https://forums.freebsd.org/forums/web-and-network-services.37/",
+   "cells": [
+    "shape:forum",
+    "feature:forms"
+   ],
+   "note": "XenForo forum listing; replaces phpbb-forum (HTTP 403 to automated clients). robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "w3c-first-page",
+   "url": "https://www.w3.org/History/19921103-hypertext/hypertext/WWW/TheProject.html",
+   "cells": [
+    "shape:static-article"
+   ],
+   "note": "W3C's copy of the first web page; replaces cern-first-page (info.cern.ch not reachable from the capture host). robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "todomvc-react",
+   "url": "https://todomvc.com/examples/react/dist/",
+   "cells": [
+    "framework:react",
+    "hydration:client-only"
+   ],
+   "note": "TodoMVC reference app, React; empty shell until JS runs. no robots.txt (404) 2026-11-28"
+  },
+  {
+   "id": "todomvc-angular",
+   "url": "https://todomvc.com/examples/angular/dist/browser/",
+   "cells": [
+    "framework:angular",
+    "hydration:client-only"
+   ],
+   "note": "TodoMVC reference app, Angular. no robots.txt (404) 2026-11-28"
+  },
+  {
+   "id": "crates-home",
+   "url": "https://crates.io/",
+   "cells": [
+    "framework:svelte",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "shape:registry",
+    "bundler:vite"
+   ],
+   "note": "crates.io front page; client-rendered, data from its API. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "crates-serde",
+   "url": "https://crates.io/crates/serde",
+   "cells": [
+    "framework:svelte",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "arrival:client-routing",
+    "shape:registry",
+    "bundler:vite"
+   ],
+   "note": "crates.io crate page on a deep link; client-rendered. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "caniuse-grid",
+   "url": "https://caniuse.com/css-grid",
+   "cells": [
+    "arrival:fetch-after-load",
+    "components:custom-elements",
+    "framework:lit",
+    "bundler:webpack",
+    "components:shadow-dom"
+   ],
+   "note": "caniuse feature page; support table built client-side from fetched data. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "docsify-home",
+   "url": "https://docsify.js.org/",
+   "cells": [
+    "hydration:client-only",
+    "arrival:fetch-after-load"
+   ],
+   "note": "docsify docs; Markdown fetched and rendered in the browser. no robots.txt (404) 2026-11-28"
+  },
+  {
+   "id": "docsify-quickstart",
+   "url": "https://docsify.js.org/#/quickstart",
+   "cells": [
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "arrival:client-routing"
+   ],
+   "note": "docsify docs on a hash-routed deep link. no robots.txt (404) 2026-11-28"
+  },
+  {
+   "id": "swagger-petstore",
+   "url": "https://petstore.swagger.io/",
+   "cells": [
+    "framework:react",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "feature:forms",
+    "bundler:webpack"
+   ],
+   "note": "Swagger UI demo; React app rendering a fetched OpenAPI document. no robots.txt (404) 2026-11-28"
+  },
+  {
+   "id": "redoc-demo",
+   "url": "https://redocly.github.io/redoc/",
+   "cells": [
+    "framework:react",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "shape:docs"
+   ],
+   "note": "Redoc demo; React app rendering a fetched OpenAPI document. no robots.txt (404) 2026-11-28"
+  },
+  {
+   "id": "elm-packages",
+   "url": "https://package.elm-lang.org/",
+   "cells": [
+    "framework:elm",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "shape:registry"
+   ],
+   "note": "Elm package index; Elm app, data fetched after load. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "elm-core-docs",
+   "url": "https://package.elm-lang.org/packages/elm/core/latest/",
+   "cells": [
+    "framework:elm",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "arrival:client-routing",
+    "shape:docs"
+   ],
+   "note": "Elm package docs on a deep link. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "emberobserver",
+   "url": "https://emberobserver.com/",
+   "cells": [
+    "framework:ember",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "shape:registry"
+   ],
+   "note": "Ember Observer; Ember app, data from its API. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "material-angular",
+   "url": "https://material.angular.dev/components/button/overview",
+   "cells": [
+    "framework:angular",
+    "hydration:client-only",
+    "arrival:client-routing",
+    "shape:docs"
+   ],
+   "note": "Angular Material docs on a deep link; client-rendered Angular. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "hackerweb",
+   "url": "https://hackerweb.app/",
+   "cells": [
+    "hydration:client-only",
+    "shape:forum",
+    "arrival:worker"
+   ],
+   "note": "HackerWeb; client-rendered list from an API. robots.txt checked 2026-11-28: allowed for * Its data is fetched by a Web Worker, which the capture cannot see and unblink does not run (a declared non-goal): the page is here as a by-design case."
+  },
+  {
+   "id": "vue-realworld",
+   "url": "https://vue-vuex-realworld.netlify.app/",
+   "cells": [
+    "framework:vue",
+    "hydration:client-only",
+    "arrival:fetch-after-load",
+    "bundler:webpack"
+   ],
+   "note": "RealWorld (Conduit) demo, Vue. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "react-icons",
+   "url": "https://react-icons.github.io/react-icons/",
+   "cells": [
+    "framework:astro",
+    "hydration:astro-islands",
+    "framework:react"
+   ],
+   "note": "react-icons site; Astro with React islands. no robots.txt (404) 2026-11-28"
+  },
+  {
+   "id": "cf-workers-docs",
+   "url": "https://developers.cloudflare.com/workers/",
+   "cells": [
+    "framework:astro",
+    "hydration:astro-islands",
+    "shape:docs",
+    "framework:react",
+    "bundler:vite"
+   ],
+   "note": "Cloudflare Workers docs; Starlight with islands. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "bundlephobia-react",
+   "url": "https://bundlephobia.com/package/react",
+   "cells": [
+    "framework:react",
+    "arrival:fetch-after-load",
+    "shape:registry",
+    "bundler:turbopack"
+   ],
+   "note": "Bundlephobia package page; Next.js, sizes fetched after load. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "svelte-hn",
+   "url": "https://hn.svelte.dev/top/1",
+   "cells": [
+    "framework:svelte",
+    "hydration:svelte-ssr",
+    "shape:forum",
+    "bundler:vite"
+   ],
+   "note": "SvelteKit Hacker News demo. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "owid-life-expectancy",
+   "url": "https://ourworldindata.org/grapher/life-expectancy",
+   "cells": [
+    "feature:svg-chart",
+    "arrival:fetch-after-load",
+    "feature:forms",
+    "framework:react",
+    "bundler:vite"
+   ],
+   "note": "Our World in Data grapher; chart drawn client-side as SVG. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "d3-what",
+   "url": "https://d3js.org/what-is-d3",
+   "cells": [
+    "framework:vue",
+    "hydration:vue-ssr",
+    "bundler:vite",
+    "feature:svg-chart",
+    "shape:docs"
+   ],
+   "note": "D3 docs (VitePress) with inline SVG charts. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "githubstatus",
+   "url": "https://www.githubstatus.com/",
+   "cells": [
+    "shape:dashboard",
+    "feature:forms",
+    "feature:event-handler-attrs"
+   ],
+   "note": "GitHub status page (Statuspage). robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "wai-forms-grouping",
+   "url": "https://www.w3.org/WAI/tutorials/forms/grouping/",
+   "cells": [
+    "feature:forms",
+    "shape:docs"
+   ],
+   "note": "WAI tutorial with grouped radios and selects. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "govuk-radios",
+   "url": "https://design-system.service.gov.uk/components/radios/",
+   "cells": [
+    "feature:forms",
+    "feature:tables",
+    "shape:docs"
+   ],
+   "note": "GOV.UK Design System radios component. no robots.txt (404) 2026-11-28"
+  },
+  {
+   "id": "validator-w3",
+   "url": "https://validator.w3.org/",
+   "cells": [
+    "feature:forms"
+   ],
+   "note": "W3C validator: tabbed form with selects and radios. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "sqlite-select",
+   "url": "https://www.sqlite.org/lang_select.html",
+   "cells": [
+    "feature:event-handler-attrs",
+    "feature:svg-chart",
+    "shape:docs",
+    "shape:large-dom"
+   ],
+   "note": "SQLite SELECT docs: inline SVG syntax diagrams toggled by onclick handlers. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "mdn-select",
+   "url": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/select",
+   "cells": [
+    "feature:forms",
+    "feature:tables",
+    "feature:details",
+    "components:custom-elements",
+    "shape:docs",
+    "framework:lit"
+   ],
+   "note": "MDN <select> reference. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "javadoc-string",
+   "url": "https://docs.oracle.com/javase/8/docs/api/java/lang/String.html",
+   "cells": [
+    "feature:tables",
+    "shape:docs",
+    "shape:large-dom",
+    "shape:static-article"
+   ],
+   "note": "Java 8 String Javadoc: large method tables. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "schneier-post",
+   "url": "https://www.schneier.com/blog/archives/2013/09/the_nsa_is_brea.html",
+   "cells": [
+    "shape:article-comments",
+    "shape:large-dom",
+    "shape:static-article"
+   ],
+   "note": "Blog post with a long comment thread. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "csstricks-flexbox",
+   "url": "https://css-tricks.com/snippets/css/a-guide-to-flexbox/",
+   "cells": [
+    "shape:article-comments",
+    "shape:large-dom",
+    "feature:details",
+    "framework:jquery"
+   ],
+   "note": "CSS-Tricks flexbox guide with comments. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "hn-thread",
+   "url": "https://news.ycombinator.com/item?id=8863",
+   "cells": [
+    "shape:forum",
+    "shape:article-comments",
+    "feature:tables",
+    "shape:static-article"
+   ],
+   "note": "A Hacker News comment thread (layout tables). robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "paulgraham-greatwork",
+   "url": "https://www.paulgraham.com/greatwork.html",
+   "cells": [
+    "shape:long-form",
+    "shape:static-article"
+   ],
+   "note": "Long essay in a table layout. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "danluu-web-bloat",
+   "url": "https://danluu.com/web-bloat/",
+   "cells": [
+    "shape:long-form",
+    "shape:static-article",
+    "feature:tables"
+   ],
+   "note": "Long essay with data tables, no CSS framework. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "wikipedia-ar",
+   "url": "https://ar.wikipedia.org/wiki/%D9%85%D8%AA%D8%B5%D9%81%D8%AD_%D9%88%D9%8A%D8%A8",
+   "cells": [
+    "shape:static-article",
+    "shape:rtl",
+    "framework:jquery"
+   ],
+   "note": "Arabic Wikipedia, \"web browser\" (RTL). Wikimedia robots.txt allows /wiki/ for *; my probe was rate-limited (429) so this rests on the published file"
+  },
+  {
+   "id": "wikipedia-he",
+   "url": "https://he.wikipedia.org/wiki/%D7%93%D7%A4%D7%93%D7%A4%D7%9F",
+   "cells": [
+    "shape:static-article",
+    "shape:rtl",
+    "framework:jquery"
+   ],
+   "note": "Hebrew Wikipedia, \"browser\" (RTL). Wikimedia robots.txt allows /wiki/ for *; probe rate-limited (429)"
+  },
+  {
+   "id": "bbc-arabic",
+   "url": "https://www.bbc.com/arabic",
+   "cells": [
+    "shape:news",
+    "shape:rtl",
+    "framework:react",
+    "hydration:next"
+   ],
+   "note": "BBC Arabic front page (RTL, Next.js). robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "dw-persian",
+   "url": "https://www.dw.com/fa-ir/",
+   "cells": [
+    "shape:news",
+    "shape:rtl",
+    "bundler:vite"
+   ],
+   "note": "DW Persian front page (RTL). robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "tagesschau",
+   "url": "https://www.tagesschau.de/",
+   "cells": [
+    "shape:news",
+    "shape:non-english",
+    "feature:details",
+    "framework:react",
+    "bundler:webpack"
+   ],
+   "note": "tagesschau.de front page (German). robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "ionic-button",
+   "url": "https://ionicframework.com/docs/api/button",
+   "cells": [
+    "framework:react",
+    "hydration:react-ssr",
+    "shape:docs",
+    "feature:tables",
+    "bundler:webpack"
+   ],
+   "note": "Ionic docs (Docusaurus); the component demos are in iframes, so no custom element is in the page itself. robots.txt checked 2026-11-28: allowed for *"
+  },
+  {
+   "id": "spectrum-wc-button",
+   "url": "https://opensource.adobe.com/spectrum-web-components/components/button/",
+   "cells": [
+    "framework:lit",
+    "components:custom-elements",
+    "components:shadow-dom",
+    "shape:docs"
+   ],
+   "note": "Spectrum Web Components docs (Lit, shadow DOM). no robots.txt (404) 2026-11-28"
   }
  ]
 }
