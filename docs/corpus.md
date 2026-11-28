@@ -178,6 +178,124 @@ rerun it alone with `CORPUS_ONLY=<id>`.
 Compare engine builds against the **same** captures. A recapture is a new
 baseline: the pages themselves have changed.
 
+## Comparing against another tool (`make corpus-compare`)
+
+`make corpus` asks how close unblink gets to Chromium. `make corpus-compare`
+asks the next question: on the same captured pages, against the same oracle,
+how does unblink's output compare with another agent browser's, in fidelity and
+in cost? Today the other tool is [Charlotte](comparison.md#charlotte), which
+serves the same purpose from the other side: a real Chromium under a
+token-efficiency layer.
+
+```sh
+make corpus-compare CHROME=$HOME/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome
+make corpus-compare ARGS="-corpus-only shape:docs -corpus-runs 1"
+make corpus-compare ARGS="-corpus-out /tmp/cc.json -corpus-md /tmp/cc.md -corpus-dump /tmp/cc-dump"
+make corpus-compare TOOLS=unblink          # one tool, same pipeline
+```
+
+It needs the captures, Node ≥ 20 (npx fetches the pinned Charlotte, as for
+`make crossbench`) and a Chromium. **Pass the build that made the captures**
+(`CHROME=`; the run warns when it differs): the oracle is what that build
+rendered, and a different build replaying it is a second variable in
+Charlotte's score. `CORPUS_DIR`, when set, must be an absolute path.
+
+The code is in `scripts/membench` (`corpus_*.go`, build tag `corpus`), which
+already owns the tool adapters and the BPE token meter; the oracle, scorer,
+replay matcher and exclusion rules are imported from `corpus/` (`compare.go` is
+that package's only exported surface), so both tools are scored by the same
+code. Nothing is copied.
+
+### Same input, two routes to it
+
+- **Charlotte** drives a real Chromium, which cannot take an in-process
+  transport. `corpus.Proxy` is a forward proxy that answers every request —
+  plain HTTP, or HTTPS inside a CONNECT tunnel it terminates with a throwaway
+  in-memory CA — from the page's archive, through the same matcher `make corpus`
+  uses (exact, then cache-bust, then path; POST bodies told apart by hash), and
+  drops the connection for anything else. Charlotte has no option for browser
+  launch arguments, so `PUPPETEER_EXECUTABLE_PATH` points at a generated
+  wrapper that execs the real binary with `--proxy-server`,
+  `--ignore-certificate-errors` and `--disable-quic` added; Charlotte itself
+  runs unmodified at its pinned version. Certificate checks are off only because
+  the browser has no route to anything but recorded bytes.
+- **unblink** runs as a real MCP server (the production tool surface,
+  untrusted-content framing on) inside the harness process, with the archive as
+  its transport — the binary has no proxy support, and adding one for a
+  benchmark would be a product change. So the asymmetry is: unblink is spared a
+  loopback TLS hop and a process start, and its `read` latency is in-process.
+  Latency is therefore the least comparable column; recall and tokens are not
+  affected.
+
+Neither tool can reach the network during a run. A request the archive cannot
+answer is a network error for both, and is counted per tool per page. Chromium's
+own housekeeping traffic (update checks, safe browsing) is refused without
+being counted against the page.
+
+### What is run
+
+Every configuration gets a fresh server and a fresh browser profile per page
+per run, one page at a time, at the tool's own defaults (unblink as `make
+corpus` configures it: no retries, no robots/llms probes, default JavaScript
+budget; Charlotte: default profile, default 30 s navigation timeout, its own
+1440×900 viewport — the captures were made at 1280×720, and that is not tuned
+away). Three runs by default; the median is reported and the run-to-run spread
+shown.
+
+| configuration | call |
+|---|---|
+| `unblink/default` | `read(url)` — article mode, one call at the default token budget |
+| `unblink/full` | `read(url, mode=full)`, following `next_cursor` to the end |
+| `charlotte/default` | `charlotte_navigate(url)` — detail `minimal`: landmarks, headings, counts |
+| `charlotte/summary` | `charlotte_observe(detail=summary)` on the page the full run loaded (not timed) |
+| `charlotte/full` | `charlotte_navigate(url, detail=full)` — all text content |
+
+"Default" is what an agent gets from the tool's page-reading call with nothing
+but the URL. The two defaults are not the same kind of call — Charlotte's is an
+orientation pass that carries no body text by design, unblink's is a read — so
+the default-vs-default row says which tool hands over content unasked, not
+which extracts better. `unblink/default` against `charlotte/full` is the
+"cheapest call that actually returns the page" comparison; full against full is
+the fidelity comparison.
+
+### How outputs are scored
+
+- **Fidelity** uses `corpus`'s scorer unchanged: main-content 3-shingle recall
+  and token recall against the oracle's main text, precision against the
+  oracle's whole-page text. unblink's Markdown is scored as `make corpus`
+  scores it. Charlotte answers with one JSON document; it is scored on its
+  decoded string values in document order — `full_content`, headings, landmark
+  and control labels, the content summary, the title — with identifiers (`id`,
+  `type`, `role`, URLs, timestamps) and the `errors` diagnostics block left
+  out. Scoring the raw JSON would split the text at every key and escape and
+  understate Charlotte for a formatting reason. Precision is a multiset
+  measure, so text Charlotte states twice (a heading in `headings` and again in
+  `full_content`) costs it precision the second time.
+- **Cost** is o200k_base tokens of the payload exactly as returned — for
+  Charlotte the whole JSON, keys, ids and bounds included; for unblink every
+  page of the read, framing included — because that is what the model's context
+  pays. `recall per 1k tokens` is the mean over pages of recall ÷ (tokens/1000).
+- **A run that errors or times out** gave the agent nothing: recall 0, 0 tokens,
+  counted under `failed` and kept in the means.
+- **Exclusions** are the harness's own. A page whose oracle is unusable is
+  scored for neither tool. A tool's page is *not replay-sound* when its full
+  configuration scored below 0.85 after losing a consequential request the
+  archive could not answer; the head-to-head is reported both over every
+  usable-oracle page and over the pages sound for both tools.
+- **Win / tie / loss** uses a recall margin of 0.05, fixed in the code
+  (`compareMargin`) before any run.
+
+### Read the result with this in mind
+
+The oracle is Chromium's `innerText`, and Charlotte *is* Chromium reading the
+same DOM: on anything decided by layout or by JavaScript the engine cannot run,
+Charlotte starts ahead by construction, and a tie there is the best unblink can
+do. unblink starts ahead on tokens for the mirror-image reason: it reduces,
+Charlotte serialises. The comparison measures how much of each structural
+advantage survives real pages; it does not show that one design is right. The
+measured table, with tool and Chromium versions, is in
+[comparison.md](comparison.md#real-page-corpus-unblink-vs-charlotte).
+
 ## Adding a page
 
 Append to `corpus/manifest.json`:

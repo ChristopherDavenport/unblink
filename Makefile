@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval wpt wpt-sync corpus corpus-capture fuzz bench membench crossbench vet lint fmt tidy clean
+.PHONY: all build run version test eval wpt wpt-sync corpus corpus-capture corpus-compare fuzz bench membench crossbench vet lint fmt tidy clean
 
 all: build
 
@@ -60,6 +60,13 @@ corpus:
 # local-only — captures are third-party content and are not committed).
 corpus-capture:
 	cd scripts/corpus && go run . $(if $(CHROME),-chrome $(CHROME)) $(ARGS)
+
+# unblink vs. Charlotte on the captured real pages, offline, both scored against
+# the capture's Chromium oracle by the corpus package's scorer (docs/corpus.md).
+# Needs the captures, Node (npx fetches the pinned Charlotte) and a Chromium —
+# pass the build that made the captures: CHROME=/path. CORPUS_DIR must be absolute.
+corpus-compare:
+	cd scripts/membench && go run -tags corpus . -root ../.. -corpus-compare $(if $(TOOLS),-tools $(TOOLS)) $(if $(CHROME),-chrome $(CHROME)) $(if $(CORPUS_DIR),-corpus-dir $(CORPUS_DIR)) $(ARGS)
 
 # Short coverage-guided fuzzing over every parser that consumes untrusted
 # bytes (HTML, reduction, PDF, robots.txt, pagination cursors). The seed
