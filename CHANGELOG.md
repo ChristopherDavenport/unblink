@@ -89,6 +89,9 @@ All notable changes are recorded here. Earlier history lives in the phase log of
     write). `textContent` on a text or comment node reads and writes its data.
   - `document.readyState` goes `loading` → `interactive` → `complete` with
     `readystatechange`, where it was a constant `complete`.
+  - `document.evaluate`, `XPathEvaluator`, `XPathExpression` and `XPathResult`: an
+    XPath 1.0 evaluator over the node tree, bounded in expression size, nesting and
+    evaluation steps.
   - `el.attributes` is live and `removeAttributeNode`/`setAttributeNode` exist;
     `classList` is a full, live `DOMTokenList` and `link.relList.supports()` answers
     from what the engine acts on; `document.createNodeIterator`, `document.scripts`/

@@ -70,6 +70,8 @@ type bridge struct {
 	protoComment          *goja.Object
 	protoDocumentFragment *goja.Object
 	protoShadowRoot       *goja.Object
+	protoXPathResult      *goja.Object
+	protoXPathExpression  *goja.Object
 	protoSVGElement       *goja.Object
 	protoUnknownElement   *goja.Object
 	ifaceProtos           map[string]*goja.Object // interface name → prototype

@@ -160,6 +160,7 @@ func (b *bridge) installPrototypes() {
 
 	// Per-tag interfaces (HTMLDivElement, HTMLScriptElement, …) and SVGElement.
 	b.installElementInterfaces()
+	b.installXPath()
 
 	for name, proto := range map[string]*goja.Object{
 		"EventTarget": b.protoEventTarget, "Node": b.protoNode, "Element": b.protoElement,

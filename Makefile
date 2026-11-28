@@ -72,6 +72,7 @@ fuzz:
 	go test ./internal/content/pdf -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
 	go test ./internal/content/feed -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
 	go test ./internal/content -run '^$$' -fuzz '^FuzzMarkdown$$' -fuzztime $(FUZZTIME)
+	go test ./internal/js -run '^$$' -fuzz '^FuzzXPath$$' -fuzztime $(FUZZTIME)
 	go test ./internal/robots -run '^$$' -fuzz '^FuzzParse$$' -fuzztime $(FUZZTIME)
 	go test ./internal/tokens -run '^$$' -fuzz '^FuzzPaginateCursor$$' -fuzztime $(FUZZTIME)
 
