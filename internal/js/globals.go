@@ -129,7 +129,7 @@ func (b *bridge) installGlobals(win *goja.Object) {
 	_ = vm.Set("location", loc)
 	_ = win.Set("location", loc)
 
-	if b.base != nil {
+	if b.base != nil && len(b.historyStack) == 0 {
 		b.historyStack = []historyEntry{{url: b.base}}
 	}
 	hist := vm.NewObject()
@@ -326,6 +326,16 @@ func rawFragment(f string) string {
 // event loop / goja; this just fills the gaps so registration-time code doesn't
 // throw ReferenceError.
 const preludeJS = `
+// Page-dependent state is not known while the preludes run: a pooled runtime is
+// prepared before any page exists (Engine.prepare). Code that needs the page URL,
+// the render's start instant, its timer deadline or its stores registers a bind
+// hook; the engine runs the hooks once the page is bound (bridge.finishBind) and
+// removes both names before any page script runs.
+(function () {
+  var hooks = [];
+  globalThis.__unblinkOnBind = function (f) { hooks.push(f); };
+  globalThis.__unblinkBind = function () { for (var i = 0; i < hooks.length; i++) { try { hooks[i](); } catch (e) {} } hooks = []; };
+})();
 (function () {
   // Browsers hand out numeric timer ids; goja's event loop returns a host Timer
   // object. zone.js stamps __zone_symbol__zoneTask onto non-numeric handles
@@ -343,14 +353,18 @@ const preludeJS = `
     // instant timers must fire by; a delay past it is pulled in to just inside
     // the budget. Only timers that otherwise never fire change behavior. Intervals
     // are never clamped (they'd busy-loop against the deadline).
-    var deadline = (typeof window.__unblinkTimerDeadlineMs === 'number') ? window.__unblinkTimerDeadlineMs : 0;
+    var deadline = 0;
     // Once the deadline has passed, "pull it in" would mean "run it now" — and a
     // timer that re-arms itself with a long delay (a poll loop, a retry backoff)
     // would become a busy loop for the rest of the budget, issuing its request
     // every few milliseconds. So after the deadline a timer is pulled in only if
     // it would outlast the budget (budgetEnd), and only lateClamps times in
     // total: enough to follow a short chain of deferred timers, never a loop.
-    var budgetEnd = (typeof window.__unblinkTimerBudgetEndMs === 'number') ? window.__unblinkTimerBudgetEndMs : deadline;
+    var budgetEnd = 0;
+    __unblinkOnBind(function () {
+      deadline = (typeof window.__unblinkTimerDeadlineMs === 'number') ? window.__unblinkTimerDeadlineMs : 0;
+      budgetEnd = (typeof window.__unblinkTimerBudgetEndMs === 'number') ? window.__unblinkTimerBudgetEndMs : deadline;
+    });
     var lateClamps = 32;
     // clamped tracks one-shot timers whose delay was pulled in because it
     // exceeded the budget. The settle poll holds open while any remain unfired,

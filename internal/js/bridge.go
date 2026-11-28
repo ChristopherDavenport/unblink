@@ -31,12 +31,16 @@ type bridge struct {
 	// explicitBase is the resolved <base href> element, or nil when the page has
 	// none (then relative URLs resolve against the current document URL).
 	explicitBase *url.URL
-	transport    Transport // nil when JS networking is disabled
-	cookies      CookieJar // nil when document.cookie is unavailable
-	storage      Storage   // backs window.localStorage; nil → per-render prelude fallback
-	sessStorage  Storage   // backs window.sessionStorage; nil → per-render prelude fallback
-	ctx          context.Context
-	reqTimeout   time.Duration
+	// bound is set once bind() has attached a page; preludesRan once prepare() has
+	// run the preludes on this runtime (so bind knows what to patch up).
+	bound       bool
+	preludesRan bool
+	transport   Transport // nil when JS networking is disabled
+	cookies     CookieJar // nil when document.cookie is unavailable
+	storage     Storage   // backs window.localStorage; nil → per-render prelude fallback
+	sessStorage Storage   // backs window.sessionStorage; nil → per-render prelude fallback
+	ctx         context.Context
+	reqTimeout  time.Duration
 
 	// allowCrossOrigin disables the same-origin/CORS enforcement applied to
 	// page-JS fetch/XHR (escape hatch; default false = enforce). The extension
@@ -284,41 +288,27 @@ func (b *bridge) resetTransportBudget() {
 }
 
 func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration, extHost *ExtensionHost) *bridge {
+	b := newBridgeShell(vm, loop, extHost)
+	b.bind(doc, base, transport, cookies, storage, sessStorage, ctx, reqTimeout)
+	return b
+}
+
+// newBridgeShell returns a bridge that is not yet bound to a document. Everything
+// install() and the preludes build — prototypes, interface objects, the window
+// and document objects — closes over the bridge and reads the document, base URL,
+// transport and stores only when called, so that whole setup can run on a shell
+// ahead of time (the pre-warm pool, see Engine.prepare) and be bound to a page by
+// bind() when a render takes it.
+func newBridgeShell(vm *goja.Runtime, loop *eventloop.EventLoop, extHost *ExtensionHost) *bridge {
 	tabID := 0
 	if extHost != nil {
 		tabID = extHost.nextTabID()
 	}
-	var nc *countingTransport
-	if transport != nil {
-		if extHost != nil {
-			// declarativeNetRequest gates every subrequest (blockingTransport); a
-			// chrome-extension:// URL is served from the bundle before the gate
-			// (extResourceTransport) so extension resources aren't DNR-blocked. Both sit
-			// inside the counting transport so they still show in the requests diagnostics.
-			transport = &blockingTransport{inner: transport, host: extHost, initiator: initiatorHost(base), pageURL: baseURLString(base), tabID: tabID}
-			transport = &extResourceTransport{inner: transport, host: extHost, page: base}
-		}
-		// Attach truthful Sec-Fetch-* to every subrequest, just inside the counting
-		// transport so the request log is unaffected. See secfetch.go / ADR 0014.
-		transport = &secFetchTransport{inner: transport, base: base}
-		nc = &countingTransport{inner: transport}
-		transport = nc
-	}
 	return &bridge{
 		vm:                   vm,
 		loop:                 loop,
-		doc:                  doc,
-		base:                 base,
-		explicitBase:         findExplicitBase(doc, base),
-		transport:            transport,
-		netCount:             nc,
 		extHost:              extHost,
 		tabID:                tabID,
-		cookies:              cookies,
-		storage:              storage,
-		sessStorage:          sessStorage,
-		ctx:                  ctx,
-		reqTimeout:           reqTimeout,
 		dynSem:               make(chan struct{}, dynImportConcurrency),
 		reg:                  newModuleRegistry(),
 		cache:                make(map[*html.Node]*goja.Object),
@@ -346,6 +336,93 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		webdriver:            true,
 	}
 }
+
+// bind attaches the bridge to one page: its document, base URL, network
+// transport, cookie jar and storage areas. Called once, either before install()
+// (the background worker) or after install() and the preludes have run on a shell
+// (renders and live contexts) — in which case it also completes the two pieces of
+// the installed world that are per page: the document object's identity with the
+// document node, and the storage globals.
+func (b *bridge) bind(doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration) {
+	var nc *countingTransport
+	if transport != nil {
+		if b.extHost != nil {
+			// declarativeNetRequest gates every subrequest (blockingTransport); a
+			// chrome-extension:// URL is served from the bundle before the gate
+			// (extResourceTransport) so extension resources aren't DNR-blocked. Both sit
+			// inside the counting transport so they still show in the requests diagnostics.
+			transport = &blockingTransport{inner: transport, host: b.extHost, initiator: initiatorHost(base), pageURL: baseURLString(base), tabID: b.tabID}
+			transport = &extResourceTransport{inner: transport, host: b.extHost, page: base}
+		}
+		// Attach truthful Sec-Fetch-* to every subrequest, just inside the counting
+		// transport so the request log is unaffected. See secfetch.go / ADR 0014.
+		transport = &secFetchTransport{inner: transport, base: base}
+		nc = &countingTransport{inner: transport}
+		transport = nc
+	}
+	b.doc = doc
+	b.base = base
+	b.explicitBase = findExplicitBase(doc, base)
+	b.transport = transport
+	b.netCount = nc
+	b.cookies = cookies
+	b.storage = storage
+	b.sessStorage = sessStorage
+	b.ctx = ctx
+	b.reqTimeout = reqTimeout
+	b.bound = true
+	if b.documentObj != nil {
+		b.bindInstalled()
+	}
+}
+
+// bindInstalled finishes install() for a bridge whose document arrived afterwards.
+func (b *bridge) bindInstalled() {
+	// Register the document node so wrap(b.doc) (e.g. html.parentNode) returns the
+	// document object.
+	b.cache[b.doc] = b.documentObj
+	b.objNode[b.documentObj] = b.doc
+	b.installStorage()
+	if b.locationObj != nil {
+		b.currentURL = b.base
+		b.updateLocation(b.base)
+	}
+	if b.base != nil && len(b.historyStack) == 0 {
+		b.historyStack = []historyEntry{{url: b.base}}
+	}
+	if b.transport == nil && b.preludesRan {
+		// The preludes built fetch/XHR over __unblinkFetch before the page was known;
+		// without a transport they are the rejecting stubs instead.
+		_ = b.vm.GlobalObject().Delete("__unblinkFetch")
+		_, _ = b.vm.RunProgram(noNetProgram)
+	}
+}
+
+// finishBind runs the preludes' bind hooks (see preludeJS): the page-dependent
+// state they could not read while the runtime was being prepared — the page URL,
+// the navigation start, the timer deadline, the isolation flags, the stores. It
+// must run once the bridge is bound, the preludes have run, and every per-render
+// field the hooks read (respHeaders, the timer-deadline globals) is set; the hook
+// entry points are then removed so page code never sees them.
+func (b *bridge) finishBind() {
+	b.installIsolationGlobals()
+	g := b.vm.GlobalObject()
+	if fn, ok := goja.AssertFunction(g.Get("__unblinkBind")); ok {
+		_, _ = fn(goja.Undefined())
+	}
+	_ = g.Delete("__unblinkBind")
+	_ = g.Delete("__unblinkOnBind")
+}
+
+// noNetProgram is what the API prelude installs for fetch/XHR when the runtime has
+// no transport. A prepared shell ran that prelude before its page was bound, so
+// bind() applies this afterwards; it must stay identical to the prelude's branch.
+var noNetProgram = goja.MustCompile("nonet.js", noNetJS, false)
+
+const noNetJS = `(function () {
+  var window = globalThis;
+` + noNetStubsJS + `
+})();`
 
 // maxCallStackDepth bounds JS call-stack depth. goja's default is math.MaxInt32
 // (effectively unbounded, relying on Go stack exhaustion), so a runaway recursion in
@@ -382,13 +459,14 @@ func (b *bridge) install() {
 
 	doc := b.documentObject()
 	b.documentObj = doc
-	// Register the document node so wrap(b.doc) (e.g. html.parentNode) returns this
-	// same object, and give it the Document prototype for instanceof.
-	b.cache[b.doc] = doc
-	b.objNode[doc] = b.doc
+	// Give it the Document prototype for instanceof. Its identity with the document
+	// node, and the storage globals, are per page: done here when the bridge is
+	// already bound, otherwise by bind().
 	_ = doc.SetPrototype(b.protoDocument)
 	_ = vm.Set("document", doc)
-	b.installStorage()
+	if b.doc != nil {
+		b.bindInstalled()
+	}
 	_ = win.Set("document", doc)
 
 	b.installGlobals(win)

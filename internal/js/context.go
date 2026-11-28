@@ -140,8 +140,8 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 	if doc == nil {
 		return nil, fmt.Errorf("js: open: nil document")
 	}
-	loop := e.takeLoop()
-	loop.Start()
+	warm := e.takeRuntime()
+	loop := warm.loop
 	c := &Context{loop: loop, timeout: e.timeout, memGuard: e.memGuard, doc: doc, closedCh: make(chan struct{}), taskBudget: e.liveTaskBudget}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
@@ -150,7 +150,11 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 	err := c.run(ctx, true, nil, nil, func(vm *goja.Runtime) {
 		c.vm.Store(vm)
 		c.memGuard.register(vm)
-		b := newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, c.ctx, e.timeout, e.extHost)
+		b := warm.b
+		if b == nil {
+			b = e.prepare(vm, loop)
+		}
+		b.bind(doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, c.ctx, e.timeout)
 		b.allowCrossOrigin = env.AllowCrossOrigin
 		b.sriEnabled = !env.DisableSRI
 		b.respHeaders = env.ResponseHeaders
@@ -161,13 +165,9 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 				b.hideNonces() // capture + blank nonces before page JS can read them
 			}
 		}
-		b.assets = e.assets
-		b.webdriver = e.webdriver
-		b.install()
+		b.finishBind()
 		b.startPrefetch(scripts)  // overlap script-body fetches with the prelude
 		b.startModulePreload(doc) // warm the modulepreload chunk graph concurrently
-		_, _ = vm.RunProgram(preludeProgram)
-		_, _ = vm.RunProgram(preludeAPIProgram)
 		// Tell the extension background this tab navigated to the page before any request.
 		e.extHost.notifyNavigation(b.tabID, baseURLString(base))
 		// Extension content scripts share the page world (ADR 0010): gather hiding CSS

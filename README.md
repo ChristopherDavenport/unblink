@@ -232,7 +232,7 @@ a browser — `AbortController`, typed Event subclasses), DOM `Range` and
 and `document.cookie` (backed by the session jar). Page-JS network requests are
 guarded — requests to private/loopback/metadata IPs are blocked and a per-render
 download budget applies (`--js-no-network`, `--js-allow-private`,
-`--js-max-bytes`). A background pool of fresh runtimes keeps render latency low
+`--js-max-bytes`). A background pool of fresh, fully set-up runtimes keeps render latency low
 (`--js-prewarm`, `0` disables); the per-render budget defaults to 5s (`--js-timeout`).
 With a session, `interact` keeps a **live runtime**
 alive for the page so JS state persists across calls (a true browser-tab session);

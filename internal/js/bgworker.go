@@ -93,6 +93,7 @@ func (w *bgWorker) start(memGuard *memGuard) {
 		b.install()
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
+		b.finishBind()
 		// The background has no real IndexedDB/Cache API — the in-memory stubs are
 		// incomplete for the complex transactional use a real extension makes (uBlock
 		// Origin's cacheStorage hangs on them). Removing them makes such code fall back to

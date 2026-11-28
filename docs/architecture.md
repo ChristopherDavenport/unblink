@@ -114,7 +114,21 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
 - **Phase 4e — Pre-warm runtime pool.** ✅ A background pool of fresh, single-use
   goja event loops keeps runtime-creation latency off the render critical path
   (no reuse → isolation unchanged; goja has no safe reset). Opt-in/tunable via
-  `--js-prewarm`.
+  `--js-prewarm`. Since 2026-11-27 a pooled runtime is *prepared*, not just
+  created: `Engine.prepare` runs `bridge.install()` and both preludes on a bridge
+  *shell* with no page, and a render `bind()`s it to its document, base URL,
+  transport and stores. Setup had grown to most of a small render (≈27k
+  allocations, ≈2.5 ms) as the DOM/Web API surface widened; it is the same work,
+  moved off the request path — a cold render (pool off, or a burst past the pool)
+  still pays it, in the same prepare-then-bind order, so every render exercises
+  the one path. What the preludes need from the page — its URL, the navigation
+  start instant, the timer-clamp deadline, the isolation flags, the real storage
+  areas — they take in *bind hooks* (`__unblinkOnBind`, run by
+  `bridge.finishBind` and removed before any page script). **Rule for new engine
+  code:** nothing in `install()` or a prelude may read `b.doc`, `b.base`, the
+  transport, a store or the clock at setup time; read them when called, or
+  register a bind hook. `TestPooledRuntimeIsBoundToItsPage` compares a cold
+  render's page state with a pooled, aged runtime's.
 - **Phase 4f — Listener options & typed Events.** ✅ `once`/`passive`/`{signal}`
   addEventListener options, `AbortController`/`AbortSignal` (+ `fetch {signal}`),
   and typed Event constructors (`MouseEvent`/`KeyboardEvent`/…). **Phase 4 (the

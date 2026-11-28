@@ -48,6 +48,15 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Changed
 
+- **The pre-warm pool now prepares the whole runtime, not just its event loop.**
+  Installing the DOM/Web API surface and running the preludes had grown to most
+  of a small render's cost. A pooled runtime (`--js-prewarm`, default 4) now has
+  that done ahead of time and is only bound to its page when a render takes it:
+  a minimal render on a pooled runtime takes about 1.3 ms against 2.8 ms cold.
+  The work itself is unchanged, so a cold render (pool disabled, or a burst past
+  the pool) costs what it did, and an idle pooled runtime holds about 1.6 MiB of
+  heap where a bare loop held far less.
+
 - **Module scripts load through the module registry.** One instance per module URL is
   now shared by every importer in a render, static or dynamic. A literal `import()`
   the page never calls is no longer fetched at load, and a module that fails to load

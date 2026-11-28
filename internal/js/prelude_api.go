@@ -152,6 +152,9 @@ const preludeAPIJS = `
   if (typeof window.performance === 'undefined' || typeof window.performance.now !== 'function') {
     var perfT0 = Date.now();
     var perfEntries = [];
+    // The time origin is the page's navigation start, not the instant this
+    // (possibly pooled) runtime was built.
+    __unblinkOnBind(function () { perfT0 = Date.now(); perf.timeOrigin = perfT0; });
     var perf = {
       timeOrigin: perfT0,
       now: function () { return Date.now() - perfT0; },
@@ -205,6 +208,12 @@ const preludeAPIJS = `
     perf.timing = timing;
     perf.navigation = { type: 0, redirectCount: 0, TYPE_NAVIGATE: 0, TYPE_RELOAD: 1, TYPE_BACK_FORWARD: 2, TYPE_RESERVED: 255,
       toJSON: function () { return { type: 0, redirectCount: 0 }; } };
+    __unblinkOnBind(function () {
+      var nt0 = typeof perf.timeOrigin === 'number' ? perf.timeOrigin : Date.now();
+      for (var k in timing) if (timing[k] === t0) timing[k] = nt0;
+      t0 = nt0;
+      nav.name = (window.location && window.location.href) || '';
+    });
     var nav = { name: (window.location && window.location.href) || '', entryType: 'navigation', startTime: 0, duration: 0,
       initiatorType: 'navigation', type: 'navigate', redirectCount: 0, nextHopProtocol: '',
       unloadEventStart: 0, unloadEventEnd: 0, redirectStart: 0, redirectEnd: 0, workerStart: 0,
@@ -1421,13 +1430,7 @@ const preludeAPIJS = `
     var XHR_STATES = { UNSENT: 0, OPENED: 1, HEADERS_RECEIVED: 2, LOADING: 3, DONE: 4 };
     for (var xs in XHR_STATES) { window.XMLHttpRequest[xs] = XHR_STATES[xs]; window.XMLHttpRequest.prototype[xs] = XHR_STATES[xs]; }
   } else {
-    window.fetch = function () { return Promise.reject(new Error('unblink: network is disabled in render')); };
-    window.XMLHttpRequest = function () {
-      this.open = function () {}; this.send = function () {}; this.abort = function () {};
-      this.setRequestHeader = function () {}; this.getResponseHeader = function () { return null; };
-      this.addEventListener = function () {}; this.removeEventListener = function () {};
-      this.readyState = 0; this.status = 0; this.responseText = ''; this.response = null;
-    };
+` + noNetStubsJS + `
   }
 
   // ---- dialogs / window shell ----
@@ -1454,8 +1457,12 @@ const preludeAPIJS = `
   // Cross-origin isolation fidelity (window === self === globalThis, so one
   // assignment covers all aliases). Resolved Go-side from the document URL + its
   // COOP/COEP response headers; SharedArrayBuffer stays absent regardless.
-  window.isSecureContext = !!(typeof __unblinkSecureContext !== 'undefined' && __unblinkSecureContext);
-  window.crossOriginIsolated = !!(typeof __unblinkCrossOriginIsolated !== 'undefined' && __unblinkCrossOriginIsolated);
+  var setIsolation = function () {
+    window.isSecureContext = !!(typeof __unblinkSecureContext !== 'undefined' && __unblinkSecureContext);
+    window.crossOriginIsolated = !!(typeof __unblinkCrossOriginIsolated !== 'undefined' && __unblinkCrossOriginIsolated);
+  };
+  setIsolation();
+  __unblinkOnBind(setIsolation);
 
   // ---- navigator device / permission stubs ----
   //
@@ -1466,7 +1473,7 @@ const preludeAPIJS = `
   // hang the render until the settle timeout.
 
   if (typeof navigator !== 'undefined') {
-    var swOrigin = (typeof location !== 'undefined' && location.origin) ? location.origin : '';
+    var swOriginNow = function () { return (typeof location !== 'undefined' && location.origin) ? location.origin : ''; };
     if (!navigator.clipboard) {
       navigator.clipboard = {
         readText: function () { return Promise.resolve(''); },
@@ -1506,8 +1513,9 @@ const preludeAPIJS = `
       };
     }
     if (!navigator.serviceWorker) {
+      __unblinkOnBind(function () { swReg.scope = swOriginNow() + '/'; });
       var swReg = {
-        scope: swOrigin + '/', active: null, installing: null, waiting: null, updateViaCache: 'imports',
+        scope: swOriginNow() + '/', active: null, installing: null, waiting: null, updateViaCache: 'imports',
         update: function () { return Promise.resolve(); },
         unregister: function () { return Promise.resolve(true); },
         // Background Sync / Periodic Sync / Push / Notifications — all inert.
@@ -2619,6 +2627,7 @@ const preludeAPIJS = `
                addEventListener: noop, removeEventListener: noop };
     };
     var navEntries = [mkEntry((typeof location !== 'undefined' ? location.href : ''), 0)];
+    __unblinkOnBind(function () { navEntries[0].url = (typeof location !== 'undefined' ? location.href : ''); });
     var curIndex = 0;
     var navResult = function () { return { committed: Promise.resolve(navEntries[curIndex]), finished: Promise.resolve(navEntries[curIndex]) }; };
     var nav = {
@@ -3512,6 +3521,8 @@ const preludeAPIJS = `
     adopt('Performance', window.performance, ETP);
     adopt('Storage', window.localStorage);
     adopt('Storage', window.sessionStorage);
+    // The page's real storage areas are installed when it is bound.
+    __unblinkOnBind(function () { adopt('Storage', window.localStorage); adopt('Storage', window.sessionStorage); });
     adopt('Crypto', window.crypto);
     if (window.crypto) adopt('SubtleCrypto', window.crypto.subtle);
     adopt('CustomElementRegistry', window.customElements);
@@ -3544,6 +3555,17 @@ const preludeAPIJS = `
     if (!('length' in window)) Object.defineProperty(window, 'length', { value: 0, writable: true, configurable: true, enumerable: true });
   })();
 })();
+`
+
+// noNetStubsJS is the fetch/XHR pair for a runtime with no transport. It is
+// spliced into the API prelude's no-network branch and reused by noNetProgram.
+const noNetStubsJS = `    window.fetch = function () { return Promise.reject(new Error('unblink: network is disabled in render')); };
+    window.XMLHttpRequest = function () {
+      this.open = function () {}; this.send = function () {}; this.abort = function () {};
+      this.setRequestHeader = function () {}; this.getResponseHeader = function () { return null; };
+      this.addEventListener = function () {}; this.removeEventListener = function () {};
+      this.readyState = 0; this.status = 0; this.responseText = ''; this.response = null;
+    };
 `
 
 // preludeAPIProgram is preludeAPIJS compiled once at init, shared across
