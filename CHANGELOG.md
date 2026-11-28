@@ -143,6 +143,15 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **`Intl.DurationFormat` and the IndexedDB interface objects exist.** An app
+  that finds no `Intl.DurationFormat` loads a polyfill chunk before it boots
+  (Mastodon does); the engine now formats English durations in the `long`,
+  `short`, `narrow` and `digital` styles (`formatToParts` is coarse: one part
+  per unit). The in-memory IndexedDB stub's requests, databases, transactions
+  and stores are instances of `IDBRequest`, `IDBOpenDBRequest`, `IDBDatabase`,
+  `IDBTransaction` and `IDBObjectStore`, which wrapper libraries test with
+  `instanceof`; a missing `IDBRequest` was an unhandled `ReferenceError`.
+
 - **`<select>` has one state.** A select's value is its selected options, kept as
   the `selected` attribute on the `<option>` elements, and page JavaScript, `interact`,
   form submission and extraction all read and write that. `select.options`

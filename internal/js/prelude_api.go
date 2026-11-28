@@ -3025,7 +3025,25 @@ const preludeAPIJS = `
       for (var i = 0; i < arr.length; i++) list[i] = arr[i];
       return list;
     };
-    var idbMakeReq = function (source) {
+    // The interface objects: page code and the "idb" wrapper library test
+    // (x instanceof IDBRequest) and read IDBCursor.prototype members, so the stub's
+    // objects are instances of these. None is constructible, as in a browser.
+    var idbIface = function (name, parent) {
+      var C = function () { throw new TypeError('Illegal constructor'); };
+      Object.defineProperty(C, 'name', { value: name, configurable: true });
+      C.prototype = Object.create(parent ? parent.prototype : Object.prototype, { constructor: { value: C, writable: true, configurable: true } });
+      if (typeof Symbol === 'function' && Symbol.toStringTag) Object.defineProperty(C.prototype, Symbol.toStringTag, { value: name, configurable: true });
+      window[name] = C;
+      return C;
+    };
+    var IDBRequestI = idbIface('IDBRequest'), IDBOpenDBRequestI = idbIface('IDBOpenDBRequest', IDBRequestI);
+    var IDBDatabaseI = idbIface('IDBDatabase'), IDBTransactionI = idbIface('IDBTransaction');
+    var IDBObjectStoreI = idbIface('IDBObjectStore'), IDBIndexI = idbIface('IDBIndex'), IDBFactoryI = idbIface('IDBFactory');
+    var IDBCursorI = idbIface('IDBCursor'); idbIface('IDBCursorWithValue', IDBCursorI);
+    ['advance', 'continue', 'continuePrimaryKey', 'update', 'delete'].forEach(function (m) { IDBCursorI.prototype[m] = function () { throw new Error('InvalidStateError: no cursor'); }; });
+    var idbAs = function (o, I) { Object.setPrototypeOf(o, I.prototype); return o; };
+    var idbMakeReq = function (source) { return idbAs(idbMakeReq0(source), IDBRequestI); };
+    var idbMakeReq0 = function (source) {
       return { result: undefined, error: null, readyState: 'pending', source: source || null, transaction: null,
                onsuccess: null, onerror: null, __l: {},
                addEventListener: function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); },
@@ -3072,9 +3090,10 @@ const preludeAPIJS = `
         deleteIndex: function (name) { delete rec.indexes[name]; store.indexNames = idbStringList(Object.keys(rec.indexes)); },
         index: function (name) { return idbMakeIndex(rec, name, store); }
       };
-      return store;
+      return idbAs(store, IDBObjectStoreI);
     };
-    var idbMakeIndex = function (rec, name, store) {
+    var idbMakeIndex = function (rec, name, store) { return idbAs(idbMakeIndex0(rec, name, store), IDBIndexI); };
+    var idbMakeIndex0 = function (rec, name, store) {
       return { name: name, objectStore: store, keyPath: null, multiEntry: false, unique: false,
         get: function (key) { return idbSettle(idbMakeReq(store), function () { var e = rec.map.get(idbKey(key)); return e ? e.value : undefined; }); },
         getAll: function () { return idbSettle(idbMakeReq(store), function () { var out = []; rec.map.forEach(function (e) { out.push(e.value); }); return out; }); },
@@ -3104,17 +3123,17 @@ const preludeAPIJS = `
             abort: noop, commit: noop
           };
           setTimeout(function () { idbFire(tx, 'complete'); }, 0);
-          return tx;
+          return idbAs(tx, IDBTransactionI);
         },
         close: noop
       };
-      return db;
+      return idbAs(db, IDBDatabaseI);
     };
 
     window.indexedDB = {
       open: function (name, version) {
         name = String(name);
-        var req = idbMakeReq(null);
+        var req = idbAs(idbMakeReq0(null), IDBOpenDBRequestI);
         req.onupgradeneeded = null; req.onblocked = null;
         var isNew = !idbDBs[name];
         var oldVersion = isNew ? 0 : idbDBs[name].version;
@@ -3358,6 +3377,84 @@ const preludeAPIJS = `
     ListFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', type: this.__type, style: this.__style }; };
     ListFormat.supportedLocalesOf = function () { return ['en-US']; };
 
+    // Intl.DurationFormat, English only like the rest of this layer. Its absence
+    // sends apps to a polyfill chunk (Mastodon awaits one before it boots).
+    // Styles: long "1 hour, 30 minutes", short "1 hr, 30 min", narrow "1h 30m",
+    // digital "1:30:00" (larger units before it in short form).
+    // formatToParts is coarse: one part per unit, not number/literal/unit triples.
+    var dfUnits = ['years', 'months', 'weeks', 'days', 'hours', 'minutes', 'seconds', 'milliseconds', 'microseconds', 'nanoseconds'];
+    var dfNames = {
+      years: ['year', 'yr', 'y'], months: ['month', 'mth', 'mo'], weeks: ['week', 'wk', 'w'], days: ['day', 'day', 'd'],
+      hours: ['hour', 'hr', 'h'], minutes: ['minute', 'min', 'm'], seconds: ['second', 'sec', 's'],
+      milliseconds: ['millisecond', 'ms', 'ms'], microseconds: ['microsecond', 'μs', 'μs'], nanoseconds: ['nanosecond', 'ns', 'ns']
+    };
+    var dfShortPlural = { yr: 'yrs', mth: 'mths', wk: 'wks', day: 'days' };
+    var DurationFormat = function (locales, opts) {
+      if (!(this instanceof DurationFormat)) throw new TypeError("Constructor Intl.DurationFormat requires 'new'");
+      opts = opts || {};
+      var st = opts.style;
+      if (st !== undefined && st !== 'long' && st !== 'short' && st !== 'narrow' && st !== 'digital') throw new RangeError('Value ' + st + ' out of range for Intl.DurationFormat options property style');
+      this.__style = st || 'short';
+      this.__opts = opts;
+    };
+    var dfRead = function (d) {
+      if (d === null || typeof d !== 'object') throw new TypeError('Invalid duration');
+      var out = {}, any = false, sign = 0;
+      dfUnits.forEach(function (u) {
+        var v = d[u];
+        if (v === undefined) return;
+        v = Number(v);
+        if (!isFinite(v) || Math.floor(v) !== v) throw new RangeError('Invalid duration value for ' + u);
+        if (v !== 0) { var s = v < 0 ? -1 : 1; if (sign && s !== sign) throw new RangeError('Duration fields must share a sign'); sign = s; }
+        out[u] = v; any = true;
+      });
+      if (!any) throw new TypeError('Invalid duration');
+      return out;
+    };
+    var dfNum = function (n) { try { return new window.Intl.NumberFormat('en-US').format(n); } catch (e) { return String(n); } };
+    var dfPad = function (n) { n = Math.abs(n); return (n < 10 ? '0' : '') + n; };
+    DurationFormat.prototype.formatToParts = function (duration) {
+      var d = dfRead(duration), st = this.__style, o = this.__opts, parts = [], pieces = [];
+      var unitStyle = function (u) {
+        var s = o[u];
+        if (s === 'long' || s === 'short' || s === 'narrow' || s === 'numeric' || s === '2-digit') return s;
+        if (st === 'digital') return (u === 'hours' || u === 'minutes' || u === 'seconds') ? 'numeric' : 'short';
+        return st;
+      };
+      var always = function (u) { return o[u + 'Display'] === 'always'; };
+      var neg = dfUnits.some(function (u) { return d[u] < 0; });
+      var clock = null;
+      dfUnits.forEach(function (u) {
+        var v = d[u] || 0, us = unitStyle(u);
+        if (us === 'numeric' || us === '2-digit') {
+          if (u === 'hours' || u === 'minutes' || u === 'seconds') { clock = clock || {}; clock[u] = v; }
+          return;
+        }
+        if (v === 0 && !always(u)) return;
+        var names = dfNames[u], abs = Math.abs(v), text;
+        if (us === 'long') text = dfNum(abs) + ' ' + names[0] + (abs === 1 ? '' : 's');
+        else if (us === 'short') text = dfNum(abs) + ' ' + (abs === 1 ? names[1] : (dfShortPlural[names[1]] || names[1]));
+        else text = dfNum(abs) + names[2];
+        pieces.push({ unit: u, text: text });
+      });
+      if (clock) {
+        var h = clock.hours || 0, m = clock.minutes || 0, s = clock.seconds || 0;
+        var showH = st === 'digital' || h !== 0 || always('hours');
+        var text = (showH ? String(Math.abs(h)) + ':' + dfPad(m) : String(Math.abs(m))) + ':' + dfPad(s);
+        pieces.push({ unit: 'clock', text: text });
+      }
+      var sep = (st === 'narrow' || st === 'digital') && !pieces.some(function (p) { return / /.test(p.text) && p.unit !== 'clock'; }) ? ' ' : ', ';
+      if (st === 'digital') sep = ', ';
+      pieces.forEach(function (p, i) {
+        if (i > 0) parts.push({ type: 'literal', value: sep });
+        parts.push({ type: p.unit === 'clock' ? 'literal' : 'integer', value: (neg && i === 0 ? '-' : '') + p.text, unit: p.unit === 'clock' ? undefined : p.unit.replace(/s$/, '') });
+      });
+      return parts;
+    };
+    DurationFormat.prototype.format = function (duration) { return this.formatToParts(duration).map(function (p) { return p.value; }).join(''); };
+    DurationFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', numberingSystem: 'latn', style: this.__style }; };
+    DurationFormat.supportedLocalesOf = function () { return ['en-US']; };
+
     // Intl.Locale: the identifier's subtags, parsed. No CLDR data is carried, so
     // maximize()/minimize() return the locale unchanged.
     var Locale = function (tag, opts) {
@@ -3427,6 +3524,7 @@ const preludeAPIJS = `
       PluralRules: PluralRules,
       RelativeTimeFormat: RelativeTimeFormat,
       ListFormat: ListFormat,
+      DurationFormat: DurationFormat,
       Locale: Locale,
       DisplayNames: DisplayNames,
       Segmenter: Segmenter,
