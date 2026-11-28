@@ -14,7 +14,8 @@ import (
 // the two modules deliberately do not import each other — so a change here must
 // be mirrored in corpus/archive.go and bump archiveVersion. Fields added since
 // version 1 was first written (req_body, settle_rule, settled_after_ms,
-// body_rendered) are optional on the replay side, so older captures still load.
+// body_rendered, and the device, clock, console and settle fields at the end of
+// oracle) are optional on the replay side, so older captures still load.
 //
 //	<out>/<id>/archive.json   index of every recorded exchange
 //	<out>/<id>/bodies/<hex>   response bodies, named by SHA-256 of their bytes
@@ -84,6 +85,33 @@ type oracle struct {
 	// BodyRendered is whether document.body had a layout box at the snapshot.
 	// When it did not, innerText is textContent and the oracle is unusable.
 	BodyRendered bool `json:"body_rendered"`
+	// HitCap is true when the capture gave up at the hard cap without the
+	// network going quiet; InflightAtSnapshot counts script/data requests that
+	// had still not completed when the oracle was taken (after the grace wait).
+	HitCap             bool `json:"hit_cap"`
+	InflightAtSnapshot int  `json:"inflight_at_snapshot"`
+	// ConsoleErrors is what Chromium itself reported while loading the page:
+	// uncaught exceptions and unhandled rejections ("exception: …"),
+	// console.error/assert calls ("console.error: …") and the browser's own
+	// error-level log entries ("log.network: …", "log.security: …"). It answers
+	// "did Chromium raise this too" for an error unblink's engine records.
+	// Exceptions, above, keeps its original meaning (uncaught exceptions only).
+	ConsoleErrors []string `json:"console_errors,omitempty"`
+	// The device the page saw. The capture fails if it is not unblink's constant
+	// 1280x720@1x, so every stored oracle carries these exact values.
+	ScreenW int     `json:"screen_width"`
+	ScreenH int     `json:"screen_height"`
+	InnerW  int     `json:"inner_width"`
+	InnerH  int     `json:"inner_height"`
+	DPR     float64 `json:"device_pixel_ratio"`
+	// CapturedAtUnixMs is the page's own clock at navigation start
+	// (performance.timeOrigin, milliseconds since the epoch). Replay can pin its
+	// clock to it so "3 hours ago" renders as it did at capture. CapturedAt, the
+	// wall-clock time the oracle was written, is kept as before.
+	CapturedAtUnixMs int64 `json:"captured_at_unix_ms"`
+	// TransparentHidden counts the opacity:0 subtrees left out of BodyText and
+	// MainText (see oracleJS).
+	TransparentHidden int `json:"transparent_hidden"`
 }
 
 var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)

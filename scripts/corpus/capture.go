@@ -13,16 +13,25 @@ import (
 	"time"
 )
 
+// unblink's engine reports a constant 1280x720@1x viewport and screen.
+const viewportW, viewportH = 1280, 720
+
 const (
 	maxBody     = 32 << 20        // per-response body cap
 	minDwell    = 3 * time.Second // always watch at least this long
 	quietWindow = 2 * time.Second
 	hardCap     = 30 * time.Second // give up waiting for quiet after this
+	// inflightGrace is how long past the first quiet moment the capture keeps
+	// waiting for a script or data request that has not completed. A lazy chunk
+	// or an API call that is merely slow then lands in the archive and in the
+	// oracle; a long-poll or an event stream, which never completes, costs this
+	// much and no more.
+	inflightGrace = 10 * time.Second
 )
 
 // settleRule names the settle rule above in every oracle, so a later change to
 // it leaves old captures identifiable instead of silently mixed in.
-const settleRule = "load+2s-network-silence,min3s,cap30s"
+const settleRule = "load+2s-network-silence+script-data-inflight-grace10s,min3s,cap30s"
 
 // omitTypes are resource types unblink's engine never requests (no layout, no
 // media): their bodies are dropped to keep captures small. Headers and status
@@ -38,6 +47,19 @@ const oracleJS = `(() => {
     const s = getComputedStyle(el);
     return s.visibility !== 'hidden' && s.display !== 'none';
   };
+  // innerText already leaves out display:none and visibility:hidden text, but
+  // not text a user cannot see because it is fully transparent. Virtualised
+  // lists park their off-screen rows that way (Mastodon keeps each one as an
+  // opacity:0 box holding the post's raw HTML source as text), so that text is
+  // in innerText while never being on screen. Hide those subtrees before
+  // reading: this runs once, at the snapshot, and the page is closed after it.
+  let transparent = 0;
+  for (const el of document.body ? document.body.getElementsByTagName('*') : []) {
+    if (el.firstChild && getComputedStyle(el).opacity === '0') {
+      el.style.setProperty('visibility', 'hidden', 'important');
+      transparent++;
+    }
+  }
   const txt = el => (el && el.innerText) || '';
   const longest = sel => {
     let best = null, n = 0;
@@ -74,6 +96,11 @@ const oracleJS = `(() => {
     dom_nodes: nodes, shadow_roots: shadow, custom_elements: custom,
     charset: document.characterSet,
     user_agent: navigator.userAgent,
+    transparent_hidden: transparent,
+    screen_width: screen.width, screen_height: screen.height,
+    inner_width: innerWidth, inner_height: innerHeight,
+    device_pixel_ratio: devicePixelRatio,
+    captured_at_unix_ms: Math.round(performance.timeOrigin),
   });
 })()`
 
@@ -134,7 +161,15 @@ func capturePage(ctx context.Context, c *cdp, id, url, dir, chromium string) (*o
 		// unblink has no service workers, so the faithful capture is the page
 		// talking to the network directly.
 		{"Network.setBypassServiceWorker", map[string]any{"bypass": true}},
-		{"Emulation.setDeviceMetricsOverride", map[string]any{"width": 1280, "height": 720, "deviceScaleFactor": 1, "mobile": false}},
+		// The viewport AND the screen: without screenWidth/Height headless Chromium
+		// reports an 800x600 screen behind a 1280x720 window, and page code that
+		// reads screen.* (analytics, responsive loaders) sees a device unblink's
+		// engine does not claim to be.
+		{"Emulation.setDeviceMetricsOverride", map[string]any{
+			"width": viewportW, "height": viewportH, "deviceScaleFactor": 1, "mobile": false,
+			"screenWidth": viewportW, "screenHeight": viewportH,
+		}},
+		{"Log.enable", nil},
 	} {
 		if err := c.call(ctx, sid, cmd.m, cmd.p, nil); err != nil {
 			return nil, err
@@ -144,7 +179,13 @@ func capturePage(ctx context.Context, c *cdp, id, url, dir, chromium string) (*o
 	arc := &archive{Version: archiveVersion, ID: id, URL: url}
 	reqs := map[string]*reqState{}
 	inflight := map[string]bool{}
-	var exceptions []string
+	var exceptions, consoleErrors []string
+	addConsole := func(src, msg string) {
+		if len(consoleErrors) >= maxConsoleErrors {
+			return
+		}
+		consoleErrors = append(consoleErrors, src+": "+clip(msg, 400))
+	}
 	docStatus := 0
 	navRID := "" // the navigation's own request: the first Document requested
 	loaded := false
@@ -306,6 +347,50 @@ func capturePage(ctx context.Context, c *cdp, id, url, dir, chromium string) (*o
 			}
 		case "Page.loadEventFired":
 			loaded = true
+		case "Runtime.consoleAPICalled":
+			var p struct {
+				Type string `json:"type"`
+				Args []struct {
+					Type        string          `json:"type"`
+					Value       json.RawMessage `json:"value"`
+					Description string          `json:"description"`
+				} `json:"args"`
+			}
+			if json.Unmarshal(ev.Params, &p) != nil || (p.Type != "error" && p.Type != "assert") {
+				return
+			}
+			var parts []string
+			for _, a := range p.Args {
+				switch {
+				case a.Description != "":
+					parts = append(parts, firstLine(a.Description))
+				case a.Type == "string":
+					var v string
+					if json.Unmarshal(a.Value, &v) == nil {
+						parts = append(parts, v)
+					}
+				case len(a.Value) > 0:
+					parts = append(parts, string(a.Value))
+				}
+			}
+			addConsole("console."+p.Type, strings.Join(parts, " "))
+		case "Log.entryAdded":
+			var p struct {
+				Entry struct {
+					Source string `json:"source"`
+					Level  string `json:"level"`
+					Text   string `json:"text"`
+					URL    string `json:"url"`
+				} `json:"entry"`
+			}
+			if json.Unmarshal(ev.Params, &p) != nil || p.Entry.Level != "error" {
+				return
+			}
+			msg := p.Entry.Text
+			if p.Entry.URL != "" {
+				msg += " (" + p.Entry.URL + ")"
+			}
+			addConsole("log."+p.Entry.Source, msg)
 		case "Runtime.exceptionThrown":
 			var p struct {
 				Details struct {
@@ -320,10 +405,9 @@ func capturePage(ctx context.Context, c *cdp, id, url, dir, chromium string) (*o
 				if msg == "" {
 					msg = p.Details.Text
 				}
-				if i := strings.IndexByte(msg, '\n'); i >= 0 {
-					msg = msg[:i]
-				}
+				msg = firstLine(msg)
 				exceptions = append(exceptions, msg)
+				addConsole("exception", msg)
 			}
 		}
 	}
@@ -344,8 +428,20 @@ func capturePage(ctx context.Context, c *cdp, id, url, dir, chromium string) (*o
 	// first. Silence is judged by events, not by the in-flight set: a long-poll
 	// or an out-of-process iframe's document never reports completion here, and
 	// would otherwise pin every such page to hardCap.
-	settled := false
+	settled, hitCap := false, false
 	var settledAfter time.Duration
+	var firstQuiet time.Time
+	// pendingCode counts in-flight requests for code or data (not an image, a
+	// font, a beacon ping or an iframe's document).
+	pendingCode := func() int {
+		n := 0
+		for rid := range inflight {
+			if st := reqs[rid]; st != nil && (st.typ == "Script" || st.typ == "Fetch" || st.typ == "XHR") {
+				n++
+			}
+		}
+		return n
+	}
 	quietSince := time.Now()
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
@@ -360,11 +456,19 @@ loop:
 		case <-tick.C:
 			el := time.Since(start)
 			if loaded && time.Since(quietSince) >= quietWindow && el >= minDwell {
-				settled, settledAfter = true, el
-				break loop
+				// Quiet — but a script or data request that has not completed
+				// would be missing from the archive and its effect from the
+				// oracle. Wait for it, up to inflightGrace past the first quiet.
+				if firstQuiet.IsZero() {
+					firstQuiet = time.Now()
+				}
+				if pendingCode() == 0 || time.Since(firstQuiet) >= inflightGrace {
+					settled, settledAfter = true, el
+					break loop
+				}
 			}
 			if el >= hardCap {
-				settledAfter = el
+				settledAfter, hitCap = el, true
 				break loop
 			}
 		case <-ctx.Done():
@@ -398,7 +502,12 @@ loop:
 		}
 	}
 	o.URL, o.DocStatus, o.Exceptions, o.Settled = url, docStatus, exceptions, settled
-	o.Requests, o.Chromium, o.Viewport = len(arc.Entries), chromium, "1280x720@1x"
+	o.ConsoleErrors, o.HitCap, o.InflightAtSnapshot = consoleErrors, hitCap, pendingCode()
+	if o.ScreenW != viewportW || o.ScreenH != viewportH || o.InnerW != viewportW || o.InnerH != viewportH || o.DPR != 1 {
+		return nil, fmt.Errorf("viewport is screen %dx%d inner %dx%d @%gx, want %dx%d@1x: the oracle would not be comparable",
+			o.ScreenW, o.ScreenH, o.InnerW, o.InnerH, o.DPR, viewportW, viewportH)
+	}
+	o.Requests, o.Chromium, o.Viewport = len(arc.Entries), chromium, fmt.Sprintf("%dx%d@1x", viewportW, viewportH)
 	o.CapturedAt = time.Now().UTC().Format(time.RFC3339)
 	o.SettleRule, o.SettledAfterMS = settleRule, settledAfter.Milliseconds()
 
@@ -431,4 +540,20 @@ func stripFragment(u string) string {
 		return u[:i]
 	}
 	return u
+}
+
+const maxConsoleErrors = 50
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
