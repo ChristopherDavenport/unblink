@@ -23,10 +23,45 @@ caches. For each page it writes, under `testdata/corpus/<id>/`:
 | `archive.json` | every network exchange: method, URL, status, headers, and the SHA-256 of any request body |
 | `bodies/<sha256>` | response bodies, named by content hash |
 | `oracle.json` | `innerText` of the body and main landmark, title, visible link/form/control counts, whether the body had a layout box, the settle rule and how long it watched, Chromium version, capture time |
+| `markdown.json` | what the origin answered when asked once for `text/markdown` (status, content type, `Vary`, and the body when it served Markdown); never scored — see "The Markdown variant" |
 
 `testdata/corpus/` is gitignored: captures are third-party content and are
 never committed. Image, media and font bodies are not stored (unblink never
 requests them).
+
+`make corpus-capture ARGS="-out /some/dir"` captures somewhere else, and
+`CORPUS_DIR=/some/dir make corpus` replays from there, so a new capture set can
+be built and validated beside the one in use and swapped in afterwards.
+
+What the oracle holds besides the text:
+
+- **The device.** The capture sets the viewport *and the screen* to unblink's
+  constant 1280×720@1x and stores `screen_width`/`screen_height`,
+  `inner_width`/`inner_height` and `device_pixel_ratio`. A capture that is not
+  exactly that fails instead of being written. (Before 2026-11-28 the screen
+  was headless Chromium's default 800×600 behind a 1280×720 window.)
+- **The page's clock.** `captured_at_unix_ms` is `performance.timeOrigin`, the
+  page's own time at navigation start, so replay can pin its clock and "3 hours
+  ago" renders as it did. `captured_at` (when the oracle was written) is kept.
+- **What Chromium complained about.** `console_errors` lists uncaught
+  exceptions and unhandled rejections (`exception: …`), `console.error` /
+  `console.assert` calls, and error-level browser log entries (`log.network: …`,
+  `log.security: …`), 50 at most. It answers "did Chromium raise this too" for a
+  script error the engine records. `exceptions` keeps its original meaning.
+- **Only text a user could see.** `innerText` leaves out `display:none` and
+  `visibility:hidden`, but not fully transparent content. Virtualised lists
+  park off-screen rows as `opacity:0` boxes (Mastodon's hold each post's raw
+  HTML source as text), so the capture hides `opacity:0` subtrees before
+  reading the text and records how many in `transparent_hidden`.
+- **Page-shape counts** for the manifest's feature cells: `tables`, `details`,
+  `svg_texts`, `handler_attrs`, `dir`, `lang`.
+- **How it settled.** `settle_rule`, `settled_after_ms`, `hit_cap` (gave up at
+  the 30 s cap) and `inflight_at_snapshot`. The rule is: `load` fired, no
+  network event for 2 s, at least 3 s on the page — and then up to 10 s more
+  while a script or data request is still in flight, so a slow lazy chunk or API
+  call is in both the archive and the oracle. A long-poll costs those 10 s and
+  is then recorded as in flight. A `Worker`'s script is reported by Chromium as
+  a page request that never finishes; it shows up the same way and is harmless.
 
 What the capture does and does not record:
 
@@ -48,7 +83,8 @@ What the capture does and does not record:
   `Set-Cookie` headers Chromium withholds from the DevTools response.
 
 Captures made before a field existed (`req_body`, `settle_rule`,
-`settled_after_ms`, `body_rendered`) still load; replay falls back to capture
+`settled_after_ms`, `body_rendered`, and the device, clock, console, settle and
+page-shape fields above) still load; replay falls back to capture
 order for repeated POSTs and infers an unrendered body from an empty
 `body_text` beside a non-empty `main_text`. Which settle rule produced such a
 capture cannot be recovered from it.
@@ -306,7 +342,9 @@ Append to `corpus/manifest.json`:
 
 `id` is a lowercase slug; cells are `group:name`. Prefer stable public
 documentation, reference and demo pages; avoid anything behind a login, a
-paywall or a bot challenge. Then `make corpus-capture ARGS="-only my-page"`.
+paywall or a bot challenge. Read the site's `robots.txt` first and leave
+the page out if it disallows the path for `*`; say in `note` that you checked
+and when. Then `make corpus-capture ARGS="-only my-page"`.
 
 The cell labels say which stack a site is believed to run. They are written by
 hand and drift when a site is rebuilt, so every run checks each claimed cell
@@ -320,13 +358,46 @@ captures" (per page: `cell_checks`, `detected`, `unclaimed` in the JSON):
   on a `client-only` page, or lacks it on a server-rendered one.
 - `no-evidence` — a marker was looked for and not found, but it is one a real
   site can lack (minified away, or in a chunk Chromium never loaded).
-- `unchecked` — no offline test exists (`shape:docs`, `arrival:client-routing`).
+- `unchecked` — no offline test exists (`shape:docs`, `arrival:client-routing`,
+  `shape:article-comments`), or the capture predates the count the test reads.
 - `unclaimed` — a stack the page's own document or first-party scripts show
   that no claimed cell accounts for. A hint, not a verdict.
 
 Nothing rewrites the manifest. Fix a `contradicted` label by hand, after
 looking: markers are strings, and a documentation page *about* a framework can
 contain them.
+
+The cells that describe what is on the page — `feature:tables`,
+`feature:details`, `feature:svg-chart`, `feature:event-handler-attrs`,
+`feature:forms`, `shape:rtl`, `shape:non-english` — are checked against the
+page-shape counts in the oracle, so they are verified from Chromium's DOM.
+
+What the manifest covers, as of the 2026-11-28 capture (113 pages): besides
+server-rendered documentation in every mainstream framework, it has pages
+whose served HTML is an empty shell (Elm, Angular, React, Vue, Svelte and
+Ember apps, a docsify site), pages whose content arrives by fetch after load,
+hash- and history-routed deep links, registries, a status dashboard, forms
+with radios and selects, data tables, inline SVG charts, `on*` handler
+attributes, articles with long comment threads, long-form essays, and
+right-to-left and non-English pages. `hackerweb` is there as a by-design case:
+its data comes through a Web Worker, which unblink does not run.
+
+## The Markdown variant
+
+Each capture also asks the origin once for `text/markdown`, with the `Accept`
+header `--prefer-markdown` sends (ADR 0021), and stores the answer in
+`markdown.json` (pass `-markdown=false` to skip it). It is not part of the
+page's score. To measure it against the same Chromium oracle:
+
+```sh
+CORPUS_MARKDOWN_OUT=/tmp/md.json go test -tags corpus ./corpus -run TestMarkdownVariants
+```
+
+That writes, per page, whether the origin served Markdown and — when it did —
+the variant's recall, token recall and precision against the oracle text the
+page itself is scored on. It reads captures only. The question it answers is
+the one behind that flag's default: does an origin's Markdown say what its
+HTML shows?
 
 ## What the replay cannot tell you
 
