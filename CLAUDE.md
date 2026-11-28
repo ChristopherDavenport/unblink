@@ -180,6 +180,10 @@ not `doFetch`).
 
 ## Conventions & gotchas
 
+- **Document script order** (`runDocumentScripts`, `internal/js/scripts.go`):
+  non-deferred classic scripts in document order, then `readyState` becomes
+  `interactive`, then `defer` external scripts and module scripts interleaved in
+  document order, then `DOMContentLoaded`. Both `Render` and `Open` go through it.
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr via `slog`
   (`--log-level`). Never print to stdout outside the MCP transport.
 - **Never return an unbounded blob.** `read` defaults to article-mode extraction

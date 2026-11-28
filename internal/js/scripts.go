@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/andybalholm/cascadia"
@@ -185,6 +186,75 @@ func scriptText(n *html.Node) string {
 	return sb.String()
 }
 
+// runDocumentScripts runs the document's parser-inserted scripts in the order a
+// browser does:
+//
+//  1. every classic script that is not deferred, in document order, as the
+//     parser reaches it;
+//  2. the document is then fully parsed: readyState becomes "interactive";
+//  3. the scripts that wait for the end of parsing — external classic scripts
+//     with `defer`, and module scripts, which are deferred by definition — in
+//     document order, interleaved.
+//
+// DOMContentLoaded follows (fireLifecycle). `defer` on an inline classic script
+// has no effect, as specified. `async` scripts run where the document names them
+// (a browser runs them whenever they arrive, so any order is a valid one).
+//
+// The order is load-bearing for the common pattern of a deferred library in
+// <head> configured by an inline script in <body>: Alpine is loaded with defer
+// and starts as soon as it runs, and the page registers its components in a
+// later inline script listening for alpine:init. Run in plain document order
+// the library started first and every component was "not defined".
+func (b *bridge) runDocumentScripts(scripts, modules []*html.Node) {
+	b.scriptOrdinal = make(map[*html.Node]int, len(scripts))
+	var immediate, deferred []*html.Node
+	for i, s := range scripts {
+		b.scriptOrdinal[s] = i
+		if hasAttr(s, "defer") && !hasAttr(s, "async") && strings.TrimSpace(getAttr(s, "src")) != "" {
+			deferred = append(deferred, s)
+		} else {
+			immediate = append(immediate, s)
+		}
+	}
+	b.runScripts(immediate)
+	b.setReadyState("interactive") // parsing is done; deferred scripts, modules and DOMContentLoaded follow
+
+	if len(deferred) == 0 {
+		if len(modules) > 0 {
+			b.runModules(modules)
+		}
+		return
+	}
+	if len(modules) == 0 {
+		b.runScripts(deferred)
+		return
+	}
+	// Both kinds wait for the end of parsing and then run in document order:
+	// merge the two lists by position and run each maximal run of one kind.
+	pos := make(map[*html.Node]int)
+	for i, s := range selScript.MatchAll(b.doc) {
+		pos[s] = i
+	}
+	isModule := make(map[*html.Node]bool, len(modules))
+	for _, m := range modules {
+		isModule[m] = true
+	}
+	all := append(append([]*html.Node{}, deferred...), modules...)
+	sort.SliceStable(all, func(i, j int) bool { return pos[all[i]] < pos[all[j]] })
+	for i := 0; i < len(all); {
+		j := i
+		for j < len(all) && isModule[all[j]] == isModule[all[i]] {
+			j++
+		}
+		if isModule[all[i]] {
+			b.runModules(all[i:j])
+		} else {
+			b.runScripts(all[i:j])
+		}
+		i = j
+	}
+}
+
 // runScripts compiles and runs each script in document order. External (src)
 // script bodies come from the asset cache, the concurrent prefetch
 // (startPrefetch), or a synchronous Transport fetch, in that order — execution
@@ -193,6 +263,9 @@ func scriptText(n *html.Node) string {
 func (b *bridge) runScripts(scripts []*html.Node) {
 	for i, s := range scripts {
 		var src string
+		if n, ok := b.scriptOrdinal[s]; ok {
+			i = n // the script's position among the document's classic scripts
+		}
 		name := fmt.Sprintf("script-%d.js", i) // inline fallback; externals use their URL
 		if srcAttr := strings.TrimSpace(getAttr(s, "src")); srcAttr != "" {
 			if b.transport == nil {

@@ -124,6 +124,13 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **`defer` is honoured.** External classic scripts with `defer` now run after the
+  document is parsed — after every other classic script, in document order,
+  interleaved with module scripts, with `readyState` `"interactive"` — instead of
+  where they appear. A deferred library in `<head>` configured by an inline script
+  in `<body>` (Alpine registering components on `alpine:init`) started before the
+  page had configured it, and every component was "not defined".
+
 - **DOM and platform gaps traced to script errors on real pages** (each was an
   error on a corpus page):
   - `comment.nextElementSibling`/`previousElementSibling` (Lit's SSR hydration

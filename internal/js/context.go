@@ -175,12 +175,8 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		b.injectContentScriptCSS()
 		b.readyState = "loading" // the page load begins (see setReadyState)
 		b.injectContentScripts(webext.RunAtStart)
-		b.installCSPEvalGate() // CSP unsafe-eval gate before page scripts
-		b.runScripts(scripts)
-		b.setReadyState("interactive") // parsing is done; modules and DOMContentLoaded follow
-		if len(modules) > 0 {
-			b.runModules(modules)
-		}
+		b.installCSPEvalGate()                 // CSP unsafe-eval gate before page scripts
+		b.runDocumentScripts(scripts, modules) // sets readyState "interactive" once parsing is done
 		b.injectContentScripts(webext.RunAtEnd)
 		b.fireLifecycle()
 		b.injectContentScripts(webext.RunAtIdle)

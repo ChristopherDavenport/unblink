@@ -310,11 +310,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// CSP unsafe-eval gate installs just before page scripts (after trusted
 		// extension content scripts, which keep eval).
 		b.installCSPEvalGate()
-		b.runScripts(scripts)
-		b.setReadyState("interactive") // parsing is done; modules and DOMContentLoaded follow
-		if len(modules) > 0 {
-			b.runModules(modules)
-		}
+		b.runDocumentScripts(scripts, modules) // sets readyState "interactive" once parsing is done
 		b.injectContentScripts(webext.RunAtEnd)
 		b.fireLifecycle()
 		b.injectContentScripts(webext.RunAtIdle)

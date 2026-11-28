@@ -74,7 +74,8 @@ type bridge struct {
 	textSelections        map[*html.Node]*textSelection // input/textarea selection state (installTextSelection)
 	animatedStrings       map[*goja.Object]*html.Node   // SVGAnimatedString → its element
 	animatedStringOf      map[*html.Node]*goja.Object
-	protoNodeList         *goja.Object // see installCollections
+	scriptOrdinal         map[*html.Node]int // classic script → its document position (runDocumentScripts)
+	protoNodeList         *goja.Object       // see installCollections
 	protoHTMLCollection   *goja.Object
 	objectProto           *goja.Object            // Object.prototype, cached for adoptEventInterface
 	eventProtos           map[string]*goja.Object // interface name → prototype (adoptEventInterface)
