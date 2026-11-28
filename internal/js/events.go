@@ -333,6 +333,7 @@ func (b *bridge) wrapEvent(o *goja.Object, target goja.Value) *domEvent {
 // onto an event object.
 func (b *bridge) bindEvent(o *goja.Object, ev *domEvent, target goja.Value) {
 	vm := b.vm
+	b.adoptEventInterface(o, ev.typ)
 	_ = o.Set("target", target)
 	_ = o.Set("currentTarget", goja.Null())
 	_ = o.Set("eventPhase", phaseNone)

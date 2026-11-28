@@ -1007,6 +1007,40 @@ form), guarded against a handler that throws, and — unless a handler cancels i
 recorded in the render diagnostics, which are read when the render settles rather
 than after the first script pass.
 
+**Interface objects for what the engine builds** (`internal/js/ifaceobjects.go`,
+"host interface objects" in `prelude_api.go`). Page code asks what an object *is*
+more often than it constructs one, so every object the engine hands out sits on
+the prototype of the interface a browser reports, and that interface is a global:
+
+- *Host singletons.* `window` is a `Window` (an `EventTarget`), and `location`,
+  `history`, `navigator`, `screen`, `visualViewport`, `performance`,
+  `localStorage`/`sessionStorage`, `crypto`/`crypto.subtle`, `customElements` and
+  each `matchMedia()` result are instances of `Location`, `History`, `Navigator`,
+  `Screen`, `VisualViewport`, `Performance`, `Storage`, `Crypto`/`SubtleCrypto`,
+  `CustomElementRegistry` and `MediaQueryList`. The constructors throw, as in a
+  browser. This is load-bearing: Ember decides whether it is in a browser with
+  `self.constructor === Window`, and failing it boots non-interactive with a
+  `none` location — Discourse rendered nothing. `String(location)` is its URL.
+- *Events.* The classes form the standard hierarchy (`Event` ← `UIEvent` ←
+  `MouseEvent` ← `PointerEvent`/`WheelEvent`/`DragEvent`; `KeyboardEvent`,
+  `FocusEvent`, `InputEvent`, `CompositionEvent` under `UIEvent`; the rest under
+  `Event`), a subclass constructor runs its ancestors' initialisers, and the
+  dictionary defaults (`button` 0, `key` `''`, modifier keys false) are prototype
+  defaults. An engine-built event is put on the interface a browser dispatches
+  that type as (`eventInterface`: `click` is a `PointerEvent`, `keydown` a
+  `KeyboardEvent`, …), so `e instanceof Event` holds for every event and a bare
+  `element.click()` answers `e.button === 0`.
+- *Collections.* `querySelectorAll`/`childNodes` return a `NodeList`;
+  `children`, `getElementsBy*`, `document.forms`/`scripts`/`images`/`links` and
+  `form.elements` an `HTMLCollection` with `item()`/`namedItem()`. Both prototypes
+  inherit `Array.prototype` — the lists are still arrays and static snapshots, so
+  `Array.isArray(list)` is true where a browser says false (a known deviation).
+- `Node.baseURI`, `window.origin` and `window.length` (0: no child contexts).
+
+Interfaces the engine does not implement stay undefined (`TouchEvent`,
+`ServiceWorker`, `Navigation`, `trustedTypes`, canvas), so feature detection
+keeps telling the truth.
+
 **Stopping a page that will not stop** (`interruptUntil`, `internal/js/engine.go`).
 goja's `Interrupt` is one-shot: it unwinds the call that is running, or the next
 one to start, and is cleared as that call returns to Go. A page with *two*

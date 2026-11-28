@@ -70,6 +70,10 @@ type bridge struct {
 	protoComment          *goja.Object
 	protoDocumentFragment *goja.Object
 	protoShadowRoot       *goja.Object
+	protoNodeList         *goja.Object // see installCollections
+	protoHTMLCollection   *goja.Object
+	objectProto           *goja.Object            // Object.prototype, cached for adoptEventInterface
+	eventProtos           map[string]*goja.Object // interface name → prototype (adoptEventInterface)
 	protoXPathResult      *goja.Object
 	protoXPathExpression  *goja.Object
 	protoSVGElement       *goja.Object
@@ -594,10 +598,10 @@ func (b *bridge) documentObject() *goja.Object {
 		return b.nodeList(b.pageQueryAll(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("getElementsByTagName", func(call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(b.doc, call.Argument(0).String()))
+		return b.htmlCollection(queryAll(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("getElementsByClassName", func(call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(b.doc, "."+call.Argument(0).String()))
+		return b.htmlCollection(queryAll(b.doc, "."+call.Argument(0).String()))
 	})
 	b.defineGetter(d, "forms", func() goja.Value { return b.htmlCollection(queryAll(b.doc, "form")) })
 	// The other document-wide element collections. scripts is how a loader finds
@@ -797,7 +801,11 @@ func (b *bridge) nodeList(nodes []*html.Node) goja.Value {
 	for i, n := range nodes {
 		arr[i] = b.wrap(n)
 	}
-	return b.vm.ToValue(arr)
+	v := b.vm.ToValue(arr)
+	if o, ok := v.(*goja.Object); ok && b.protoNodeList != nil {
+		_ = o.SetPrototype(b.protoNodeList)
+	}
+	return v
 }
 
 // classListFor returns the cached DOMTokenList for n.classList.

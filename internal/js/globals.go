@@ -619,32 +619,83 @@ const preludeJS = `
     this.unobserve = function () {}; this.disconnect = function () {};
   };
 
-  function defEvent(name, init) {
-    window[name] = function (type, opts) {
+  // Event interfaces form the standard hierarchy (Event ← UIEvent ← MouseEvent ←
+  // PointerEvent, …): "e instanceof Event" holds for every event, a subclass
+  // constructor runs its ancestors' initialisers, and members the dictionaries
+  // default (button 0, key '', …) are prototype defaults, so an engine-built
+  // event that only carries its type still answers them the way a browser does.
+  function defEvent(name, parent, init, defaults) {
+    if (typeof parent === 'function') { defaults = init; init = parent; parent = null; }
+    var P = parent ? window[parent] : null;
+    var F = function (type, opts) {
       opts = opts || {};
-      this.type = type;
-      this.bubbles = !!opts.bubbles;
-      this.cancelable = !!opts.cancelable;
-      this.composed = !!opts.composed;
-      this.defaultPrevented = false;
+      if (P) P.call(this, type, opts);
+      else {
+        this.type = String(type);
+        this.bubbles = !!opts.bubbles;
+        this.cancelable = !!opts.cancelable;
+        this.composed = !!opts.composed;
+        this.defaultPrevented = false;
+        this.timeStamp = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+      }
       if (init) init(this, opts);
     };
+    if (P) {
+      F.prototype = Object.create(P.prototype);
+      Object.setPrototypeOf(F, P);
+    }
+    Object.defineProperty(F.prototype, 'constructor', { value: F, writable: true, configurable: true });
+    Object.defineProperty(F.prototype, Symbol.toStringTag, { value: name, configurable: true });
+    Object.defineProperty(F, 'name', { value: name, configurable: true });
+    if (defaults) for (var k in defaults) Object.defineProperty(F.prototype, k, { value: defaults[k], writable: true, configurable: true, enumerable: true });
+    Object.defineProperty(window, name, { value: F, writable: true, configurable: true, enumerable: false });
+    return F;
   }
-  defEvent('Event');
-  defEvent('CustomEvent', function (e, o) { e.detail = o.detail; });
-  defEvent('MouseEvent', function (e, o) { e.clientX = o.clientX || 0; e.clientY = o.clientY || 0; e.button = o.button || 0; e.detail = o.detail || 0; });
-  defEvent('PointerEvent', function (e, o) { e.clientX = o.clientX || 0; e.clientY = o.clientY || 0; e.button = o.button || 0; e.buttons = o.buttons || 0; e.detail = o.detail || 0; e.pointerType = o.pointerType || ''; e.pointerId = o.pointerId || 0; e.isPrimary = !!o.isPrimary; e.width = o.width || 0; e.height = o.height || 0; e.pressure = o.pressure || 0; });
-  defEvent('KeyboardEvent', function (e, o) { e.key = o.key || ''; e.code = o.code || ''; e.keyCode = o.keyCode || 0; });
-  defEvent('InputEvent', function (e, o) { e.data = (o.data != null) ? o.data : null; });
-  defEvent('StorageEvent', function (e, o) {
+  var EvCtor = defEvent('Event', null, null, { isTrusted: false, eventPhase: 0, returnValue: true, cancelBubble: false, timeStamp: 0 });
+  ['NONE', 'CAPTURING_PHASE', 'AT_TARGET', 'BUBBLING_PHASE'].forEach(function (n, i) { EvCtor[n] = i; EvCtor.prototype[n] = i; });
+  defEvent('CustomEvent', 'Event', function (e, o) { e.detail = (o.detail !== undefined) ? o.detail : null; });
+  var modKeys = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, getModifierState: function () { return false; } };
+  function withMods(d) { for (var k in modKeys) d[k] = modKeys[k]; return d; }
+  function copyMods(e, o) { ['ctrlKey', 'shiftKey', 'altKey', 'metaKey'].forEach(function (k) { if (o[k] !== undefined) e[k] = !!o[k]; }); }
+  defEvent('UIEvent', 'Event', function (e, o) { if (o.detail !== undefined) e.detail = o.detail | 0; if (o.view !== undefined) e.view = o.view; }, { detail: 0, view: null, which: 0 });
+  defEvent('MouseEvent', 'UIEvent', function (e, o) {
+    e.clientX = o.clientX || 0; e.clientY = o.clientY || 0; e.button = o.button || 0; e.detail = o.detail || 0;
+    ['screenX', 'screenY', 'buttons', 'movementX', 'movementY'].forEach(function (k) { if (o[k] !== undefined) e[k] = +o[k] || 0; });
+    if (o.relatedTarget !== undefined) e.relatedTarget = o.relatedTarget;
+    copyMods(e, o);
+  }, withMods({ clientX: 0, clientY: 0, screenX: 0, screenY: 0, pageX: 0, pageY: 0, offsetX: 0, offsetY: 0, movementX: 0, movementY: 0, x: 0, y: 0, button: 0, buttons: 0, relatedTarget: null }));
+  defEvent('PointerEvent', 'MouseEvent', function (e, o) { e.buttons = o.buttons || 0; e.pointerType = o.pointerType || ''; e.pointerId = o.pointerId || 0; e.isPrimary = !!o.isPrimary; e.width = o.width || 0; e.height = o.height || 0; e.pressure = o.pressure || 0; },
+    { pointerId: 0, pointerType: '', isPrimary: false, width: 1, height: 1, pressure: 0, tiltX: 0, tiltY: 0, twist: 0 });
+  defEvent('WheelEvent', 'MouseEvent', function (e, o) { e.deltaX = +o.deltaX || 0; e.deltaY = +o.deltaY || 0; e.deltaZ = +o.deltaZ || 0; e.deltaMode = o.deltaMode | 0; }, { deltaX: 0, deltaY: 0, deltaZ: 0, deltaMode: 0 });
+  defEvent('DragEvent', 'MouseEvent', function (e, o) { e.dataTransfer = (o.dataTransfer != null) ? o.dataTransfer : null; }, { dataTransfer: null });
+  defEvent('KeyboardEvent', 'UIEvent', function (e, o) {
+    e.key = o.key || ''; e.code = o.code || ''; e.keyCode = o.keyCode || 0;
+    if (o.repeat !== undefined) e.repeat = !!o.repeat;
+    if (o.location !== undefined) e.location = o.location | 0;
+    if (o.isComposing !== undefined) e.isComposing = !!o.isComposing;
+    copyMods(e, o);
+  }, withMods({ key: '', code: '', keyCode: 0, charCode: 0, repeat: false, isComposing: false, location: 0 }));
+  defEvent('FocusEvent', 'UIEvent', function (e, o) { e.relatedTarget = (o.relatedTarget != null) ? o.relatedTarget : null; }, { relatedTarget: null });
+  defEvent('InputEvent', 'UIEvent', function (e, o) { e.data = (o.data != null) ? o.data : null; if (o.inputType !== undefined) e.inputType = String(o.inputType); if (o.isComposing !== undefined) e.isComposing = !!o.isComposing; }, { data: null, inputType: '', isComposing: false });
+  defEvent('CompositionEvent', 'UIEvent', function (e, o) { e.data = (o.data != null) ? String(o.data) : ''; }, { data: '' });
+  defEvent('SubmitEvent', 'Event', function (e, o) { e.submitter = (o.submitter != null) ? o.submitter : null; }, { submitter: null });
+  defEvent('PopStateEvent', 'Event', function (e, o) { e.state = (o.state !== undefined) ? o.state : null; }, { state: null });
+  defEvent('HashChangeEvent', 'Event', function (e, o) { e.oldURL = (o.oldURL != null) ? String(o.oldURL) : ''; e.newURL = (o.newURL != null) ? String(o.newURL) : ''; }, { oldURL: '', newURL: '' });
+  defEvent('PageTransitionEvent', 'Event', function (e, o) { e.persisted = !!o.persisted; }, { persisted: false });
+  defEvent('BeforeUnloadEvent', 'Event');
+  defEvent('ProgressEvent', 'Event', function (e, o) { e.lengthComputable = !!o.lengthComputable; e.loaded = +o.loaded || 0; e.total = +o.total || 0; }, { lengthComputable: false, loaded: 0, total: 0 });
+  defEvent('AnimationEvent', 'Event', function (e, o) { e.animationName = (o.animationName != null) ? String(o.animationName) : ''; e.elapsedTime = +o.elapsedTime || 0; e.pseudoElement = (o.pseudoElement != null) ? String(o.pseudoElement) : ''; }, { animationName: '', elapsedTime: 0, pseudoElement: '' });
+  defEvent('TransitionEvent', 'Event', function (e, o) { e.propertyName = (o.propertyName != null) ? String(o.propertyName) : ''; e.elapsedTime = +o.elapsedTime || 0; e.pseudoElement = (o.pseudoElement != null) ? String(o.pseudoElement) : ''; }, { propertyName: '', elapsedTime: 0, pseudoElement: '' });
+  defEvent('ClipboardEvent', 'Event', function (e, o) { e.clipboardData = (o.clipboardData != null) ? o.clipboardData : null; }, { clipboardData: null });
+  defEvent('StorageEvent', 'Event', function (e, o) {
     e.key = (o.key != null) ? String(o.key) : null;
     e.oldValue = (o.oldValue != null) ? String(o.oldValue) : null;
     e.newValue = (o.newValue != null) ? String(o.newValue) : null;
     e.url = (o.url != null) ? String(o.url) : '';
     e.storageArea = (o.storageArea != null) ? o.storageArea : null;
   });
-  defEvent('PromiseRejectionEvent', function (e, o) { e.promise = o.promise; e.reason = o.reason; });
-  defEvent('ErrorEvent', function (e, o) {
+  defEvent('PromiseRejectionEvent', 'Event', function (e, o) { e.promise = o.promise; e.reason = o.reason; });
+  defEvent('ErrorEvent', 'Event', function (e, o) {
     e.message = (o.message != null) ? String(o.message) : '';
     e.filename = (o.filename != null) ? String(o.filename) : '';
     e.lineno = o.lineno >>> 0; e.colno = o.colno >>> 0;

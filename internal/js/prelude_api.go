@@ -3344,6 +3344,82 @@ const preludeAPIJS = `
       return ev;
     };
   }
+
+  // ---- host interface objects ----
+  // The objects the engine creates as plain singletons (window, location,
+  // history, navigator, …) are put on the prototype of the interface a browser
+  // reports for them, and that interface is published as a global. Page code
+  // tests these: Ember decides whether it is running in a browser at all with
+  // "self.constructor === Window" and, failing it, boots non-interactive with a
+  // "none" location and renders nothing. The constructors are illegal to call,
+  // as in a browser. Only interfaces the engine actually implements are named;
+  // one it lacks (TouchEvent, ServiceWorker, Navigation, trustedTypes, canvas…)
+  // stays undefined so feature detection keeps telling the truth.
+  (function () {
+    var ETP = window.EventTarget && window.EventTarget.prototype;
+    function iface(name, parentProto) {
+      if (typeof window[name] === 'function') return window[name];
+      var C = function () { throw new TypeError('Illegal constructor'); };
+      Object.defineProperty(C, 'name', { value: name, configurable: true });
+      C.prototype = Object.create(parentProto || Object.prototype);
+      Object.defineProperty(C.prototype, 'constructor', { value: C, writable: true, configurable: true });
+      Object.defineProperty(C.prototype, Symbol.toStringTag, { value: name, configurable: true });
+      Object.defineProperty(window, name, { value: C, writable: true, configurable: true, enumerable: false });
+      return C;
+    }
+    function adopt(name, obj, parentProto) {
+      var C = iface(name, parentProto);
+      if (obj && (typeof obj === 'object' || typeof obj === 'function')) {
+        try { if (Object.getPrototypeOf(obj) === Object.prototype) Object.setPrototypeOf(obj, C.prototype); } catch (e) {}
+      }
+      return C;
+    }
+    adopt('Window', window, ETP);
+    // The global object reports its engine class unless it carries the tag itself.
+    try { Object.defineProperty(window, Symbol.toStringTag, { value: 'Window', configurable: true }); } catch (e) {}
+    var Loc = adopt('Location', window.location);
+    // A Location stringifies to its URL ('' + location, location.toString()).
+    if (!Object.prototype.hasOwnProperty.call(Loc.prototype, 'toString')) {
+      Object.defineProperty(Loc.prototype, 'toString', { value: function () { return this.href; }, writable: true, configurable: true });
+    }
+    adopt('History', window.history);
+    adopt('Navigator', window.navigator);
+    adopt('Screen', window.screen, ETP);
+    adopt('VisualViewport', window.visualViewport, ETP);
+    adopt('Performance', window.performance, ETP);
+    adopt('Storage', window.localStorage);
+    adopt('Storage', window.sessionStorage);
+    adopt('Crypto', window.crypto);
+    if (window.crypto) adopt('SubtleCrypto', window.crypto.subtle);
+    adopt('CustomElementRegistry', window.customElements);
+
+    // MediaQueryList: one per matchMedia() call.
+    var MQL = iface('MediaQueryList', ETP), mm = window.matchMedia;
+    if (typeof mm === 'function') {
+      window.matchMedia = function (q) {
+        var r = mm.call(window, q);
+        try { Object.setPrototypeOf(r, MQL.prototype); } catch (e) {}
+        return r;
+      };
+    }
+
+    // Event classes defined piecemeal above join the hierarchy.
+    var EP = window.Event && window.Event.prototype;
+    ['MessageEvent', 'ToggleEvent', 'CloseEvent', 'CommandEvent', 'BeforeToggleEvent'].forEach(function (n) {
+      var C = window[n];
+      if (EP && typeof C === 'function' && C.prototype && Object.getPrototypeOf(C.prototype) === Object.prototype) {
+        Object.setPrototypeOf(C.prototype, EP);
+        try { Object.defineProperty(C.prototype, Symbol.toStringTag, { value: n, configurable: true }); } catch (e) {}
+      }
+    });
+
+    // window.origin is the document origin's serialisation; window.length counts
+    // child browsing contexts, of which this single-document engine has none.
+    if (!('origin' in window) && window.location) {
+      Object.defineProperty(window, 'origin', { get: function () { return window.location.origin; }, set: function (v) { Object.defineProperty(window, 'origin', { value: v, writable: true, configurable: true, enumerable: true }); }, configurable: true, enumerable: true });
+    }
+    if (!('length' in window)) Object.defineProperty(window, 'length', { value: 0, writable: true, configurable: true, enumerable: true });
+  })();
 })();
 `
 

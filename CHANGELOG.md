@@ -57,6 +57,20 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   external module named by two script tags now runs once. A wide module graph costs
   more CPU per render than the single bundle did.
 
+- **Engine-built objects are instances of their interfaces.** `window` is a `Window`
+  (Ember's "is this a browser?" test, `self.constructor === Window`, now passes — an
+  Ember app such as Discourse no longer boots non-interactive and blank), and
+  `location`, `history`, `navigator`, `screen`, `performance`, the storages, `crypto`
+  and `customElements` are instances of their interfaces. Event classes form the
+  standard hierarchy, so `e instanceof Event` holds for every event and a dispatched
+  `click` is a `PointerEvent` whose `button` is 0. `querySelectorAll` returns a
+  `NodeList` and `children`/`getElementsBy*` an `HTMLCollection` with
+  `item()`/`namedItem()`. New: `UIEvent`, `FocusEvent`, `WheelEvent`, `DragEvent`,
+  `CompositionEvent`, `SubmitEvent`, `PopStateEvent`, `HashChangeEvent`,
+  `PageTransitionEvent`, `BeforeUnloadEvent`, `ProgressEvent`, `AnimationEvent`,
+  `TransitionEvent`, `ClipboardEvent`, `Node.baseURI`, `window.origin`,
+  `window.length`, and `String(location)` is its URL.
+
 ### Added
 
 - **`mode=article` no longer returns a fragment of a hub page.** On a section

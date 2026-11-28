@@ -2,10 +2,8 @@ package js
 
 import (
 	"net/url"
-	"strconv"
 	"strings"
 
-	"github.com/dop251/goja"
 	"golang.org/x/net/html"
 )
 
@@ -15,38 +13,6 @@ import (
 // navigation, recorded in pendingNav (like location.href) so the caller can follow
 // it. GET forms carry their serialized fields as the query string; POST forms record
 // the action target best-effort (the body isn't carried on the follow).
-
-// htmlCollection wraps a node slice as a live-ish HTMLCollection: numeric indices,
-// length, item(i), and namedItem(name) (matched by id, then name attribute). The
-// challenge uses both document.forms[0] (index) and form.elements.namedItem("solution").
-func (b *bridge) htmlCollection(nodes []*html.Node) *goja.Object {
-	vm := b.vm
-	o := vm.NewObject()
-	for i, n := range nodes {
-		_ = o.Set(strconv.Itoa(i), b.wrap(n))
-	}
-	_ = o.Set("length", len(nodes))
-	_ = o.Set("item", func(call goja.FunctionCall) goja.Value {
-		i := int(call.Argument(0).ToInteger())
-		if i < 0 || i >= len(nodes) {
-			return goja.Null()
-		}
-		return b.wrap(nodes[i])
-	})
-	_ = o.Set("namedItem", func(call goja.FunctionCall) goja.Value {
-		name := call.Argument(0).String()
-		if name == "" {
-			return goja.Null()
-		}
-		for _, n := range nodes {
-			if getAttr(n, "id") == name || getAttr(n, "name") == name {
-				return b.wrap(n)
-			}
-		}
-		return goja.Null()
-	})
-	return o
-}
 
 // formControls returns a form's submittable controls in tree order: the
 // form-associated elements a submit serializes — including form-associated custom

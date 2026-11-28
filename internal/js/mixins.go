@@ -89,7 +89,7 @@ func (b *bridge) installParentNode(proto *goja.Object, queries bool) {
 		b.protoMethod(proto, "querySelectorAll", func(n *html.Node, call goja.FunctionCall) goja.Value {
 			return b.nodeList(b.pageQueryAll(n, call.Argument(0).String()))
 		})
-		b.protoGetter(proto, "children", func(n *html.Node) goja.Value { return b.nodeList(childElements(n)) })
+		b.protoGetter(proto, "children", func(n *html.Node) goja.Value { return b.htmlCollection(childElements(n)) })
 		b.protoGetter(proto, "firstElementChild", func(n *html.Node) goja.Value {
 			for c := n.FirstChild; c != nil; c = c.NextSibling {
 				if c.Type == html.ElementNode {

@@ -95,6 +95,7 @@ func (b *bridge) installPrototypes() {
 	// ShadowRoot is a DocumentFragment (DOM Standard), not an Element.
 	b.protoShadowRoot = vm.CreateObject(b.protoDocumentFragment)
 
+	b.installCollections()
 	b.installNodeProto()
 	b.installElementProto()
 	b.installHTMLElementProto()
@@ -112,10 +113,10 @@ func (b *bridge) installPrototypes() {
 	b.installInnerHTML(b.protoShadowRoot)
 	// Document also has the tag/class collections (Element defines its own).
 	b.protoMethod(b.protoDocument, "getElementsByTagName", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(n, call.Argument(0).String()))
+		return b.htmlCollection(queryAll(n, call.Argument(0).String()))
 	})
 	b.protoMethod(b.protoDocument, "getElementsByClassName", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(n, "."+call.Argument(0).String()))
+		return b.htmlCollection(queryAll(n, "."+call.Argument(0).String()))
 	})
 
 	// Global constructors. The .prototype/.constructor link is what `instanceof`
@@ -308,6 +309,14 @@ func (b *bridge) installNodeProto() {
 		return b.documentObj
 	})
 	b.protoGetter(p, "isConnected", func(n *html.Node) goja.Value { return vm.ToValue(b.isConnected(n)) })
+	// baseURI is the document base URL (the <base href> when there is one), the
+	// same for every node of this single-document engine.
+	b.protoGetter(p, "baseURI", func(*html.Node) goja.Value {
+		if u := b.docBaseNow(); u != nil {
+			return vm.ToValue(u.String())
+		}
+		return vm.ToValue("about:blank")
+	})
 	b.protoMethod(p, "getRootNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		composed := false
 		if opts := call.Argument(0); opts != nil && !goja.IsUndefined(opts) && !goja.IsNull(opts) {
@@ -482,7 +491,7 @@ func (b *bridge) installElementProto() {
 	b.installInnerHTML(p)
 	b.protoGetter(p, "outerHTML", func(n *html.Node) goja.Value { return vm.ToValue(outerHTML(n)) })
 
-	b.protoGetter(p, "children", func(n *html.Node) goja.Value { return b.nodeList(childElements(n)) })
+	b.protoGetter(p, "children", func(n *html.Node) goja.Value { return b.htmlCollection(childElements(n)) })
 	b.protoGetter(p, "firstElementChild", func(n *html.Node) goja.Value {
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			if c.Type == html.ElementNode {
@@ -560,10 +569,10 @@ func (b *bridge) installElementProto() {
 		return b.nodeList(b.pageQueryAll(n, call.Argument(0).String()))
 	})
 	b.protoMethod(p, "getElementsByTagName", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(n, call.Argument(0).String()))
+		return b.htmlCollection(queryAll(n, call.Argument(0).String()))
 	})
 	b.protoMethod(p, "getElementsByClassName", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(n, "."+call.Argument(0).String()))
+		return b.htmlCollection(queryAll(n, "."+call.Argument(0).String()))
 	})
 	b.protoMethod(p, "matches", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		return vm.ToValue(b.pageClosest(n, call.Argument(0).String(), true) != nil)
