@@ -82,7 +82,8 @@ func ageSiteEntry(t *testing.T, b *Browser, origin string, d time.Duration) {
 
 func newEnforcingBrowser(t *testing.T) *Browser {
 	t.Helper()
-	b, err := New(WithAllowPrivate(true), WithRespectRobots(true), WithRetries(0))
+	// HTML cache entry under test: pin negotiation off, whatever the default.
+	b, err := New(WithAllowPrivate(true), WithRespectRobots(true), WithRetries(0), WithPreferMarkdown(false))
 	if err != nil {
 		t.Fatal(err)
 	}

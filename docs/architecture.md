@@ -46,7 +46,7 @@ re-fetch or re-parse. See `internal/page/page.go`.
 | `internal/fetch`     | HTTP client-as-browser: cookies, redirects, gzip, charset → UTF-8, UA.|
 | `internal/ratelimit` | Process-global, per-host token-bucket limiter behind `--rate-limit` (off by default).|
 | `internal/dom`       | The only importer of `x/net/html`/`cascadia`: parse; extraction (regions/ARIA state/stable ids/outline); caller-directed schema extraction (`dom.Records`) + collection discovery (`dom.detectCollections`); find.|
-| `internal/content`   | Non-HTML bodies → Markdown: JSON/plain text inline + `feed`/`image`/`pdf` subpackages (RSS/Atom/JSON feeds, image manifests, PDF text via `third_party/pdf`).|
+| `internal/content`   | Non-HTML bodies → Markdown: JSON/plain text inline, `text/markdown` passed through unfenced (ADR 0021) + `feed`/`image`/`pdf` subpackages (RSS/Atom/JSON feeds, image manifests, PDF text via `third_party/pdf`).|
 | `internal/reduce`    | Semantic reduction: readability extraction + bluemonday sanitize. Full mode also drops repeated link-dense blocks (`dom.StripDuplicateBlocks` — desktop nav + its mobile-drawer twin emit once). |
 | `internal/emit`      | Serialize reduced content to Markdown + heading outline.              |
 | `internal/session`   | Per-session cookie jar (own `fetch.Client`) + navigation history + per-page interaction replay log (imports `js` for `js.Action`). |
@@ -141,6 +141,15 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   (`fetch.WithRedirectCheck`); it reuses the same parser and site cache, treats an
   unreachable robots.txt as disallow-all for 30 seconds (RFC 9309), and leaves
   subresources, page-JS requests, the discovery probes and Crawl-delay ungated.
+  Markdown content negotiation is the same shape
+  ([ADR 0021](decisions/0021-markdown-content-negotiation.md),
+  `internal/browser/markdownneg.go`): a `text/markdown` response is always passed
+  through (`page.KindMarkdown`), while *asking* for one is `read`'s per-call
+  `prefer_markdown`, with `--prefer-markdown` setting what an absent argument
+  means (`browser.DefaultPreferMarkdown`, provisionally off). Only a `read` navigation's
+  document request carries the Markdown `Accept` (`fetch.WithAccept`, on the
+  request context), and the URL cache keys the negotiated representation
+  separately.
 - **Phase 7 — Generic DOM interaction + true sessions.** ✅ An `interact` tool
   dispatches a real DOM event (`click`/`input`/`change`/`keydown`/`submit`) at a
   CSS-selector-addressed element and runs the page's JavaScript so handlers fire and

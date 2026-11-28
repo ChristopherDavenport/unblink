@@ -39,6 +39,7 @@ func main() {
 	allowPrivate := flag.Bool("allow-private", false, "permit page fetches to private/loopback/metadata IPs (off by default; needed for localhost/internal targets)")
 	noSiteHints := flag.Bool("no-site-hints", false, "omit robots.txt/llms.txt presence hints from browse output")
 	respectRobots := flag.Bool("respect-robots", false, "obey robots.txt: refuse agent-directed navigations (page tools, click, submit_form, map) the target site's robots.txt disallows (off by default: robots.txt is reported, not enforced)")
+	preferMarkdown := flag.Bool("prefer-markdown", browser.DefaultPreferMarkdown, "whether a read that does not say asks sites for their Markdown version of a page (Accept: text/markdown) and returns it as-is when served; a site may serve agents different content than browsers. Applies to stateless reads; a read can always choose per call with prefer_markdown. Set explicitly either way: --prefer-markdown / --prefer-markdown=false")
 	noSafeOutput := flag.Bool("no-safe-output", false, "disable untrusted-content safety on returned content: keep raw output (no provenance fence, no hidden-text stripping, no image-beacon defanging)")
 	disableJS := flag.Bool("disable-js", false, "disable JavaScript rendering entirely (JS is on by default; reads render unless the caller passes render=false)")
 	// Deprecated: JS is on by default now, so --js is a no-op kept for backward
@@ -88,6 +89,7 @@ func main() {
 		browser.WithAllowPrivate(*allowPrivate),
 		browser.WithSiteHints(!*noSiteHints),
 		browser.WithRespectRobots(*respectRobots),
+		browser.WithPreferMarkdown(*preferMarkdown),
 		browser.WithSafeOutput(!*noSafeOutput),
 		browser.WithSessionLimits(*sessionTTL, *sessionCap),
 	}

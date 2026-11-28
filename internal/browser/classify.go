@@ -33,6 +33,8 @@ func classify(contentType string, body []byte) page.Kind {
 	switch {
 	case essence == "text/html", essence == "application/xhtml+xml":
 		return page.KindHTML
+	case essence == "text/markdown", essence == "text/x-markdown":
+		return page.KindMarkdown
 	case essence == "application/pdf":
 		return page.KindPDF
 	case essence == "image/svg+xml":

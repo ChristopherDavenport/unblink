@@ -104,7 +104,11 @@ type Browser struct {
 	// robots.txt disallows (--respect-robots, ADR 0020; see robotsgate.go). Off by
 	// default: robots.txt is then context only.
 	respectRobots bool
-	safeOutput    bool // strip hidden content + defang image beacons in emitted content
+	// preferMarkdown is what a stateless read that does not say gets: ask the
+	// origin for its Markdown representation, or not (--prefer-markdown, default
+	// DefaultPreferMarkdown; ADR 0021, see markdownneg.go).
+	preferMarkdown bool
+	safeOutput     bool // strip hidden content + defang image beacons in emitted content
 
 	renderer       Renderer     // nil when JavaScript rendering is disabled
 	liveEngine     liveRenderer // non-nil when the renderer supports persistent per-session runtimes
@@ -155,6 +159,7 @@ type options struct {
 	tlsMimic           bool
 	siteHints          bool
 	respectRobots      bool
+	preferMarkdown     bool
 	safeOutput         bool
 	allowPrivate       bool
 	search             search.Provider
@@ -319,6 +324,19 @@ func WithSiteHints(enabled bool) Option { return func(o *options) { o.siteHints 
 // gated; Crawl-delay is not enforced. Independent of WithSiteHints. See ADR 0020.
 func WithRespectRobots(enabled bool) Option { return func(o *options) { o.respectRobots = enabled } }
 
+// WithPreferMarkdown sets what a Read that does not say (Request.PreferMarkdown
+// nil) does: ask origins for a Markdown representation of the page, or not. The
+// default is DefaultPreferMarkdown. When negotiating, a stateless read's document
+// request sends "Accept: text/markdown, text/html;q=0.9, …", and an origin that
+// answers with text/markdown is returned as-is, with no parse, JavaScript render
+// or reduction. Only that one request negotiates — never a session navigation
+// (unless the call asks), another tool's fetch, a subresource, a page-JS
+// subrequest, a form submit, or a metadata probe. A text/markdown response is
+// passed through whatever this is set to. See ADR 0021.
+func WithPreferMarkdown(enabled bool) Option {
+	return func(o *options) { o.preferMarkdown = enabled }
+}
+
 // WithSafeOutput toggles the untrusted-content safety pass on emitted content:
 // stripping human-hidden text and defanging Markdown image beacons. On by default;
 // disable to get the raw, unmodified reduction.
@@ -331,7 +349,7 @@ func New(opts ...Option) (*Browser, error) {
 		jsNetwork: true, jsMaxBytes: DefaultJSMaxBytes, jsMaxRequests: DefaultJSMaxRequests, jsTimeout: DefaultJSTimeout,
 		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive, jsMemLimit: DefaultJSMemLimit, jsAssetCache: true,
 		rateRPS: DefaultRateRPS, rateBurst: DefaultRateBurst, retries: DefaultRetries,
-		siteHints: true, safeOutput: true,
+		siteHints: true, safeOutput: true, preferMarkdown: DefaultPreferMarkdown,
 	}
 	for _, opt := range opts {
 		opt(&o)
@@ -410,6 +428,7 @@ func New(opts ...Option) (*Browser, error) {
 		sessions:           mgr,
 		siteHints:          o.siteHints,
 		respectRobots:      o.respectRobots,
+		preferMarkdown:     o.preferMarkdown,
 		safeOutput:         o.safeOutput,
 		renderer:           o.renderer,
 		jsNetwork:          o.jsNetwork,
@@ -463,6 +482,16 @@ type Request struct {
 	// Selector is an optional CSS selector applied when Format == "raw_html":
 	// only the matching elements are serialized. Ignored by other formats.
 	Selector string
+
+	// PreferMarkdown is Read's per-call override of the operator's
+	// --prefer-markdown default: true asks the origin for text/markdown on this
+	// navigation, false sends the browser-like Accept, nil follows the default
+	// (which applies to stateless reads only). Ignored by every other tool. See
+	// negotiatesMarkdown for the calls that never negotiate.
+	PreferMarkdown *bool
+	// negotiateMarkdown is the resolved decision, set by Read alone, so no other
+	// tool's navigation can carry the Markdown Accept.
+	negotiateMarkdown bool
 
 	// WaitFor/WaitText/WaitTimeout gate a JavaScript render: keep it alive until the
 	// selector resolves and/or the text appears (or WaitTimeout elapses). Setting
@@ -535,12 +564,15 @@ type renderOpts struct {
 	// one-shot fetches — those get fresh per-render storage (single origin, so no
 	// partitioning is needed). Resolved in processFetched with the final page origin.
 	storageFor func(origin string) (local, session js.Storage)
+	// markdown asks the origin for its Markdown representation on the document
+	// request (ADR 0021). Only Read sets it.
+	markdown bool
 }
 
 // renderOpts derives the render intent from a Request. A wait condition implies a
 // render (there is nothing to wait for without running the page's JS).
 func (r Request) renderOpts() renderOpts {
-	ro := renderOpts{render: r.Render, timeout: r.WaitTimeout}
+	ro := renderOpts{render: r.Render, timeout: r.WaitTimeout, markdown: r.negotiateMarkdown}
 	if r.WaitFor != "" || r.WaitText != "" {
 		ro.wait = &js.WaitCondition{Selector: r.WaitFor, Text: r.WaitText}
 		ro.render = true
@@ -631,7 +663,7 @@ func (b *Browser) fetchStateless(ctx context.Context, url string, ro renderOpts)
 	if err := b.gateURL(ctx, url); err != nil {
 		return nil, err
 	}
-	key := cacheKey(url, ro.render)
+	key := cacheKeyFor(url, ro)
 	if p, ok := b.cache.get(key); ok {
 		if err := b.checkRobots(ctx, p.FinalURL); err != nil {
 			return nil, err
@@ -662,7 +694,9 @@ func (b *Browser) revalidate(ctx context.Context, key, url string, stale *page.P
 	if etag == "" && lastMod == "" {
 		return nil, false, nil
 	}
-	p, err := b.client.GetConditional(b.navContext(ctx), url, etag, lastMod)
+	// The stale entry's validators belong to the representation its key names, so
+	// the conditional request must negotiate the same one.
+	p, err := b.client.GetConditional(b.docContext(ctx, ro), url, etag, lastMod)
 	if err != nil {
 		// The conditional GET is a plain GET plus validator headers, so this is the
 		// same failure a normal fetch would hit — report it rather than refetching.
@@ -681,11 +715,25 @@ func (b *Browser) revalidate(ctx context.Context, key, url string, stale *page.P
 	return pp, true, nil
 }
 
+// cacheKey names a stateless cache entry for the default (HTML) representation;
+// rendered and unrendered pages are distinct entries.
 func cacheKey(url string, render bool) string {
 	if render {
 		return "render\x00" + url
 	}
 	return url
+}
+
+// cacheKeyFor is cacheKey for a navigation's full options. A Markdown-negotiated
+// response is a different representation of the same URL, so it gets its own
+// key: an HTML page is never served to a caller that negotiated Markdown, or the
+// reverse (a cache-level Vary: Accept).
+func cacheKeyFor(url string, ro renderOpts) string {
+	key := cacheKey(url, ro.render)
+	if ro.markdown {
+		key = "markdown\x00" + key
+	}
+	return key
 }
 
 // fetchPage runs fetch -> parse -> [render] -> extract. When render is requested
@@ -701,7 +749,7 @@ func (b *Browser) fetchPage(ctx context.Context, client *fetch.Client, url strin
 	if err := b.gateURL(ctx, url); err != nil {
 		return nil, err
 	}
-	p, err := client.Get(b.navContext(ctx), url)
+	p, err := client.Get(b.docContext(ctx, ro), url)
 	if err != nil {
 		return nil, err
 	}
@@ -869,6 +917,12 @@ func deriveNonHTMLMeta(p *page.Page) {
 	if name == "" || name == "/" || name == "." {
 		name = u.Host
 	}
+	// A Markdown document names itself; prefer that over the URL filename.
+	if p.Kind == page.KindMarkdown {
+		if t := content.MarkdownTitle(p.Raw); t != "" {
+			name = t
+		}
+	}
 	p.Meta.Title = name
 }
 
@@ -951,9 +1005,13 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	default:
 		return nil, errf(ErrBadInput, "invalid mode %q (valid: article, full)", mode)
 	}
+	req.negotiateMarkdown = b.negotiatesMarkdown(req, format)
 	t0 := time.Now()
 	p, _, err := b.resolve(ctx, req)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkCurrentRepresentation(req, format, p); err != nil {
 		return nil, err
 	}
 	resolveDur := time.Since(t0)
@@ -966,7 +1024,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	var memo *pageMemo
 	if req.SessionID == "" && req.URL != "" && req.Auth == nil && len(req.Headers) == 0 {
 		if ro := req.renderOpts(); ro.wait == nil {
-			memo = b.cache.memoFor(cacheKey(req.URL, ro.render), p)
+			memo = b.cache.memoFor(cacheKeyFor(req.URL, ro), p)
 		}
 	}
 

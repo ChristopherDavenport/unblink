@@ -288,7 +288,7 @@ results rather than logged away.
 
 | Tool          | Input                                              | Returns                                                                 |
 | ------------- | -------------------------------------------------- | ----------------------------------------------------------------------- |
-| `read`        | `{ url?, session?, use_current?, mode?, format?, selector?, max_tokens?, cursor?, include_bytes?, wait_for?, wait_text?, wait_timeout?, headers?, auth? }` | Main content (`mode=article`, default) or whole page (`full`) as Markdown, paginated via cursor. `format=raw_html` returns the unreduced source (optionally scoped by a CSS `selector`) — the escape hatch for scripts/forms/SSR-embedded JSON that reduction strips; `format=text` returns visible plain text. An image URL returns a text manifest (type/dimensions/size); `include_bytes=true` also returns the raw image as base64. `wait_for` (CSS selector) / `wait_text` hold the JS render open until that content hydrates (forces the render even if `render=false`); `wait_timeout` (seconds, capped ~30s) extends the wait, and `wait_met` in the result reports whether it appeared. `headers`/`auth` attach one-shot credentials for a stateless gated GET (see [Authentication](#authentication)). |
+| `read`        | `{ url?, session?, use_current?, mode?, format?, selector?, max_tokens?, cursor?, include_bytes?, prefer_markdown?, wait_for?, wait_text?, wait_timeout?, headers?, auth? }` | Main content (`mode=article`, default) or whole page (`full`) as Markdown, paginated via cursor. `format=raw_html` returns the unreduced source (optionally scoped by a CSS `selector`) — the escape hatch for scripts/forms/SSR-embedded JSON that reduction strips; `format=text` returns visible plain text. An image URL returns a text manifest (type/dimensions/size); `include_bytes=true` also returns the raw image as base64. `wait_for` (CSS selector) / `wait_text` hold the JS render open until that content hydrates (forces the render even if `render=false`); `wait_timeout` (seconds, capped ~30s) extends the wait, and `wait_met` in the result reports whether it appeared. `prefer_markdown` asks the site for its own Markdown version of the page (see [Markdown content negotiation](#markdown-content-negotiation)). `headers`/`auth` attach one-shot credentials for a stateless gated GET (see [Authentication](#authentication)). |
 | `browse`      | `{ url?, session?, use_current?, headers?, auth? }` | Cheap orientation: title, description, lang, heading outline, link/form/image counts, excerpt, semantic region map, plus `llms_txt`/`robots` presence hints. Also returns a `collections` inventory — auto-detected repeating record-sets (product lists, search results, table-like rows), each with a ready-to-use `extract` schema (`root` selector + field selectors, tagged with its region). Hand one straight to `extract` — no need to read raw HTML to find selectors. |
 | `links`       | `{ url?, session?, use_current?, filter?, internal_only?, limit? }` | The page's links (text + absolute href), optionally filtered. `limit` defaults to 200 (cap 1000); `total`/`truncated` report the rest. |
 | `forms`       | `{ url?, session?, use_current? }`                 | The page's forms and their fields (name, type, required, options).      |
@@ -422,6 +422,31 @@ subresources and page-JS requests, the robots.txt/llms.txt/`/sitemap.xml`
 discovery probes, and `search` provider calls. `Crawl-delay` is reported but not
 enforced; use `--rate-limit` for pacing.
 
+### Markdown content negotiation
+
+Some sites serve a Markdown version of a page to a client that asks for one
+(`Accept: text/markdown`, e.g. Cloudflare's "Markdown for Agents"). A
+`text/markdown` response is always returned as-is: `kind: "markdown"`, not parsed,
+rendered, reduced or wrapped in a code fence.
+
+Asking for it is a per-call choice
+([ADR 0021](docs/decisions/0021-markdown-content-negotiation.md)): pass
+`prefer_markdown=true` on a `read`, and `prefer_markdown=false` to get the HTML
+page — for example to re-read as HTML a URL first read as Markdown. The Markdown
+variant is whatever the site chooses to give an agent: usually much smaller and
+needing no JavaScript, but it may differ from the page a browser shows, and it has
+no DOM for `links`/`forms`/`click`/`data`/`extract`. A site without one answers
+with HTML and the read is unchanged.
+
+A `read` that does not pass the argument follows the server default, currently
+**off** (provisional); **`--prefer-markdown`** / `--prefer-markdown=false` set it
+either way. The server default applies to stateless reads only; inside a session
+only an explicit `prefer_markdown` negotiates, because a session's page is shared
+with the DOM tools. Negotiation applies to a `read` that navigates to a `url` with
+`format=markdown` and no `wait_for`/`wait_text`. Other tools, subresources, page-JS
+requests, form submits and the robots.txt/llms.txt probes never send the header.
+Under `--tls-mimic` a negotiating request's `Accept` is no longer Chrome's.
+
 ### Extensions (ad-blocking)
 
 unblink can load **WebExtensions** at runtime to extend what it does with
@@ -491,6 +516,7 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 | `--allow-private` | off | Permit page fetches to private/loopback/metadata IPs (needed for localhost/internal targets). |
 | `--no-site-hints` | off | Omit robots.txt/llms.txt presence hints from `browse`. |
 | `--respect-robots` | off | Obey robots.txt: refuse agent-directed navigations (page tools, `click`, `submit_form`, `map`, and their redirects) that the target origin's robots.txt disallows for `*`. Off by default: robots.txt is reported, not enforced. See [ADR 0020](docs/decisions/0020-opt-in-robots-enforcement.md). |
+| `--prefer-markdown` | off (provisional) | Server default for `read` calls that do not pass `prefer_markdown`: ask sites for a Markdown version of the page (`Accept: text/markdown, text/html;q=0.9, …`) on stateless navigations and return it as-is when served. A site may serve agents different content than browsers. `--prefer-markdown=false` states the off default explicitly; an agent can always choose per call. See [ADR 0021](docs/decisions/0021-markdown-content-negotiation.md). |
 | `--no-safe-output` | off | Disable the untrusted-content safety pass (fence, hidden-text strip, image-beacon defang) — return raw reduction. |
 | `--disable-js` | off | Disable JavaScript rendering entirely (JS is **on by default**; reads render unless the caller passes `render=false`). |
 | `--js` | — | Deprecated no-op, accepted so older client configs still start: JavaScript is on by default (use `--disable-js` to turn it off). |

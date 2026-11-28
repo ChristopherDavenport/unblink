@@ -298,7 +298,15 @@ not `doFetch`).
   `ErrRobotsDisallowed` → `robots_disallowed`; a 4xx robots.txt allows, 5xx or
   unreachable disallows for a 30s TTL per RFC 9309; subresources, page-JS
   subrequests, the robots.txt/llms.txt probes, `search` and Crawl-delay are
-  deliberately not gated). Add a new
+  deliberately not gated); 0021 is
+  Markdown content negotiation (a `text/markdown` response is always passed through
+  as `page.KindMarkdown`, unfenced; *asking* for it — `Accept: text/markdown` on a
+  `read` navigation only — is per call via `read`'s tri-state `prefer_markdown`, with
+  the operator default `--prefer-markdown` provisionally off behind the single
+  constant `browser.DefaultPreferMarkdown` in `internal/browser/markdownneg.go`; the
+  operator default reaches stateless reads only, a session negotiates only on an
+  explicit per-call true; the two representations cache under separate keys; it is
+  not suppressed under `--tls-mimic`, where it breaks the Chrome header persona). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)

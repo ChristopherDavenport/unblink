@@ -48,6 +48,9 @@ type readArgs struct {
 	MaxTokens    int    `json:"max_tokens,omitempty" jsonschema:"approximate maximum tokens per page (default 6000)"`
 	Cursor       string `json:"cursor,omitempty" jsonschema:"pagination cursor returned by a previous read call"`
 	IncludeBytes bool   `json:"include_bytes,omitempty" jsonschema:"for an image url, also return the raw image as base64 (default: only a text manifest with type/dimensions/size)"`
+	// prefer_markdown is tri-state (ADR 0021): nil follows the operator's
+	// --prefer-markdown default, true/false choose for this one navigation.
+	PreferMarkdown *bool `json:"prefer_markdown,omitempty" jsonschema:"choose which version of the page to fetch. true: ask the site for its own Markdown version (Accept: text/markdown). If the site has one it is returned as-is with kind=markdown — written by the site for agents, usually far fewer tokens, no JavaScript run — but it may differ from what a browser shows, mode=article/full do not apply, and that page has no DOM (links/forms/click/data/extract see nothing on it). If the site has none you get the normal HTML read. false: fetch the normal HTML page, e.g. to re-read a url you first got as Markdown, or before using DOM tools. Omit to use the server default. Works with or without a session, but only when navigating to a url with format=markdown and no wait_for/wait_text; it cannot change a session's current page (use_current) — pass the url again"`
 	// wait_for/wait_text let an agent block the JS render until the content it wants
 	// has hydrated (both imply render=true and need the server started with --js).
 	WaitFor     string `json:"wait_for,omitempty" jsonschema:"CSS selector to wait for in the rendered DOM before returning; forces the JS render even if render=false. wait_met in the result reports whether it appeared"`
@@ -67,6 +70,7 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 	req.IncludeBytes = args.IncludeBytes
 	req.Format = args.Format
 	req.Selector = args.Selector
+	req.PreferMarkdown = args.PreferMarkdown
 	req.WaitFor = args.WaitFor
 	req.WaitText = args.WaitText
 	if args.WaitTimeout > 0 {

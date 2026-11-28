@@ -28,13 +28,17 @@ import (
 type Kind string
 
 const (
-	KindHTML   Kind = "html"
-	KindPDF    Kind = "pdf"
-	KindJSON   Kind = "json"
-	KindFeed   Kind = "feed"
-	KindText   Kind = "text"
-	KindImage  Kind = "image"
-	KindBinary Kind = "binary"
+	KindHTML Kind = "html"
+	KindPDF  Kind = "pdf"
+	KindJSON Kind = "json"
+	KindFeed Kind = "feed"
+	KindText Kind = "text"
+	// KindMarkdown is a body the origin served as Markdown (text/markdown). It is
+	// already the output format, so it passes through unfenced instead of being
+	// shown as a KindText code block.
+	KindMarkdown Kind = "markdown"
+	KindImage    Kind = "image"
+	KindBinary   Kind = "binary"
 )
 
 type Page struct {

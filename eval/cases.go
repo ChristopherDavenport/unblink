@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/christopherdavenport/unblink/internal/browser"
@@ -442,6 +443,30 @@ func (f fakeSearch) Search(_ context.Context, _ string, o search.Options) ([]sea
 		return f.results[:o.Count], nil
 	}
 	return f.results, nil
+}
+
+// negotiatingHost serves one page in two representations, chosen by the
+// request's Accept header the way an edge "Markdown for Agents" feature does:
+// Markdown when text/markdown is preferred, HTML otherwise (ADR 0021).
+func negotiatingHost() Host {
+	return func() (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/robots.txt", "/llms.txt", "/llms-full.txt":
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Vary", "Accept")
+			if strings.HasPrefix(r.Header.Get("Accept"), "text/markdown") {
+				w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+				_, _ = io.WriteString(w, "# Negotiated Guide\r\n\r\nNEGOTIATED-MARKDOWN-OK: the origin's own Markdown.\r\n\r\n- first point\r\n- second point\r\n")
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, `<html><head><title>Negotiated Guide</title></head><body><nav>NAV-JUNK</nav>`+
+				`<main><h1>Negotiated Guide</h1><p>NEGOTIATED-HTML-OK: the browser-facing page, with enough prose to survive reduction intact.</p></main></body></html>`)
+		}), nil
+	}
 }
 
 // contentHost serves a single fixture with an explicit Content-Type (raw bytes,
@@ -1137,6 +1162,28 @@ func cases() []Case {
 			Scorers: []Scorer{
 				Recall(0, "TEXT-SENTINEL-OK"),
 				KindIs(0, "text"),
+			},
+			Floor:    0.95,
+			MustPass: true,
+		},
+		{
+			// Markdown negotiation (ADR 0021), chosen per call so the case holds
+			// whatever the operator default is: prefer_markdown=true returns the
+			// origin's Markdown as-is (unfenced, LF endings); prefer_markdown=false
+			// re-reads the same URL as the HTML page — the two never share a cache entry.
+			Name: "read-markdown-negotiated",
+			Host: negotiatingHost(),
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"prefer_markdown": true}},
+				{Tool: "read", Path: "/", Args: map[string]any{"prefer_markdown": false}},
+			},
+			Scorers: []Scorer{
+				Recall(0, "# Negotiated Guide\n\nNEGOTIATED-MARKDOWN-OK", "- first point\n- second point"),
+				NoJunk(0, "NEGOTIATED-HTML-OK", "```", "\r"),
+				KindIs(0, "markdown"),
+				Recall(1, "NEGOTIATED-HTML-OK"),
+				NoJunk(1, "NEGOTIATED-MARKDOWN-OK"),
+				KindIs(1, "html"),
 			},
 			Floor:    0.95,
 			MustPass: true,

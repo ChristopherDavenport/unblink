@@ -36,6 +36,18 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Added
 
+- **Markdown content negotiation (`read`'s `prefer_markdown`,
+  `--prefer-markdown`).** A `text/markdown` response is now returned as-is
+  (`kind: "markdown"`), no longer wrapped in a code fence as plain text. `read`
+  gained a tri-state `prefer_markdown`: `true` asks the site for its Markdown
+  version (`Accept: text/markdown, text/html;q=0.9, …`), `false` fetches the
+  HTML page (also after a Markdown read of the same URL), and absent follows the
+  server default, which `--prefer-markdown` / `--prefer-markdown=false` set and
+  which is off for now. A site without a Markdown version answers with HTML and
+  the read is unchanged. No other tool, subresource, page-JS request, form
+  submit or discovery probe sends the header, and the URL cache keeps the two
+  representations apart. See
+  [ADR 0021](docs/decisions/0021-markdown-content-negotiation.md).
 - **Opt-in robots.txt enforcement (`--respect-robots`).** Off by default, so
   nothing changes unless an operator sets it. With it on, every agent-directed
   navigation is checked against the target origin's robots.txt (`*` group, path

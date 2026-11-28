@@ -227,6 +227,22 @@ func WithRedirectCheck(ctx context.Context, check func(*url.URL) error) context.
 	return context.WithValue(ctx, redirectCheckKey{}, check)
 }
 
+type acceptKey struct{}
+
+// WithAccept returns a context under which a Client sends accept as the request's
+// Accept header instead of its default — on the plain and the --tls-mimic paths
+// alike, and on every redirect hop of that request. It is how a caller negotiates
+// a representation (e.g. text/markdown) for one navigation: carrying it on the
+// context scopes it to that request, so a client shared with other traffic
+// (metadata probes, page-JS subrequests, form submits) keeps the default. An
+// empty accept is a no-op.
+func WithAccept(ctx context.Context, accept string) context.Context {
+	if accept == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, acceptKey{}, accept)
+}
+
 // RedirectRefusedError reports that a WithRedirectCheck hook refused a redirect
 // hop. It is a policy decision, not a network failure: it is never retried and
 // is logged at debug, not as a fetch error.
@@ -604,6 +620,11 @@ func (c *Client) roundTrip(req *http.Request) (int, string, http.Header, []byte,
 
 func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", c.userAgent)
+	// A caller-negotiated Accept (WithAccept) wins over both personas below, which
+	// only fill the header when it is unset.
+	if accept, ok := req.Context().Value(acceptKey{}).(string); ok && accept != "" {
+		req.Header.Set("Accept", accept)
+	}
 	if c.tlsMimic {
 		c.setChromeMimicHeaders(req)
 	} else if req.Header.Get("Accept") == "" {
