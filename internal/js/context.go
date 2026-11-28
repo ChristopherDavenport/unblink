@@ -128,7 +128,8 @@ type Context struct {
 	// can never land on the operation that follows it.
 	taskBudget time.Duration
 	wdMu       sync.Mutex
-	opRunning  bool // an operation's job (fn + settle) is on the loop; guarded by wdMu
+	opRunning  bool   // an operation's job (fn + settle) is on the loop; guarded by wdMu
+	opSeq      uint64 // bumped as each operation's job starts; guarded by wdMu
 	runaway    atomic.Bool
 }
 
@@ -211,18 +212,21 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 // legitimate), that job is page code and is interrupted. An interrupt unwinds
 // one task only — the page may schedule another — so consecutive over-budget
 // tasks are counted, and at liveMaxStrikes the context is stopped: the runtime
-// is closed and every later operation returns ErrRunaway. A probe answered in
-// time resets the count, so occasional long tasks never add up to a stop.
+// is closed and every later operation returns ErrRunaway. A task budget's worth
+// of promptly answered probes resets the count, so occasional long tasks never
+// add up to a stop.
 func (c *Context) watch() {
 	tick := time.NewTicker(liveProbeEvery)
 	defer tick.Stop()
 	strikes := 0
+	var quietSince time.Time // start of the current run of prompt, operation-free probes
 	for {
 		select {
 		case <-c.closedCh:
 			return
 		case <-tick.C:
 		}
+		opBefore, seqBefore := c.opState()
 		ack := make(chan struct{})
 		if !c.loop.RunOnLoop(func(vm *goja.Runtime) {
 			// Whatever task the watchdog interrupted has unwound by the time this
@@ -262,13 +266,32 @@ func (c *Context) watch() {
 			}
 		}
 		budget.Stop()
-		// Only a probe answered within the budget clears the count. One that
-		// was slow because an operation owned the loop says nothing about the
-		// page's own tasks either way.
-		if prompt {
+		// Strikes are forgiven only after the loop has answered promptly for a
+		// whole task budget, with no operation on it in that time. One prompt
+		// answer proves nothing: a callback that was just interrupted leaves the
+		// loop free until the page's next timer fires, and a probe landing in
+		// that gap is answered at once. An operation says nothing about the
+		// page's own tasks either way — a slow answer may be the operation's
+		// work, a prompt one its guard interrupting the page every 10ms.
+		opAfter, seqAfter := c.opState()
+		switch {
+		case !prompt:
+			quietSince = time.Time{}
+		case opBefore || opAfter || seqBefore != seqAfter:
+			// neutral
+		case quietSince.IsZero():
+			quietSince = time.Now()
+		case time.Since(quietSince) >= c.taskBudget:
 			strikes = 0
 		}
 	}
+}
+
+// opState reports whether an operation owns the loop, and how many have started.
+func (c *Context) opState() (running bool, seq uint64) {
+	c.wdMu.Lock()
+	defer c.wdMu.Unlock()
+	return c.opRunning, c.opSeq
 }
 
 // interruptIdleTask interrupts the task on the loop unless an operation owns it,
@@ -426,6 +449,7 @@ func (c *Context) run(ctx context.Context, waitSettle bool, cond *WaitCondition,
 		// cleared under the same lock so neither can unwind this operation.
 		c.wdMu.Lock()
 		c.opRunning = true
+		c.opSeq++
 		vm.ClearInterrupt()
 		c.wdMu.Unlock()
 		fn(vm)

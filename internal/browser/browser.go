@@ -1815,6 +1815,14 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 		return nil, err
 	}
 	v1, v1err := lc.DOMVersion(ctx)
+	// The runtime may have been stopped after the dispatch returned — while the
+	// page was being read back. The interaction's effect on the page is then
+	// unknowable and the runtime is gone, so this is the same answer as a stop
+	// found before the dispatch, not a success with a note attached.
+	if errors.Is(v1err, js.ErrRunaway) {
+		b.liveStopped(sess, lc)
+		return nil, errLiveStopped(sessionID)
+	}
 
 	return &InteractResult{
 		Summary:            summarize(np),
