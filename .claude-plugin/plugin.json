@@ -1,7 +1,7 @@
 {
   "name": "unblink",
   "description": "Pure-Go MCP server that turns any web page into clean, token-budgeted Markdown for AI agents — no Chromium, no V8, no Node.",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "author": {
     "name": "Christopher Davenport"
   },
@@ -23,7 +23,7 @@
         "run",
         "-i",
         "--rm",
-        "ghcr.io/christopherdavenport/unblink:0.25.0"
+        "ghcr.io/christopherdavenport/unblink:0.26.0"
       ]
     }
   }
