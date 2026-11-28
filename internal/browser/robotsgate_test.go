@@ -323,6 +323,23 @@ func TestRespectRobotsMap(t *testing.T) {
 	wantRefused(t, "map with a disallowed seed", err)
 }
 
+// map's guess at the /sitemap.xml convention is a fetch like any other: a site
+// that disallows it must not see the request.
+func TestRespectRobotsMapSitemapGuess(t *testing.T) {
+	g := newGateSite(t, gateRobots+"Disallow: /sitemap.xml\n")
+	b := newRobotsBrowser(t)
+
+	if _, err := b.Map(context.Background(), req(g.URL+"/home"), 50, 1, nil); err != nil {
+		t.Fatalf("map: %v", err)
+	}
+	if n := g.count("/sitemap.xml"); n != 0 {
+		t.Errorf("/sitemap.xml was requested %d time(s) although robots.txt disallows it", n)
+	}
+	if g.count("/home") == 0 {
+		t.Error("the allowed seed page was not fetched")
+	}
+}
+
 // RFC 9309 section 2.3.1: a 4xx robots.txt means no restrictions; a 5xx or a
 // failed fetch means everything is disallowed.
 func TestRespectRobotsUnavailable(t *testing.T) {

@@ -58,12 +58,14 @@ needs a gate.
   `fetch`/XHR). RFC 9309 governs what a crawler requests; these are the fetched
   document rendering itself, as in any browser, and many sites disallow asset
   or API paths for crawlers while expecting browsers to load them.
-- The origin-root discovery probes: `/robots.txt`, `/llms.txt`,
-  `/llms-full.txt`, and `map`'s guess at the `/sitemap.xml` convention.
-  robots.txt has to be fetched to be obeyed, and RFC 9309 makes it implicitly
-  allowed (an agent may also `read` it); the others are single well-known
-  metadata files a site publishes for exactly this kind of client. Declared
-  sitemap files *are* checked, like any other URL `map` fetches.
+- The origin-root discovery probes: `/robots.txt`, `/llms.txt` and
+  `/llms-full.txt`. robots.txt has to be fetched to be obeyed, and RFC 9309
+  makes it implicitly allowed (an agent may also `read` it); the llms files are
+  single well-known metadata files a site publishes for exactly this kind of
+  client. Sitemap files *are* checked, like any other URL `map` fetches: those
+  declared in robots.txt, sitemap-index children, and `map`'s guess at the
+  `/sitemap.xml` convention. A site that disallows `/sitemap.xml` has said not
+  to fetch it.
 - The `search` tool. It calls the configured provider; it does not fetch result
   pages. Reading a result is a navigation and is gated.
 - **Crawl-delay.** It is not part of RFC 9309. `--rate-limit` is the pacing

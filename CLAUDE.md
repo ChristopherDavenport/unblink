@@ -291,7 +291,7 @@ not `doFetch`).
   target origin's `*` group before the request is sent, refusing with
   `ErrRobotsDisallowed` → `robots_disallowed`; a 4xx robots.txt allows, 5xx or
   unreachable disallows for a 30s TTL per RFC 9309; subresources, page-JS
-  subrequests, the robots/llms/`/sitemap.xml` probes, `search` and Crawl-delay are
+  subrequests, the robots.txt/llms.txt probes, `search` and Crawl-delay are
   deliberately not gated). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in

@@ -213,20 +213,17 @@ func (b *Browser) harvestSitemaps(ctx context.Context, origin string, maxURLs in
 		}
 		item := queue[0]
 		queue = queue[1:]
-		// Under --respect-robots a declared sitemap file (robots.txt Sitemap: or a
-		// sitemap-index child) is checked like any URL the walk fetches. The
-		// /sitemap.xml convention guess is a discovery probe, like the robots.txt
-		// fetch above, and is not gated (ADR 0020).
-		fetchCtx := ctx
-		if !item.probe {
-			if err := b.gateURL(ctx, item.url); err != nil {
-				if errors.Is(err, ErrRobotsDisallowed) {
-					res.SkippedByRobots++
-				}
-				continue
+		// Under --respect-robots every sitemap file is checked like any URL the
+		// walk fetches: one declared by robots.txt Sitemap:, a sitemap-index child,
+		// and the /sitemap.xml convention guess alike. A site that disallows
+		// /sitemap.xml has said not to fetch it (ADR 0020).
+		if err := b.gateURL(ctx, item.url); err != nil {
+			if errors.Is(err, ErrRobotsDisallowed) && !item.probe {
+				res.SkippedByRobots++ // the guess was never a listed URL; don't count it
 			}
-			fetchCtx = b.navContext(ctx)
+			continue
 		}
+		fetchCtx := b.navContext(ctx)
 		fetches++
 		notify("harvesting sitemap " + item.url)
 
