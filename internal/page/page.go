@@ -90,6 +90,13 @@ type RenderDiag struct {
 	DeadlineHit   bool  // the JS budget elapsed before the page went quiet
 	DOMBusy       bool  // the DOM was still mutating when the snapshot was taken
 	TimersPending int   // one-shot timers still scheduled at snapshot (content may be behind one)
+	// SettledIdle: the settle closed because nothing could run more JS (ADR 0004).
+	SettledIdle bool
+	// TasksHeld is how long queued scheduler tasks held the settle open.
+	TasksHeld time.Duration
+	// TimersFastForwarded counts long one-shot timers that were run early
+	// because the page had otherwise gone quiet.
+	TimersFastForwarded int
 
 	// The render-collapse guard (ADR 0023). TextBefore/TextAfter are the bytes of
 	// content text the document held before its scripts ran and after (0/0 when

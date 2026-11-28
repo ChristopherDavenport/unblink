@@ -45,6 +45,10 @@ const (
 	// cut off as it was before the hold existed; a page that re-queues itself
 	// forever costs this much instead of the whole budget.
 	settleTaskHoldMax = 2 * time.Second
+	// settleFastForwardMax is a backstop on how many clamped timers one settle
+	// runs early. The real bound is the prelude's: it stops pulling timers in
+	// after a few fast-forward rounds, so nothing is left to run.
+	settleFastForwardMax = 512
 )
 
 // SettleTaskHoldMax is settleTaskHoldMax, exported for tests.
@@ -563,6 +567,9 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 	idleArmed := false          // previous check was provably idle; this one confirms
 	var taskHeld time.Duration  // how long pending queued tasks have held the window
 	var lastTick time.Time
+	var ffQuietSince time.Time // quiet-but-for-clamped-timers since
+	ffArmed := false           // previous check also saw only clamped timers live
+	fastForwards := 0
 	var tick func(*goja.Runtime)
 	tick = func(vm *goja.Runtime) {
 		if !condMet && b != nil && cond.satisfied(b, b.doc) {
@@ -610,6 +617,38 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 		} else {
 			quietSince = time.Time{}
 		}
+		// Fast-forward: the only thing still pending is long timers the clamp
+		// pulled in. Waiting out their clamped delay (most of the budget) adds
+		// latency and nothing else, so run them now, in the order they were
+		// due, one call each so microtasks drain between them as between any
+		// two timer tasks. "Nothing else" is judged the same two ways the
+		// settle itself is: at once when no other timer is live (nothing can
+		// run before them), otherwise after a quiet window. The prelude stops
+		// pulling timers in after a few rounds, which is what ends this.
+		if clamped > 0 && condMet && netIdle && domQuiet && !working && fastForwards < settleFastForwardMax && b != nil && b.timerFastForward != nil {
+			if ffQuietSince.IsZero() {
+				ffQuietSince = now
+			}
+			if (liveTimers == clamped && ffArmed) || now.Sub(ffQuietSince) >= settleQuietWindow {
+				ffQuietSince, ffArmed = time.Time{}, false
+				for i := 0; i < clamped && fastForwards < settleFastForwardMax; i++ {
+					fired, err := b.timerFastForward(goja.Undefined(), vm.ToValue(i == 0))
+					if err != nil || fired == nil || !fired.ToBoolean() {
+						break
+					}
+					fastForwards++
+				}
+				// The callbacks ran inside this tick; look again on the next
+				// one (their DOM changes and requests are activity like any).
+				if loop.SetTimeout(tick, settleConfirm) == nil {
+					closeDone()
+				}
+				return
+			}
+			ffArmed = true
+		} else {
+			ffQuietSince, ffArmed = time.Time{}, false
+		}
 		settled := settledIdle ||
 			(condMet && !quietSince.IsZero() && now.Sub(quietSince) >= settleQuietWindow)
 		if settled || now.After(deadline) {
@@ -626,6 +665,7 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 				stats.timersPending = clamped
 				stats.timersLive = liveTimers
 				stats.taskHeld = taskHeld
+				stats.fastForwards = fastForwards
 				stats.idleExit = settledIdle
 				if b != nil {
 					stats.pending = b.pending.Load()

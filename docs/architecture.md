@@ -1189,6 +1189,22 @@ a long delay (a poll loop, a retry backoff) became a busy loop against the page'
 origin for the rest of the budget. `TestTimerClampDoesNotSpinSelfRearmingTimer`
 holds it.
 
+**Timer fast-forward** (`settlePoll`, `internal/js/context.go`; the timer wrapper
+in `internal/js/globals.go`). Holding the settle open until a pulled-in timer
+fired meant every page with one long timer — a version poll, an idle animation,
+a 5-second "element not ready" guard — took the whole budget to read: 14 of 74
+corpus pages sat at 4.4 s, and the wait was 83% of all read time. The settle now
+runs pulled-in timers as soon as nothing else is going on (no request in flight,
+no DOM change, no queued task): at once when no other timer is live, otherwise
+after the 60 ms quiet window; in the order they were due, one task each. What
+bounds it is the pull-in itself, which is for content behind a timer and nothing
+else: a delay over 30 s is never pulled in; a callback is not pulled in again
+from inside its own pulled-in run, nor more than three times in all; a chain is
+followed four deep; and after four fast-forward rounds nothing more is pulled in.
+A timer that is not pulled in keeps its real delay — it does not fire in the
+render and does not hold the settle. `internal/js/timerff_test.go` holds each
+rule. No new async primitive: the fast-forward runs inside the settle's own tick.
+
 **Template contents** (`internal/js/templates.go`): the x/net/html tree keeps a
 `<template>`'s contents under the element; a browser keeps them in the content
 `DocumentFragment`, where no child accessor, selector query or tree walk on the

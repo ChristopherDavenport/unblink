@@ -53,7 +53,7 @@ const pageStateProbe = `<html><head></head><body><div id="out">x</div><script>
     setTimeout(function () {
       put('late', 'ran');
       document.getElementById('out').textContent = out.join(' | ');
-    }, 60000);
+    }, 20000);
   });
   document.getElementById('out').textContent = out.join(' | ');
 </script></body></html>`

@@ -879,25 +879,28 @@ func storageProviderFor(sess *session.Session) func(string) (js.Storage, js.Stor
 // observable without changing the read output.
 func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 	p.RenderDiag = &page.RenderDiag{
-		Framework:         diag.Framework,
-		Errors:            diag.Errors,
-		Upgrades:          diag.Upgrades,
-		WaitRequested:     diag.WaitRequested,
-		WaitMet:           diag.WaitMet,
-		PendingNavigation: diag.PendingNavigation,
-		NetRequests:       diag.NetRequests,
-		NetFailed:         diag.NetFailed,
-		NetBytes:          diag.NetBytes,
-		NetPending:        diag.NetPending,
-		DeadlineHit:       diag.DeadlineHit,
-		DOMBusy:           diag.DOMBusy,
-		TimersPending:     diag.TimersPending,
-		RequestsTruncated: diag.RequestsTruncated,
-		ConsoleTruncated:  diag.ConsoleTruncated,
-		SetupDur:          diag.SetupDur,
-		ExecDur:           diag.ExecDur,
-		SettleDur:         diag.SettleDur,
-		TotalDur:          diag.TotalDur,
+		Framework:           diag.Framework,
+		Errors:              diag.Errors,
+		Upgrades:            diag.Upgrades,
+		WaitRequested:       diag.WaitRequested,
+		WaitMet:             diag.WaitMet,
+		PendingNavigation:   diag.PendingNavigation,
+		NetRequests:         diag.NetRequests,
+		NetFailed:           diag.NetFailed,
+		NetBytes:            diag.NetBytes,
+		NetPending:          diag.NetPending,
+		DeadlineHit:         diag.DeadlineHit,
+		DOMBusy:             diag.DOMBusy,
+		TimersPending:       diag.TimersPending,
+		SettledIdle:         diag.SettledIdle,
+		TasksHeld:           diag.TasksHeld,
+		TimersFastForwarded: diag.TimersFastForwarded,
+		RequestsTruncated:   diag.RequestsTruncated,
+		ConsoleTruncated:    diag.ConsoleTruncated,
+		SetupDur:            diag.SetupDur,
+		ExecDur:             diag.ExecDur,
+		SettleDur:           diag.SettleDur,
+		TotalDur:            diag.TotalDur,
 	}
 	p.RenderDiag.Requests = make([]page.NetRequest, len(diag.Requests))
 	for i, r := range diag.Requests {
@@ -1013,6 +1016,11 @@ type ReadResult struct {
 	// server's HTML, as with render=false (ADR 0023). The other render
 	// diagnostics still describe the render that ran.
 	RenderDiscarded bool `json:"render_discarded,omitempty"`
+
+	// RenderTiming is where the JavaScript render's wall clock went. It is for
+	// harnesses and benchmarks (the corpus latency breakdown); it is never part
+	// of tool output. Nil when no render ran for this read.
+	RenderTiming *RenderTiming `json:"-"`
 
 	// ImageBytes/ImageMIME carry the raw image for the MCP layer to base64-encode,
 	// set only when the page is an image and the request asked for include_bytes.
@@ -1202,6 +1210,10 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		res.DOMBusy = d.DOMBusy
 		res.TimersPending = d.TimersPending
 		res.RenderDiscarded = d.Discarded
+		if d.TotalDur > 0 {
+			res.RenderTiming = &RenderTiming{Setup: d.SetupDur, Exec: d.ExecDur, Settle: d.SettleDur, Total: d.TotalDur,
+				SettledIdle: d.SettledIdle, TasksHeld: d.TasksHeld, TimersFastForwarded: d.TimersFastForwarded}
+		}
 	}
 	if req.IncludeBytes && pc.Kind == page.KindImage {
 		res.ImageBytes = pc.Raw
@@ -2238,4 +2250,18 @@ func (b *Browser) Forward(id string) (*BrowseResult, error) {
 // CloseSession removes a session, reporting whether one existed.
 func (b *Browser) CloseSession(id string) bool {
 	return b.sessions.Close(id)
+}
+
+// RenderTiming breaks a JavaScript render's wall clock into its phases: Setup
+// (runtime acquisition, bridge, preludes, binding), Exec (scripts, modules and
+// lifecycle events) and Settle (waiting for the page to go quiet).
+type RenderTiming struct {
+	Setup, Exec, Settle, Total time.Duration
+	// SettledIdle: the settle closed on the provable-idle tier (ADR 0004).
+	SettledIdle bool
+	// TasksHeld is how long queued scheduler tasks held the quiet window.
+	TasksHeld time.Duration
+	// TimersFastForwarded counts long one-shot timers run early because the
+	// page had otherwise gone quiet.
+	TimersFastForwarded int
 }

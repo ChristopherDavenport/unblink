@@ -220,6 +220,9 @@ type bridge struct {
 	// one-shot timers still scheduled (read on the settle-close tick for
 	// timers_pending) and all live wrapped timers (the provable-idle signal).
 	timerAudit goja.Callable
+	// timerFastForward runs the earliest-due clamped timer now and reports
+	// whether there was one. Registered alongside timerAudit.
+	timerFastForward goja.Callable
 
 	// pending counts in-flight off-loop network requests (brackets the keepalive
 	// window). A persistent live Context polls it to detect "network idle" since a

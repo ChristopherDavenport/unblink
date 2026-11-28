@@ -230,6 +230,8 @@ func writeScorecard(w io.Writer, rep report) {
 	fmt.Fprintln(w)
 	line(rep.Overall)
 
+	writeLatency(w, rep.Pages)
+
 	rs := rep.Replay
 	fmt.Fprintln(w, "lossy = passes reached although replay lost consequential requests; jsgain = scored pages where rendering raised recall by > 0.05.")
 	fmt.Fprintln(w, "A cell with lossy passes and jsgain 0 measured the served HTML, not the engine.")
@@ -361,4 +363,42 @@ func writeJSON(rep report) (string, error) {
 		return path, err
 	}
 	return path, os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+// writeLatency reports where the first full read of each page spent its time.
+// Replay answers from disk, so this is the engine's own latency: script
+// execution and the wait for the page to go quiet.
+func writeLatency(w io.Writer, pages []pageResult) {
+	var read, exec, settle []float64
+	var sumRead, sumExec, sumSettle int64
+	slow := 0
+	for _, p := range pages {
+		if p.ReadMS == 0 && p.PipelineErr != "" {
+			continue
+		}
+		read, exec, settle = append(read, float64(p.ReadMS)), append(exec, float64(p.ExecMS)), append(settle, float64(p.SettleMS))
+		sumRead, sumExec, sumSettle = sumRead+p.ReadMS, sumExec+p.ExecMS, sumSettle+p.SettleMS
+		if p.ReadMS > 1000 {
+			slow++
+		}
+	}
+	if len(read) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nlatency (first full read, ms): median %.0f, p90 %.0f, total %d — script execution median %.0f / total %d, settle median %.0f / total %d; %d page(s) over 1s\n",
+		median(read), percentile(read, 0.9), sumRead, median(exec), sumExec, median(settle), sumSettle, slow)
+}
+
+// percentile returns the p-quantile of v by nearest rank (0 for no values).
+func percentile(v []float64, p float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	s := append([]float64(nil), v...)
+	sort.Float64s(s)
+	i := int(p * float64(len(s)))
+	if i >= len(s) {
+		i = len(s) - 1
+	}
+	return s[i]
 }

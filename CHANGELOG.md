@@ -48,6 +48,18 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Changed
 
+- **A page with a long timer no longer takes the whole render budget to read.**
+  A one-shot timer that would outlast the budget is pulled in so content behind
+  it lands; the render then waited for it to fire, 600 ms before the budget
+  ended, so any page with a version poll, an idle animation or a timeout guard
+  took about 4.4 seconds. Pulled-in timers now run as soon as nothing else is
+  pending (no request, DOM change or queued task), in the order they were due.
+  Pull-ins are also narrower: never for a delay over 30 seconds, not again for a
+  callback re-arming itself, four deep for a chain, and none after four rounds.
+  On the real-page corpus the median read fell from 341 to 221 ms and the 90th
+  percentile from 4.5 to 2.4 s, with no change in content. See the 2026-11-28
+  amendment to [ADR 0004](docs/decisions/0004-provable-idle-settle.md).
+
 - **The pre-warm pool now prepares the whole runtime, not just its event loop.**
   Installing the DOM/Web API surface and running the preludes had grown to most
   of a small render's cost. A pooled runtime (`--js-prewarm`, default 4) now has

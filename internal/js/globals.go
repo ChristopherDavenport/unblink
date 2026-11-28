@@ -44,6 +44,11 @@ func (b *bridge) installGlobals(win *goja.Object) {
 	_ = vm.Set("__unblinkRegisterTimerAudit", func(call goja.FunctionCall) goja.Value {
 		if fn, ok := goja.AssertFunction(call.Argument(0)); ok {
 			b.timerAudit = fn
+			// Second argument: run the earliest-due clamped timer now (see
+			// settlePoll's fast-forward).
+			if ff, ok := goja.AssertFunction(call.Argument(1)); ok {
+				b.timerFastForward = ff
+			}
 		}
 		return goja.Undefined()
 	})
@@ -345,7 +350,11 @@ const preludeJS = `
   (function () {
     var nativeSet = window.setTimeout, nativeClear = window.clearTimeout;
     var nativeSetI = window.setInterval, nativeClearI = window.clearInterval;
-    var seq = 1, live = {};
+    var seq = 1, live = {}, fires = {};
+    // The clamp compares against the real clock, captured here before anything
+    // can replace Date.now: the page-visible clock may be pinned by a harness
+    // (Env.Now) and page code may patch Date; the render budget is real time.
+    var realNow = Date.now;
     // A one-shot timer whose delay would fire it after the render budget never
     // runs before the snapshot, so content behind it (deferred hydration, splash
     // timeouts, polling first ticks) silently vanishes. __unblinkTimerDeadlineMs
@@ -367,11 +376,38 @@ const preludeJS = `
     });
     var lateClamps = 32;
     // clamped tracks one-shot timers whose delay was pulled in because it
-    // exceeded the budget. The settle poll holds open while any remain unfired,
-    // so a clamped timer's deferred content lands before the snapshot (without
-    // it the poll would declare the page settled ~60ms in, long before the timer
-    // fires). Cleared when the timer runs or is cleared.
+    // exceeded the budget: id -> the instant it was originally due. The settle
+    // poll holds open while any remain unfired, so a clamped timer's deferred
+    // content lands before the snapshot, and once the page is otherwise quiet
+    // it runs them early in due order (fastForward) instead of waiting out the
+    // clamped delay. Cleared when the timer runs or is cleared.
     var clamped = {};
+    // A pull-in is for content behind a timer, not for a loop or a far-off
+    // event. A timer that re-arms itself with a long delay (a version poll, a
+    // keep-alive, an idle animation, a retry backoff) would otherwise be pulled
+    // in again each time it ran — a request per pull-in when the callback
+    // fetches. So:
+    //   - a delay over maxPullDelay is never pulled in (a refresh interval, a
+    //     session timeout, "at midnight" — not deferred content);
+    //   - a callback is not pulled in again from inside a pulled-in timer's own
+    //     callback, and never more than pullsPerCallback times in all;
+    //   - a chain of pulled-in timers is followed maxPullDepth deep;
+    //   - once the settle has fast-forwarded maxPullRounds times, nothing more
+    //     is pulled in at all (a loop that re-arms under fresh closures, or
+    //     from a short timer, ends there).
+    // A timer that is not pulled in keeps its real delay: it does not fire in
+    // this render and does not hold the settle open.
+    var pulls = (typeof WeakMap === 'function') ? new WeakMap() : null;
+    var pullDepth = 0, maxPullDepth = 4, pullsPerCallback = 3;
+    var pullRounds = 0, maxPullRounds = 4, maxPullDelay = 30000;
+    function mayPull(fn, ms) {
+      if (ms > maxPullDelay || pullRounds >= maxPullRounds || pullDepth >= maxPullDepth) return false;
+      if (!pulls || typeof fn !== 'function') return true;
+      var n = pulls.get(fn) || 0;
+      if (n >= pullsPerCallback || (n > 0 && pullDepth > 0)) return false;
+      pulls.set(fn, n + 1);
+      return true;
+    }
     function toFn(fn) { return typeof fn === 'function' ? fn : new Function(String(fn)); }
     // An exception that escapes a timer callback is uncaught: report it
     // (window.onerror, "error" listeners, diagnostics) instead of losing it in
@@ -385,20 +421,41 @@ const preludeJS = `
     window.setTimeout = function (fn, ms) {
       var args = Array.prototype.slice.call(arguments, 2), cb = toFn(fn), id = seq++;
       ms = +ms || 0;
-      var wasClamped = false;
+      var depth = 0;
       if (deadline > 0) {
-        var now = Date.now(), remaining = deadline - now;
+        var now = realNow(), remaining = deadline - now;
         if (remaining > 0) {
-          if (ms > remaining) { ms = remaining; wasClamped = true; clamped[id] = true; }
-        } else if (ms > budgetEnd - now && lateClamps > 0) {
-          lateClamps--; ms = 0; wasClamped = true; clamped[id] = true;
+          if (ms > remaining && mayPull(fn, ms)) { clamped[id] = now + ms; ms = remaining; depth = pullDepth + 1; }
+        } else if (ms > budgetEnd - now && lateClamps > 0 && mayPull(fn, ms)) {
+          lateClamps--; clamped[id] = now + ms; ms = 0; depth = pullDepth + 1;
         }
       }
-      live[id] = nativeSet(function () { delete live[id]; delete clamped[id]; run(cb, args); }, ms);
+      var fire = function () {
+        delete live[id]; delete clamped[id]; delete fires[id];
+        if (!depth) { run(cb, args); return; }
+        var outer = pullDepth; pullDepth = depth;
+        try { run(cb, args); } finally { pullDepth = outer; }
+      };
+      if (depth) fires[id] = fire;
+      live[id] = nativeSet(fire, ms);
       return id;
     };
+    // fastForward runs the clamped timer that was due first, now. The settle
+    // poll calls it when nothing else is going on — once per timer pending at
+    // that moment, newRound set on the first — so a page whose only pending
+    // work is long timers does not wait out most of the budget for them.
+    function fastForward(newRound) {
+      if (newRound) pullRounds++;
+      var best, due = Infinity, k;
+      for (k in clamped) { if (clamped[k] < due) { due = clamped[k]; best = k; } }
+      if (best === undefined) return false;
+      var h = live[best], fire = fires[best];
+      if (h !== undefined) nativeClear(h);
+      if (fire) fire(); else { delete live[best]; delete clamped[best]; }
+      return true;
+    }
     window.clearTimeout = function (id) {
-      var h = live[id]; if (h !== undefined) { delete live[id]; delete clamped[id]; delete tasks[id]; nativeClear(h); }
+      var h = live[id]; if (h !== undefined) { delete live[id]; delete clamped[id]; delete fires[id]; delete tasks[id]; nativeClear(h); }
     };
     // A queued task: a callback with no delay semantics at all, queued to run
     // as soon as the current one returns. setImmediate, MessageChannel and
@@ -450,7 +507,7 @@ const preludeJS = `
         for (k in live) t++;
         for (k in tasks) q++;
         return { c: c, t: t, q: q };
-      });
+      }, fastForward);
       delete window.__unblinkRegisterTimerAudit;
     }
   })();

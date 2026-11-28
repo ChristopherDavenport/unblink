@@ -148,3 +148,46 @@ each primitive complete; on the previous code the `setImmediate` and
 score moved by more than 0.002; `jest-docs`, `tailwind-docs` and
 `storybook-docs` now run their hydration to the end (16 → 356, 16 → 344 and
 23 → 132 requests), and total replay time rose from 88.5 s to 91.9 s.
+
+## Amendment (2026-11-28): pulled-in timers are run when the page is otherwise quiet
+
+The timer clamp pulls a one-shot timer that would outlast the budget in to
+600 ms before the budget ends, and the settle held open until it fired. That is
+correct for content behind a timer and expensive for everything else: on the
+real-page corpus 14 of 74 pages waited about 4.4 s for a version poll, an idle
+animation or a timeout guard, and settle wait was 83% of all read time (median
+read 341 ms, 90th percentile 4.5 s).
+
+The settle now **fast-forwards**: when the only thing pending is pulled-in
+timers — no request in flight, no DOM change, no queued task — it runs them, in
+the order they were originally due, one task each so microtasks drain between
+them. "Nothing else pending" uses the two tiers this ADR already has: at once
+when no other timer is live, after the quiet window otherwise.
+
+The invariant is unchanged and no primitive is added: the fast-forward is a
+call made from the settle's own tick, and everything the callback starts
+(requests, timers, tasks) goes through the same audit and `pending` bracket.
+
+What makes it safe to run timers early is a narrower definition of which timers
+are pulled in at all:
+
+- a delay over 30 s is never pulled in (refresh intervals, session timeouts);
+- a callback is not pulled in again from inside its own pulled-in run, and at
+  most three times in a render (a poll re-arming itself);
+- a chain of pulled-in timers is followed four deep;
+- after four fast-forward rounds nothing more is pulled in (loops that re-arm
+  under fresh closures or through a promise).
+
+A timer that is not pulled in keeps its real delay: it does not fire in the
+render and does not hold the settle. The post-deadline bound of 32 late
+pull-ins stays as a backstop.
+
+Measured on the corpus, same captures: median read 341 → 221 ms, 90th
+percentile 4.5 → 2.4 s, total 109 → 66 s; no page's recall or bucket changed.
+What remains above one second is JavaScript executing, not waiting.
+
+Known cost: a guard such as `setTimeout(reject, 5000)` was already pulled in to
+4.4 s; it now fires as soon as the page is quiet. If what it guards is a request,
+the request holds the fast-forward; if it is something the engine will never
+deliver (a custom element that is never defined), the guard fires sooner than a
+browser's would. That was true before, 600 ms earlier than the budget.

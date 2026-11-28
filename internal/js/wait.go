@@ -36,6 +36,7 @@ type settleStats struct {
 	timersLive    int           // all live wrapped timers at close (why the idle fast path did/didn't fire)
 	idleExit      bool          // closed by the provable-idle fast path, not the quiet-window heuristic
 	taskHeld      time.Duration // how long pending queued tasks held the quiet window open
+	fastForwards  int           // clamped timers run early because the page was otherwise quiet
 }
 
 // satisfied reports whether the condition holds in the tree rooted at doc. An empty

@@ -211,6 +211,12 @@ not `doFetch`).
     window open, capped at 2s per settle; `setTimeout(fn, 0)` and rAF do not.
     After the timer-clamp deadline only timers that outlast the budget are
     pulled in, 32 per render.
+  - *Pulled-in timers are fast-forwarded* (ADR 0004, 2026-11-28 amendment): the
+    settle runs them in due order as soon as nothing else is pending, instead of
+    waiting for their clamped delay. A pull-in is for content behind a timer
+    only: never a delay over 30s, not a callback re-arming itself, four deep,
+    four rounds (`mayPull` in the `globals.go` timer wrapper). Loosening any of
+    these turns polls into request loops against the page's origin.
   - *`js_errors` covers the whole render*, including errors after settle began.
   - *Property state reaches extraction.* Reflected IDL attributes are
     table-driven (`internal/js/reflect.go`), `el.style` is a view over the

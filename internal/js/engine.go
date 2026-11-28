@@ -466,6 +466,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		env.Diag.NetPending = int(stats.pending)
 		env.Diag.TimersPending = stats.timersPending
 		env.Diag.TasksHeld = stats.taskHeld
+		env.Diag.TimersFastForwarded = stats.fastForwards
 		env.Diag.SettledIdle = stats.idleExit && !interrupted
 		if b != nil {
 			if interrupted {

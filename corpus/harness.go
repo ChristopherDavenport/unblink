@@ -92,6 +92,17 @@ type pageResult struct {
 	Chromium    string      `json:"chromium,omitempty"`
 	CapturedAt  string      `json:"captured_at,omitempty"`
 	DurMS       int64       `json:"dur_ms"`
+
+	// Latency of the first full read (fetch from the archive, parse, render,
+	// reduce, emit) and where its JavaScript render spent it.
+	ReadMS       int64 `json:"read_ms"`
+	SetupMS      int64 `json:"setup_ms,omitempty"`
+	ExecMS       int64 `json:"exec_ms,omitempty"`
+	SettleMS     int64 `json:"settle_ms,omitempty"`
+	SettledIdle  bool  `json:"settled_idle,omitempty"`
+	TasksHeldMS  int64 `json:"tasks_held_ms,omitempty"`
+	TimersPend   int   `json:"timers_pending,omitempty"`
+	TimersFastFw int   `json:"timers_fast_forwarded,omitempty"`
 }
 
 // run replays every captured manifest page. It returns the results, the ids of
@@ -280,7 +291,9 @@ func runPage(ctx context.Context, p manifestPage, dir string) (res pageResult) {
 		return harnessFail(err)
 	}
 	const sid = "corpus"
+	readStart := time.Now()
 	full, rr, err := readAll(pctx, b, browser.Request{SessionID: sid, URL: p.URL, Render: true}, "full")
+	res.ReadMS = time.Since(readStart).Milliseconds()
 	if err != nil {
 		res.PipelineErr = err.Error()
 	} else {
@@ -295,6 +308,11 @@ func runPage(ctx context.Context, p manifestPage, dir string) (res pageResult) {
 		res.Framework, res.JSErrors = rr.Framework, rr.JSErrors
 		res.RenderBudgetHit, res.DOMBusy = rr.RenderBudgetHit, rr.DOMBusy
 		res.NetPending, res.NetFailed, res.NetDenied = rr.NetPending, rr.NetFailed, rr.NetDenied
+		res.TimersPend = rr.TimersPending
+		if t := rr.RenderTiming; t != nil {
+			res.SetupMS, res.ExecMS, res.SettleMS = t.Setup.Milliseconds(), t.Exec.Milliseconds(), t.Settle.Milliseconds()
+			res.SettledIdle, res.TasksHeldMS, res.TimersFastFw = t.SettledIdle, t.TasksHeld.Milliseconds(), t.TimersFastForwarded
+		}
 
 		if art, ar, err := readAll(pctx, b, cur, "article"); err == nil {
 			at := tokenize(stripMarkdown(art))
