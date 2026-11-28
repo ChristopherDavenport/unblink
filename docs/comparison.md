@@ -757,6 +757,145 @@ and `framework:ember` carry Mastodon and Discourse at 0.000 for unblink.
 Both tools report a median 1.00× of the links Chromium showed. Charlotte
 reports a form on 17 of the 33 pages whose oracle has one, unblink on 32.
 
+### Second run, 2026-11-27: after the output-fidelity changes
+
+The first run's losses were read page by page and the ones that were unblink's
+own output — not its engine — were fixed: touching inline elements run
+together, tables written as one line of cell text, `&lt;` entities in text,
+SVG chart labels concatenated, and a first page cut short before a long block.
+The same harness was then run again with the same Charlotte, the same Chromium,
+the same settings and the same 0.05 margin.
+
+Measured 2026-11-27 (second run) · same machine · unblink v0.25.0-36-g5e8e3bc
+(the `feat/output-fidelity` tip) · charlotte 0.6.3 on Node 25.0.0 · Google
+Chrome for Testing 151.0.7922.34 · 74 captured pages, 72 with a usable oracle,
+68 replay-sound for both tools · 3 runs, medians · tokens are o200k_base.
+
+**What changed between the runs is more than the output fixes.** The unblink
+build is 15 commits ahead of the first run's: six engine layers
+(live-session watchdog, interface objects, module globals, script-error fixes,
+`defer` ordering, select state) as well as the six output commits. Charlotte's
+numbers are a control: they moved by at most 0.003 anywhere. unblink's median
+latency is about twice the first run's (129 → 237 ms for the default call)
+while Charlotte's moved 3 ms. The output changes cannot account for that —
+`reduce` and `emit` together cost under a millisecond on these pages, and the
+Markdown conversion benchmark moved from 258 µs to 302 µs — so it comes from
+the engine layers or from load on the machine, and has not been run down.
+
+All 72 pages with a usable oracle:
+
+| configuration | recall | token recall | precision | pass ≥0.85 | tokens (median) | tokens (mean) | tokens as returned (median) | recall per 1k tokens | latency ms (median) | failed | lossy replay | run spread (mean / max) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `unblink/default` | 0.699 | 0.741 | 0.862 | 30 | 2,709 | 3,600 | 2,709 | 0.482 | 237 | 0 | 27 | 0.003 / 0.162 |
+| `unblink/article` | 0.819 | 0.862 | 0.846 | 42 | 2,466 | 12,694 | 2,466 | 0.480 | 258 | 0 | 26 | 0.005 / 0.387 |
+| `unblink/full` | 0.930 | 0.968 | 0.810 | 64 | 4,283 | 16,661 | 4,283 | 0.261 | 249 | 0 | 27 | 0.000 / 0.029 |
+| `charlotte/default` | 0.048 | 0.085 | 0.837 | 0 | 794 | 1,146 | 1,014 | 0.050 | 427 | 0 | 35 | 0.000 / 0.000 |
+| `charlotte/summary` | 0.218 | 0.366 | 0.743 | 3 | 5,888 | 17,257 | 6,346 | 0.038 | — | 0 | 37 | 0.000 / 0.001 |
+| `charlotte/full` | 0.961 | 0.984 | 0.671 | 66 | 8,775 | 26,522 | 9,015 | 0.137 | 432 | 0 | 35 | 0.002 / 0.109 |
+
+The 68 pages replay-sound for both tools:
+
+| configuration | recall | token recall | precision | pass ≥0.85 | tokens (median) | tokens (mean) | tokens as returned (median) | recall per 1k tokens | latency ms (median) | failed | lossy replay | run spread (mean / max) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `unblink/default` | 0.718 | 0.755 | 0.875 | 30 | 2,709 | 3,594 | 2,709 | 0.492 | 198 | 0 | 24 | 0.000 / 0.032 |
+| `unblink/article` | 0.847 | 0.886 | 0.863 | 42 | 2,708 | 13,203 | 2,708 | 0.491 | 217 | 0 | 24 | 0.000 / 0.000 |
+| `unblink/full` | 0.956 | 0.988 | 0.819 | 64 | 4,283 | 17,268 | 4,283 | 0.266 | 206 | 0 | 24 | 0.000 / 0.000 |
+| `charlotte/default` | 0.038 | 0.074 | 0.831 | 0 | 794 | 1,164 | 986 | 0.039 | 410 | 0 | 31 | 0.000 / 0.000 |
+| `charlotte/summary` | 0.203 | 0.350 | 0.754 | 3 | 5,888 | 17,715 | 6,346 | 0.036 | — | 0 | 33 | 0.000 / 0.001 |
+| `charlotte/full` | 0.969 | 0.988 | 0.682 | 64 | 8,775 | 27,415 | 9,015 | 0.139 | 415 | 0 | 31 | 0.001 / 0.037 |
+
+Head to head:
+
+| A | B | pages | A wins | tie | B wins | mean recall A | mean recall B | median tokens A | median tokens B | set |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `unblink/full` | `charlotte/full` | 68 | 2 | 60 | 6 | 0.956 | 0.969 | 4,283 | 8,775 | replay-sound for both |
+| `unblink/full` | `charlotte/full` | 72 | 3 | 60 | 9 | 0.930 | 0.961 | 4,283 | 8,775 | all usable-oracle |
+| `unblink/article` | `charlotte/full` | 68 | 2 | 29 | 37 | 0.847 | 0.969 | 2,708 | 8,775 | replay-sound for both |
+| `unblink/article` | `charlotte/full` | 72 | 3 | 29 | 40 | 0.819 | 0.961 | 2,466 | 8,775 | all usable-oracle |
+| `unblink/default` | `charlotte/full` | 68 | 0 | 21 | 47 | 0.718 | 0.969 | 2,709 | 8,775 | replay-sound for both |
+| `unblink/default` | `charlotte/full` | 72 | 1 | 21 | 50 | 0.699 | 0.961 | 2,709 | 8,775 | all usable-oracle |
+| `unblink/default` | `charlotte/default` | 68 | 67 | 1 | 0 | 0.718 | 0.038 | 2,709 | 794 | replay-sound for both |
+| `unblink/default` | `charlotte/default` | 72 | 69 | 3 | 0 | 0.699 | 0.048 | 2,709 | 794 | all usable-oracle |
+
+Against the first run, full output against full output over all 72 pages went
+from 3 wins / 56 ties / 13 losses to 3 / 60 / 9, and mean recall from 0.918 to
+0.930 (Charlotte 0.961 both times). One default `read` went from 0.684 to
+0.699 and is still the weak configuration.
+
+What moved, by cause:
+
+| page | configuration | first run | second run | cause |
+|---|---|---|---|---|
+| nextjs-learn | full | 0.697 | 0.855 | touching inline elements now separated (`00Introduction` → `00 Introduction`) |
+| svelte-docs | full | 0.904 | 0.987 | `<svelte:window>` no longer `&lt;svelte:window&gt;` |
+| elm-home | full | 0.914 | 1.000 | SVG chart labels separate |
+| solid-home | full | 0.912 | 0.960 | inline separation |
+| tanstack-query | full | 0.895 | 0.927 | inline separation |
+| jquery-ajax-api | default | 0.004 | 0.511 | first page filled (698 → 5,871 tokens); it had held only the site menu |
+| discourse-meta | full | 0.000 | 0.484 | engine layers (the app now boots), not the output changes |
+| nuxt-home | full | 0.940 | 0.882 | engine layers: hydration now survives and its result is scored, where the collapse guard used to return the server HTML |
+| devto-home, github-repo | default / full | — | ±0.05 | run-to-run variance on pages with post-load fetches; both were unsound or unstable in the first run too |
+
+The nine pages Charlotte still wins on full output: `mastodon-explore` (the
+app renders nothing), `discourse-meta`, `devto-home`, `storybook-docs`,
+`nuxt-home`, `nextjs-learn` (all with consequential replay losses for
+unblink), `lobsters-home` (relative timestamps differ with replay time, and a
+CSS-hidden duplicate comment count), `arstechnica-home` (the page formats
+story times with `toLocaleTimeString`, which the engine renders as
+`13:37:00` where Chromium shows `1:37 PM`) and `whatwg-dom`.
+
+#### One call: recall against the token budget
+
+The gap that matters most is the first row of the tables: what an agent gets
+from one `read(url)`. To separate its causes, every page was read once at
+each budget in each mode (one call, no cursor; same replay; tokens here are
+unblink's own estimate, not o200k):
+
+| mode | `max_tokens` | mean recall (72 pages) | pass ≥0.85 | tokens returned (median) | tokens returned (mean) | pages cut by the budget |
+|---|---|---|---|---|---|---|
+| article | 2,000 | 0.528 | 15 | 2,054 | 1,658 | 39 |
+| article | 4,000 | 0.651 | 26 | 2,401 | 2,461 | 23 |
+| **article** | **6,000 (default)** | **0.698** | **30** | **2,536** | **3,072** | **18** |
+| article | 9,000 | 0.735 | 32 | 2,536 | 3,729 | 15 |
+| article | 12,000 | 0.755 | 35 | 2,536 | 4,247 | 13 |
+| article | 16,000 | 0.771 | 37 | 2,536 | 4,842 | 9 |
+| article | 24,000 | 0.789 | 40 | 2,536 | 5,795 | 6 |
+| full | 2,000 | 0.416 | 13 | 2,107 | 1,933 | 61 |
+| full | 4,000 | 0.666 | 39 | 3,790 | 3,195 | 34 |
+| full | 6,000 | 0.730 | 45 | 3,911 | 3,932 | 22 |
+| full | 9,000 | 0.798 | 50 | 3,958 | 4,821 | 16 |
+| full | 12,000 | 0.827 | 51 | 3,958 | 5,433 | 15 |
+| full | 16,000 | 0.856 | 55 | 3,958 | 6,146 | 11 |
+| full | 24,000 | 0.877 | 57 | 3,958 | 7,265 | 9 |
+
+Reading it:
+
+- **Truncation** is 18 of 72 pages at the default budget. On those, one call
+  scored 0.361 in the first run against 0.891 following the cursor; the other
+  54 pages are not cut at all. Raising the budget costs nothing on the median
+  page (it is under 2,600 tokens either way) and is paid only by long pages.
+- **Article extraction** is the rest. Following the cursor to the end, article
+  mode is more than 0.05 below full mode on 30 pages. On 20 of them the
+  extraction holds 85% or more of the page's content region and what full mode
+  adds is navigation that the oracle's `main`/`body` text happens to include
+  (docs sites with an in-`main` sidebar): article mode is right and the oracle
+  is broader. On five the article really leaves content out — pkg.go.dev's
+  package reference (62% of the region kept, the index dropped), LWN's front
+  page (67%), and three landing pages (80–82%). pkg.go.dev, LWN and one landing
+  page now carry `article_coverage` and a note; the other two leave out under
+  1,000 bytes, the rule's floor. The remaining five are pages whose whole
+  article is under 1,000 tokens, where the difference is again mostly chrome.
+- The corpus is mostly documentation and its oracle is a landmark's whole
+  text, so it rewards full mode more than a corpus of news articles would. It
+  has no article-with-comments pages, the case the partial-article thresholds
+  were set to protect, which is why those thresholds were not moved.
+
+Neither default was changed. The measured options, for a decision: keeping
+article mode and raising the default budget to 12,000 gives 0.755 for 38% more
+tokens on average (nothing on the median page); switching the default to full
+mode at 6,000 gives 0.730 and 15 more passing pages for 28% more tokens, on a
+corpus biased toward it; both together give 0.827 for 77% more.
+
 ### What was not measured
 
 - **Memory.** unblink runs in the harness process here, so its footprint is
