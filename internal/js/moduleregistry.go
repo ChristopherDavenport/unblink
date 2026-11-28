@@ -243,7 +243,26 @@ func (r *moduleRegistry) evaluateInst(b *bridge, inst *moduleInstance) (goja.Val
 		spec := call.Argument(0).String()
 		durl, err := b.moduleResolve(url, spec)
 		if err != nil {
-			panic(vm.NewTypeError("cannot resolve %q from %s: %v", spec, url, err))
+			// The CommonJS wrapper's `require` parameter shadows a page global of
+			// the same name. In a real ES module a free `require` IS that global —
+			// an AMD loader's (Ember's loader.js, RequireJS), which the page calls
+			// with ids only it can resolve. A specifier the module system cannot
+			// resolve was therefore never one of this module's imports (a static
+			// import that does not resolve fails the module at instantiation,
+			// before any code runs): hand the call to the page's own require.
+			pageRequire := vm.GlobalObject().Get("require")
+			if g, ok := goja.AssertFunction(pageRequire); ok && (b.builtinRequire == nil || !pageRequire.SameAs(b.builtinRequire)) {
+				v, gerr := g(goja.Undefined(), call.Arguments...)
+				if gerr != nil {
+					var ex *goja.Exception
+					if errors.As(gerr, &ex) {
+						panic(ex.Value())
+					}
+					panic(vm.NewGoError(gerr))
+				}
+				return v
+			}
+			panic(vm.NewTypeError("cannot resolve %q from %s: %v", spec, inst.label(), err))
 		}
 		ns, err := r.evaluate(b, durl)
 		if err != nil {

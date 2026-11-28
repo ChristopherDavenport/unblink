@@ -291,11 +291,13 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// Extension content scripts share the page world (ADR 0010). Gather their
 		// hiding CSS once, then inject JS at each run_at around the page's own scripts.
 		b.injectContentScriptCSS()
+		b.readyState = "loading" // the page load begins (see setReadyState)
 		b.injectContentScripts(webext.RunAtStart)
 		// CSP unsafe-eval gate installs just before page scripts (after trusted
 		// extension content scripts, which keep eval).
 		b.installCSPEvalGate()
 		b.runScripts(scripts)
+		b.setReadyState("interactive") // parsing is done; modules and DOMContentLoaded follow
 		if len(modules) > 0 {
 			b.runModules(modules)
 		}

@@ -477,6 +477,29 @@ func TestModuleEvaluationErrorPropagates(t *testing.T) {
 	}
 }
 
+// A page-global `require` (an AMD loader such as Ember's loader.js) is what a
+// free `require` in an ES module refers to. The CommonJS wrapper must not
+// capture those calls: an id the module system cannot resolve goes to the page.
+func TestModulePageGlobalRequireIsNotShadowed(t *testing.T) {
+	page := `<html><body><div id="out"></div>
+		<script>
+			var registry = { "app/lib/api": { hello: "from-loader" } };
+			window.require = function (id) { if (!(id in registry)) throw new Error("loader: no module " + id); return registry[id]; };
+		</script>
+		<script type="module" src="/app.mjs"></script></body></html>`
+	out, _, diag := renderModules(t, page, map[string]string{
+		"https://example.com/app.mjs": `import { dep } from './dep.mjs';
+			function lookup(id) { return require(id); }
+			var missing = 'none';
+			try { lookup('app/lib/nope'); } catch (e) { missing = e.message; }
+			document.getElementById('out').textContent = dep + ',' + lookup('app/lib/api').hello + ',' + require("app/lib/api").hello + ',' + missing;`,
+		"https://example.com/dep.mjs": `export const dep = 'static-dep';`,
+	})
+	if out != "static-dep,from-loader,from-loader,loader: no module app/lib/nope" {
+		t.Errorf("page require was shadowed:\n%s\nerrors: %v", out, diag.Errors)
+	}
+}
+
 // With no page-global require, an unresolvable specifier is still an error.
 func TestModuleUnresolvableRequireStillFails(t *testing.T) {
 	out, _, _ := renderModules(t, `<html><body><div id="out">x</div><script type="module" src="/app.mjs"></script></body></html>`,

@@ -497,10 +497,17 @@ func (b *bridge) elementTargetPath(target *html.Node, composed bool) []pathEntry
 }
 
 func (b *bridge) dispatchOnNode(target *html.Node, ev *domEvent) bool {
-	return b.dispatch(b.elementTargetPath(target, ev.composed), ev)
+	path := b.elementTargetPath(target, ev.composed)
+	if ev.typ == "load" {
+		path = b.withoutWindow(path)
+	}
+	return b.dispatch(path, ev)
 }
 
 func (b *bridge) dispatchOnDocument(ev *domEvent) bool {
+	if ev.typ == "load" {
+		return b.dispatch([]pathEntry{{listeners: b.docListeners, jsValue: b.documentObj}}, ev)
+	}
 	return b.dispatch([]pathEntry{
 		{listeners: b.winListeners, jsValue: b.windowObj},
 		{listeners: b.docListeners, jsValue: b.documentObj},
@@ -571,9 +578,126 @@ func (b *bridge) callSafe(fn goja.Callable, this goja.Value, args ...goja.Value)
 	_, _ = fn(this, args...)
 }
 
-// fireLifecycle dispatches DOMContentLoaded (document, bubbling to window) and
-// load (window) after the page's scripts have run.
+// docReadyState is the value of document.readyState.
+func (b *bridge) docReadyState() string {
+	if b.readyState == "" {
+		return "complete"
+	}
+	return b.readyState
+}
+
+// setReadyState moves document.readyState forward and fires readystatechange
+// on the document. The page load is modelled as the three states a browser
+// goes through, at the points a browser reaches them:
+//
+//	loading      parser-inserted classic scripts are executing (runScripts)
+//	interactive  parsing is done: module scripts, then DOMContentLoaded
+//	complete     just before the window load event
+//
+// The whole document is already parsed when the first script runs, so a script
+// that sees "loading" can still reach every element — the state says where the
+// load sequence is, which is what libraries branch on ("if still loading, wait
+// for DOMContentLoaded; otherwise initialise now"). A constant "complete" sent
+// them down the initialise-now branch from a <head> script, before later scripts
+// had built the content they were meant to initialise.
+//
+// Deferred classic scripts run in document order with the rest and so see
+// "loading" where a browser says "interactive"; both precede DOMContentLoaded.
+func (b *bridge) setReadyState(state string) {
+	if b.readyState == state {
+		return
+	}
+	b.readyState = state
+	switch state {
+	case "loading":
+		return // the initial state: nothing changed yet
+	case "interactive":
+		b.markNavTiming("domInteractive")
+	case "complete":
+		b.markNavTiming("domComplete")
+	}
+	b.dispatchOnDocument(b.newEvent("readystatechange", false, false, b.documentObj))
+}
+
+// fireLifecycle finishes the load sequence after the page's scripts have run:
+// DOMContentLoaded (document, bubbling to window), readyState "complete", then
+// load (window).
 func (b *bridge) fireLifecycle() {
+	b.setReadyState("interactive") // idempotent: normally set once the classic scripts finished
+	b.markNavTiming("domContentLoadedEventStart")
 	b.dispatchOnDocument(b.newEvent("DOMContentLoaded", true, false, b.documentObj))
+	b.markNavTiming("domContentLoadedEventEnd")
+	b.setReadyState("complete")
+	b.markNavTiming("loadEventStart")
 	b.dispatchOnWindow(b.newEvent("load", false, false, b.windowObj))
+	b.markNavTiming("loadEventEnd")
+}
+
+// markNavTiming records "now" for one milestone of the page load on
+// performance.timing (epoch ms) and on the navigation PerformanceEntry (ms since
+// timeOrigin). The prelude builds both objects and exposes this one hook; the
+// values are this render's own clock, read at the moment the milestone happens.
+func (b *bridge) markNavTiming(name string) {
+	fn, ok := goja.AssertFunction(b.vm.Get("__unblinkNavMark"))
+	if !ok {
+		return
+	}
+	_, _ = fn(goja.Undefined(), b.vm.ToValue(name))
+}
+
+// queueUnhandledRejection schedules the HTML Standard's "notify about rejected
+// promises" step for p: once the current task and its microtasks are done, a
+// promise that is STILL without a handler gets an `unhandledrejection` event at
+// the window (error reporters and some frameworks' async error boundaries
+// listen for it). The pass is a zero-delay task on the page's own wrapped
+// setTimeout, so it is inside the timer audit like any other timer (ADR 0004)
+// and one pass covers every rejection of the turn.
+func (b *bridge) queueUnhandledRejection(p *goja.Promise) {
+	if b.jsSetTimeout == nil || len(b.winListeners["unhandledrejection"]) == 0 {
+		return // nobody is listening: nothing to schedule
+	}
+	b.rejectQueue = append(b.rejectQueue, p)
+	if b.rejectCheck {
+		return
+	}
+	b.rejectCheck = true
+	_, err := b.jsSetTimeout(goja.Undefined(), b.vm.ToValue(func(goja.FunctionCall) goja.Value {
+		b.rejectCheck = false
+		queue := b.rejectQueue
+		b.rejectQueue = nil
+		for _, q := range queue {
+			if _, unhandled := b.rejections[q]; !unhandled {
+				continue // a handler was attached in the meantime
+			}
+			ev := b.newEvent("unhandledrejection", false, true, b.windowObj)
+			_ = ev.js.Set("promise", b.vm.ToValue(q))
+			reason := q.Result()
+			if reason == nil {
+				reason = goja.Undefined()
+			}
+			_ = ev.js.Set("reason", reason)
+			b.dispatchOnWindow(ev)
+		}
+		return goja.Undefined()
+	}), b.vm.ToValue(0))
+	if err != nil {
+		b.rejectCheck = false
+		b.rejectQueue = nil
+	}
+}
+
+// withoutWindow drops the window from an event path. The DOM Standard's "get
+// the parent" for a document returns null for a `load` event: an element's load
+// (a script, an image, an SVG) is never seen by window listeners — not even
+// capturing ones — so `window.addEventListener('load', boot, true)` runs once,
+// for the page, and not again for every subresource.
+func (b *bridge) withoutWindow(path []pathEntry) []pathEntry {
+	out := path[:0:0]
+	for _, e := range path {
+		if e.jsValue == goja.Value(b.windowObj) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

@@ -29,7 +29,8 @@ func TestPrototypeIdentityAndGetPrototypeOf(t *testing.T) {
 	out := render(t, `<html><body><div id="out"></div>
 		<script>
 		  var el = document.getElementById('out');
-		  var ok = (Object.getPrototypeOf(el) === HTMLElement.prototype) &&
+		  var ok = (Object.getPrototypeOf(el) === HTMLDivElement.prototype) &&
+		           (Object.getPrototypeOf(HTMLDivElement.prototype) === HTMLElement.prototype) &&
 		           (el === document.getElementById('out')) &&     // wrapper identity
 		           (el.classList === el.classList);                // companion identity
 		  el.textContent = ok ? 'PASS' : 'FAIL';

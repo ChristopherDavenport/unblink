@@ -120,6 +120,19 @@ func (b *bridge) installGlobals(win *goja.Object) {
 	})
 	b.historyObj = hist
 	_ = hist.Set("length", 1)
+	// history.state is the current entry's state: null until a pushState/
+	// replaceState stores one. Routers read it back right after writing it
+	// (React Router's scroll restoration, Next's app router), so a missing
+	// property — undefined — made `history.state.key` throw.
+	b.defineGetter(hist, "state", func() goja.Value {
+		if b.historyPos >= 0 && b.historyPos < len(b.historyStack) {
+			if st := b.historyStack[b.historyPos].state; st != nil && !goja.IsUndefined(st) {
+				return st
+			}
+		}
+		return goja.Null()
+	})
+	_ = hist.Set("scrollRestoration", "auto")
 	_ = vm.Set("history", hist)
 	_ = win.Set("history", hist)
 
@@ -588,6 +601,14 @@ const preludeJS = `
   defEvent('PointerEvent', function (e, o) { e.clientX = o.clientX || 0; e.clientY = o.clientY || 0; e.button = o.button || 0; e.buttons = o.buttons || 0; e.detail = o.detail || 0; e.pointerType = o.pointerType || ''; e.pointerId = o.pointerId || 0; e.isPrimary = !!o.isPrimary; e.width = o.width || 0; e.height = o.height || 0; e.pressure = o.pressure || 0; });
   defEvent('KeyboardEvent', function (e, o) { e.key = o.key || ''; e.code = o.code || ''; e.keyCode = o.keyCode || 0; });
   defEvent('InputEvent', function (e, o) { e.data = (o.data != null) ? o.data : null; });
+  defEvent('StorageEvent', function (e, o) {
+    e.key = (o.key != null) ? String(o.key) : null;
+    e.oldValue = (o.oldValue != null) ? String(o.oldValue) : null;
+    e.newValue = (o.newValue != null) ? String(o.newValue) : null;
+    e.url = (o.url != null) ? String(o.url) : '';
+    e.storageArea = (o.storageArea != null) ? o.storageArea : null;
+  });
+  defEvent('PromiseRejectionEvent', function (e, o) { e.promise = o.promise; e.reason = o.reason; });
 
   // Minimal EventTarget + AbortController/AbortSignal (self-contained JS).
   function ETShim() { this.__l = {}; }

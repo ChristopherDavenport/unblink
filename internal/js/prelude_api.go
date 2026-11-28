@@ -184,6 +184,51 @@ const preludeAPIJS = `
     };
     window.performance = perf;
   }
+  // ---- Navigation Timing (Level 1 timing/navigation + the Level 2 entry) ----
+  //
+  // Values are this render's own clock, not a fabricated network profile. The
+  // document was fetched before the engine started, so every phase up to
+  // responseEnd collapses onto the time origin (start = end: nothing is claimed
+  // about durations that were not measured here). The DOM milestones are stamped
+  // as they happen by the bridge (markNavTiming → __unblinkNavMark) and read 0
+  // until then, exactly as a browser reports a milestone not yet reached.
+  (function () {
+    var perf = window.performance;
+    if (!perf || perf.timing) return;
+    var t0 = typeof perf.timeOrigin === 'number' ? perf.timeOrigin : Date.now();
+    var timing = { navigationStart: t0, unloadEventStart: 0, unloadEventEnd: 0, redirectStart: 0, redirectEnd: 0,
+      fetchStart: t0, domainLookupStart: t0, domainLookupEnd: t0, connectStart: t0, connectEnd: t0,
+      secureConnectionStart: 0, requestStart: t0, responseStart: t0, responseEnd: t0, domLoading: t0,
+      domInteractive: 0, domContentLoadedEventStart: 0, domContentLoadedEventEnd: 0, domComplete: 0,
+      loadEventStart: 0, loadEventEnd: 0 };
+    timing.toJSON = function () { var o = {}; for (var k in timing) if (typeof timing[k] === 'number') o[k] = timing[k]; return o; };
+    perf.timing = timing;
+    perf.navigation = { type: 0, redirectCount: 0, TYPE_NAVIGATE: 0, TYPE_RELOAD: 1, TYPE_BACK_FORWARD: 2, TYPE_RESERVED: 255,
+      toJSON: function () { return { type: 0, redirectCount: 0 }; } };
+    var nav = { name: (window.location && window.location.href) || '', entryType: 'navigation', startTime: 0, duration: 0,
+      initiatorType: 'navigation', type: 'navigate', redirectCount: 0, nextHopProtocol: '',
+      unloadEventStart: 0, unloadEventEnd: 0, redirectStart: 0, redirectEnd: 0, workerStart: 0,
+      fetchStart: 0, domainLookupStart: 0, domainLookupEnd: 0, connectStart: 0, connectEnd: 0, secureConnectionStart: 0,
+      requestStart: 0, responseStart: 0, responseEnd: 0, transferSize: 0, encodedBodySize: 0, decodedBodySize: 0,
+      domInteractive: 0, domContentLoadedEventStart: 0, domContentLoadedEventEnd: 0, domComplete: 0,
+      loadEventStart: 0, loadEventEnd: 0, serverTiming: [] };
+    nav.toJSON = function () { var o = {}; for (var k in nav) if (typeof nav[k] !== 'function') o[k] = nav[k]; return o; };
+    var getByType = perf.getEntriesByType, getAll = perf.getEntries, getByName = perf.getEntriesByName;
+    perf.getEntriesByType = function (t) { return t === 'navigation' ? [nav] : getByType.call(perf, t); };
+    perf.getEntries = function () { return [nav].concat(getAll.call(perf)); };
+    perf.getEntriesByName = function (n, t) {
+      var rest = getByName.call(perf, n, t);
+      return (n === nav.name && (t === undefined || t === 'navigation')) ? [nav].concat(rest) : rest;
+    };
+    Object.defineProperty(window, '__unblinkNavMark', { enumerable: false, configurable: true, writable: true, value: function (name) {
+      if (!(name in timing) || timing[name] !== 0) return;
+      var now = Date.now();
+      timing[name] = now;
+      nav[name] = now - t0;
+      if (name === 'loadEventEnd') nav.duration = now - t0;
+    } });
+  })();
+
   if (typeof window.PerformanceObserver === 'undefined') {
     window.PerformanceObserver = function () {};
     window.PerformanceObserver.prototype.observe = noop;
@@ -376,6 +421,12 @@ const preludeAPIJS = `
   window.Blob.prototype.text = function () { return Promise.resolve(utf8Decode(this.__bytes)); };
   window.Blob.prototype.arrayBuffer = function () { return Promise.resolve(bytesToArrayBuffer(this.__bytes)); };
   window.Blob.prototype.bytes = function () { return Promise.resolve(this.__bytes.slice()); };
+  // stream(): the blob's bytes as a one-chunk ReadableStream (resolved lazily —
+  // the Streams section below installs the constructor).
+  window.Blob.prototype.stream = function () {
+    var bytes = this.__bytes;
+    return new window.ReadableStream({ pull: function (c) { if (bytes.length > 0) c.enqueue(bytes.slice()); c.close(); } }, { highWaterMark: 0 });
+  };
   window.Blob.prototype.slice = function (start, end, type) {
     var len = this.__bytes.length;
     start = start === undefined ? 0 : (start < 0 ? Math.max(len + start, 0) : Math.min(start, len));
@@ -519,120 +570,356 @@ const preludeAPIJS = `
     window.FileReader = FR;
   }
 
-  // ---- Streams (buffer-backed, eager; no lazy backpressure) ----
+  // ---- Streams (in-memory queue; pull-driven, no byte streams) ----
   //
-  // read() resolves from an in-memory queue via a microtask (Promise), which the
-  // settle poll drains before it can observe idle — no timer/keepalive needed.
-  // A future *lazy* (network-backed) pull would have to route through the wrapped
-  // timer instead, or it would break settle correctness.
+  // A ReadableStream is a queue plus a list of pending reads. read() on an empty
+  // stream that is still open returns a PENDING promise, settled by the next
+  // enqueue()/close()/error() — never a premature {done: true}: a reader that sees
+  // done believes the producer hung up (React's Flight client throws "Connection
+  // closed"). Settle correctness (ADR 0004): a pending read is only a promise, not
+  // an async primitive — it holds nothing open. Whatever will eventually enqueue
+  // (a timer, a fetch callback, a later script) is already tracked by its own
+  // bracket, and a read nobody ever answers simply stays pending when the render
+  // settles. pull() and its continuation run on microtasks, which the settle poll
+  // drains before it can observe idle.
   if (typeof window.ReadableStream === 'undefined') {
-    var RS = function (source) {
+    var rsHWM = function (strategy) {
+      var h = strategy && strategy.highWaterMark;
+      return (typeof h === 'number' && h >= 0) ? h : 1;
+    };
+    var RS = function (source, strategy) {
       var self = this;
-      this.locked = false;
-      this.__q = [];
-      this.__closed = false;
-      this.__err = null;
-      var controller = {
-        enqueue: function (chunk) { if (!self.__closed) self.__q.push(chunk); },
-        close: function () { self.__closed = true; },
-        error: function (e) { self.__err = e; self.__closed = true; },
-        get desiredSize() { return 1; }
-      };
       source = source || {};
+      if (source.type !== undefined && source.type !== 'bytes') throw new RangeError('Invalid type is specified');
+      this.locked = false;
+      this.__q = [];           // buffered chunks
+      this.__waiters = [];     // pending read() requests: [resolve, reject]
+      this.__state = 'readable'; // 'readable' | 'closed' | 'errored'
+      this.__err = undefined;
+      this.__closeRequested = false;
+      this.__started = false;
+      this.__pulling = false;
+      this.__pullAgain = false;
+      this.__hwm = rsHWM(strategy);
       this.__source = source;
-      this.__controller = controller;
-      try { if (typeof source.start === 'function') source.start(controller); } catch (e) { this.__err = e; this.__closed = true; }
-    };
-    RS.prototype.getReader = function () {
-      var self = this;
-      if (self.locked) throw new TypeError('ReadableStream is locked');
-      self.locked = true;
-      var pulled = false;
-      function maybePull() {
-        if (!pulled && self.__q.length === 0 && !self.__closed && typeof self.__source.pull === 'function') {
-          pulled = true;
-          try { self.__source.pull(self.__controller); } catch (e) { self.__err = e; self.__closed = true; }
-        }
-      }
-      return {
-        read: function () {
-          maybePull();
-          if (self.__err) return Promise.reject(self.__err);
-          if (self.__q.length > 0) return Promise.resolve({ value: self.__q.shift(), done: false });
-          return Promise.resolve({ value: undefined, done: true });
+      this.__closedResolve = null; this.__closedReject = null;
+      this.__closedPromise = new Promise(function (res, rej) { self.__closedResolve = res; self.__closedReject = rej; });
+      this.__closedPromise.then(noop, noop); // never an unhandled rejection by itself
+      var controller = {
+        enqueue: function (chunk) {
+          if (self.__state !== 'readable' || self.__closeRequested) throw new TypeError('Cannot enqueue a chunk into a ' + (self.__state === 'readable' ? 'stream that is closing' : self.__state + ' stream'));
+          if (self.__waiters.length > 0) self.__waiters.shift()[0]({ value: chunk, done: false });
+          else self.__q.push(chunk);
+          self.__maybePull();
         },
-        cancel: function () { self.__closed = true; self.__q = []; return Promise.resolve(); },
-        releaseLock: function () { self.locked = false; },
-        closed: Promise.resolve()
+        close: function () {
+          if (self.__state !== 'readable' || self.__closeRequested) throw new TypeError('Cannot close a stream that is already closed, closing or errored');
+          self.__closeRequested = true;
+          if (self.__q.length === 0) self.__finish();
+        },
+        error: function (e) { self.__fail(e); },
+        get desiredSize() {
+          if (self.__state === 'errored') return null;
+          if (self.__state === 'closed') return 0;
+          return self.__hwm - self.__q.length;
+        }
       };
+      this.__controller = controller;
+      var started;
+      try { started = typeof source.start === 'function' ? source.start(controller) : undefined; }
+      catch (e) { this.__fail(e); throw e; }
+      Promise.resolve(started).then(function () { self.__started = true; self.__maybePull(); }, function (e) { self.__fail(e); });
     };
-    RS.prototype.cancel = function () { this.__closed = true; this.__q = []; return Promise.resolve(); };
+    RS.prototype.__finish = function () {
+      if (this.__state !== 'readable') return;
+      this.__state = 'closed';
+      var w = this.__waiters; this.__waiters = [];
+      for (var i = 0; i < w.length; i++) w[i][0]({ value: undefined, done: true });
+      this.__closedResolve(undefined);
+    };
+    RS.prototype.__fail = function (e) {
+      if (this.__state !== 'readable') return;
+      this.__state = 'errored'; this.__err = e; this.__q = [];
+      var w = this.__waiters; this.__waiters = [];
+      for (var i = 0; i < w.length; i++) w[i][1](e);
+      this.__closedReject(e);
+    };
+    RS.prototype.__maybePull = function () {
+      var self = this;
+      if (self.__state !== 'readable' || self.__closeRequested || !self.__started) return;
+      if (typeof self.__source.pull !== 'function') return;
+      if (self.__waiters.length === 0 && self.__q.length >= self.__hwm) return;
+      if (self.__pulling) { self.__pullAgain = true; return; }
+      self.__pulling = true;
+      var p;
+      try { p = self.__source.pull(self.__controller); } catch (e) { self.__fail(e); return; }
+      Promise.resolve(p).then(function () {
+        self.__pulling = false;
+        if (self.__pullAgain) { self.__pullAgain = false; self.__maybePull(); }
+      }, function (e) { self.__fail(e); });
+    };
+    RS.prototype.__read = function () {
+      var self = this;
+      if (self.__q.length > 0) {
+        var chunk = self.__q.shift();
+        if (self.__closeRequested && self.__q.length === 0) self.__finish();
+        else self.__maybePull();
+        return Promise.resolve({ value: chunk, done: false });
+      }
+      if (self.__state === 'closed') return Promise.resolve({ value: undefined, done: true });
+      if (self.__state === 'errored') return Promise.reject(self.__err);
+      var p = new Promise(function (res, rej) { self.__waiters.push([res, rej]); });
+      self.__maybePull();
+      return p;
+    };
+    RS.prototype.__cancel = function (reason) {
+      var self = this;
+      if (self.__state === 'closed') return Promise.resolve(undefined);
+      if (self.__state === 'errored') return Promise.reject(self.__err);
+      self.__q = [];
+      self.__finish();
+      var r;
+      try { r = typeof self.__source.cancel === 'function' ? self.__source.cancel(reason) : undefined; }
+      catch (e) { return Promise.reject(e); }
+      return Promise.resolve(r).then(function () { return undefined; });
+    };
+    var RSReader = function (stream) {
+      if (!(stream instanceof RS)) throw new TypeError('ReadableStreamDefaultReader can only be constructed with a ReadableStream');
+      if (stream.locked) throw new TypeError('ReadableStream is locked');
+      stream.locked = true;
+      this.__s = stream;
+      this.closed = stream.__closedPromise;
+    };
+    RSReader.prototype.read = function () {
+      if (!this.__s) return Promise.reject(new TypeError('This reader has been released'));
+      return this.__s.__read();
+    };
+    RSReader.prototype.cancel = function (reason) {
+      if (!this.__s) return Promise.reject(new TypeError('This reader has been released'));
+      return this.__s.__cancel(reason);
+    };
+    RSReader.prototype.releaseLock = function () {
+      var st = this.__s;
+      if (!st) return;
+      st.locked = false;
+      this.__s = null;
+      // Reads still pending on a released reader reject, as the standard requires.
+      var w = st.__waiters; st.__waiters = [];
+      var err = new TypeError('Reader was released');
+      for (var i = 0; i < w.length; i++) w[i][1](err);
+      var rel = Promise.reject(err); rel.then(noop, noop);
+      this.closed = rel;
+    };
+    RS.prototype.getReader = function (opts) {
+      if (opts && opts.mode !== undefined) throw new TypeError('BYOB readers are not supported');
+      return new RSReader(this);
+    };
+    RS.prototype.cancel = function (reason) {
+      if (this.locked) return Promise.reject(new TypeError('Cannot cancel a locked stream'));
+      return this.__cancel(reason);
+    };
     RS.prototype.tee = function () {
-      var mk = function (arr) { return new window.ReadableStream({ start: function (c) { for (var i = 0; i < arr.length; i++) c.enqueue(arr[i]); c.close(); } }); };
-      return [mk(this.__q.slice()), mk(this.__q.slice())];
-    };
-    RS.prototype.pipeTo = function (dest) {
       var reader = this.getReader();
-      var writer = dest && dest.getWriter ? dest.getWriter() : null;
-      function pump() {
-        return reader.read().then(function (r) {
-          if (r.done) { if (writer) writer.close(); return; }
-          if (writer) writer.write(r.value);
-          return pump();
+      var reading = false, c1, c2, done1 = false, done2 = false;
+      function pull() {
+        if (reading) return;
+        reading = true;
+        reader.read().then(function (r) {
+          reading = false;
+          if (r.done) {
+            if (!done1) { try { c1.close(); } catch (e) {} }
+            if (!done2) { try { c2.close(); } catch (e) {} }
+            return;
+          }
+          if (!done1) { try { c1.enqueue(r.value); } catch (e) {} }
+          if (!done2) { try { c2.enqueue(r.value); } catch (e) {} }
+        }, function (e) {
+          reading = false;
+          try { c1.error(e); } catch (x) {}
+          try { c2.error(e); } catch (x) {}
         });
       }
-      return pump();
+      var b1 = new RS({ start: function (c) { c1 = c; }, pull: pull, cancel: function (r) { done1 = true; if (done2) return reader.cancel(r); } });
+      var b2 = new RS({ start: function (c) { c2 = c; }, pull: pull, cancel: function (r) { done2 = true; if (done1) return reader.cancel(r); } });
+      return [b1, b2];
     };
-    RS.prototype.pipeThrough = function (pair) { this.pipeTo(pair.writable); return pair.readable; };
+    RS.prototype.pipeTo = function (dest, opts) {
+      opts = opts || {};
+      if (this.locked) return Promise.reject(new TypeError('Cannot pipe a locked stream'));
+      if (!dest || typeof dest.getWriter !== 'function') return Promise.reject(new TypeError('pipeTo destination must be a WritableStream'));
+      var reader = this.getReader();
+      var writer;
+      try { writer = dest.getWriter(); } catch (e) { reader.releaseLock(); return Promise.reject(e); }
+      function finish() { try { reader.releaseLock(); } catch (e) {} try { writer.releaseLock(); } catch (e) {} }
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) return opts.preventClose ? undefined : writer.close();
+          return Promise.resolve(writer.write(r.value)).then(pump);
+        });
+      }
+      return pump().then(function () { finish(); }, function (e) {
+        var after = function () { finish(); throw e; };
+        // An error on either side tears down the other (unless prevented).
+        var a = opts.preventAbort ? Promise.resolve() : Promise.resolve().then(function () { return writer.abort(e); });
+        var c = opts.preventCancel ? Promise.resolve() : Promise.resolve().then(function () { return reader.cancel(e); });
+        return Promise.all([a.then(noop, noop), c.then(noop, noop)]).then(after);
+      });
+    };
+    RS.prototype.pipeThrough = function (pair, opts) {
+      if (!pair || !pair.readable || !pair.writable) throw new TypeError('pipeThrough needs a {readable, writable} pair');
+      this.pipeTo(pair.writable, opts).then(noop, noop);
+      return pair.readable;
+    };
+    RS.prototype.values = function (opts) {
+      var reader = this.getReader();
+      var preventCancel = !!(opts && opts.preventCancel);
+      var it = {
+        next: function () {
+          return reader.read().then(function (r) { if (r.done) reader.releaseLock(); return r; });
+        },
+        'return': function (v) {
+          var p = preventCancel ? Promise.resolve() : reader.cancel(v);
+          return Promise.resolve(p).then(function () { reader.releaseLock(); return { value: v, done: true }; });
+        }
+      };
+      if (typeof Symbol === 'function' && Symbol.asyncIterator) it[Symbol.asyncIterator] = function () { return it; };
+      return it;
+    };
     if (typeof Symbol === 'function' && Symbol.asyncIterator) {
-      RS.prototype[Symbol.asyncIterator] = function () { var reader = this.getReader(); return { next: function () { return reader.read(); }, 'return': function () { reader.releaseLock(); return Promise.resolve({ done: true }); } }; };
+      RS.prototype[Symbol.asyncIterator] = RS.prototype.values;
     }
+    // ReadableStream.from(iterable | async iterable): one chunk per pull.
+    RS.from = function (iterable) {
+      var it;
+      if (iterable && typeof Symbol === 'function' && Symbol.asyncIterator && typeof iterable[Symbol.asyncIterator] === 'function') it = iterable[Symbol.asyncIterator]();
+      else if (iterable && typeof Symbol === 'function' && typeof iterable[Symbol.iterator] === 'function') it = iterable[Symbol.iterator]();
+      else throw new TypeError('ReadableStream.from needs an iterable');
+      return new RS({
+        pull: function (c) {
+          return Promise.resolve(it.next()).then(function (r) { if (r.done) c.close(); else c.enqueue(r.value); });
+        },
+        cancel: function (reason) { if (typeof it['return'] === 'function') return Promise.resolve(it['return'](reason)).then(noop); }
+      }, { highWaterMark: 0 });
+    };
     window.ReadableStream = RS;
+    window.ReadableStreamDefaultReader = RSReader;
   }
   if (typeof window.WritableStream === 'undefined') {
     var WSt = function (sink) {
+      var self = this;
       this.locked = false;
       sink = sink || {};
-      var controller = { error: noop };
-      try { if (typeof sink.start === 'function') sink.start(controller); } catch (e) {}
-      this.__sink = sink; this.__controller = controller;
+      this.__sink = sink;
+      this.__state = 'writable'; // 'writable' | 'closed' | 'errored'
+      this.__err = undefined;
+      this.__closedResolve = null; this.__closedReject = null;
+      this.__closedPromise = new Promise(function (res, rej) { self.__closedResolve = res; self.__closedReject = rej; });
+      this.__closedPromise.then(noop, noop);
+      var controller = { error: function (e) { self.__fail(e); } };
+      this.__controller = controller;
+      var started;
+      try { started = typeof sink.start === 'function' ? sink.start(controller) : undefined; }
+      catch (e) { this.__fail(e); throw e; }
+      // Every sink call is chained after the previous one, so writes are applied in
+      // order even when the sink is asynchronous.
+      this.__chain = Promise.resolve(started);
+      this.__chain.then(noop, function (e) { self.__fail(e); });
+    };
+    WSt.prototype.__fail = function (e) {
+      if (this.__state !== 'writable') return;
+      this.__state = 'errored'; this.__err = e;
+      this.__closedReject(e);
+    };
+    WSt.prototype.__write = function (chunk) {
+      var self = this;
+      if (self.__state === 'errored') return Promise.reject(self.__err);
+      if (self.__state === 'closed' || self.__closing) return Promise.reject(new TypeError('Cannot write to a closed stream'));
+      var p = self.__chain.then(function () {
+        if (self.__state === 'errored') throw self.__err;
+        if (typeof self.__sink.write === 'function') return self.__sink.write(chunk, self.__controller);
+      });
+      self.__chain = p.then(noop, function (e) { self.__fail(e); });
+      return p.then(function () { return undefined; });
+    };
+    WSt.prototype.__close = function () {
+      var self = this;
+      if (self.__state === 'errored') return Promise.reject(self.__err);
+      if (self.__state === 'closed' || self.__closing) return Promise.reject(new TypeError('Cannot close an already-closing stream'));
+      self.__closing = true;
+      var p = self.__chain.then(function () {
+        if (self.__state === 'errored') throw self.__err;
+        if (typeof self.__sink.close === 'function') return self.__sink.close(self.__controller);
+      }).then(function () { if (self.__state === 'writable') { self.__state = 'closed'; self.__closedResolve(undefined); } });
+      self.__chain = p.then(noop, function (e) { self.__fail(e); });
+      return p;
+    };
+    WSt.prototype.__abort = function (reason) {
+      var self = this;
+      if (self.__state !== 'writable') return Promise.resolve(undefined);
+      self.__fail(reason);
+      var r;
+      try { r = typeof self.__sink.abort === 'function' ? self.__sink.abort(reason) : undefined; }
+      catch (e) { return Promise.reject(e); }
+      return Promise.resolve(r).then(function () { return undefined; });
     };
     WSt.prototype.getWriter = function () {
       var self = this;
       if (self.locked) throw new TypeError('WritableStream is locked');
       self.locked = true;
+      var released = false;
+      function gone() { return Promise.reject(new TypeError('This writer has been released')); }
       return {
-        write: function (chunk) { try { if (typeof self.__sink.write === 'function') return Promise.resolve(self.__sink.write(chunk, self.__controller)); } catch (e) { return Promise.reject(e); } return Promise.resolve(); },
-        close: function () { try { if (typeof self.__sink.close === 'function') self.__sink.close(); } catch (e) {} return Promise.resolve(); },
-        abort: function () { try { if (typeof self.__sink.abort === 'function') self.__sink.abort(); } catch (e) {} return Promise.resolve(); },
-        releaseLock: function () { self.locked = false; },
-        closed: Promise.resolve(), ready: Promise.resolve(), desiredSize: 1
+        write: function (chunk) { return released ? gone() : self.__write(chunk); },
+        close: function () { return released ? gone() : self.__close(); },
+        abort: function (reason) { return released ? gone() : self.__abort(reason); },
+        releaseLock: function () { released = true; self.locked = false; },
+        closed: self.__closedPromise, ready: Promise.resolve(undefined),
+        get desiredSize() { return self.__state === 'errored' ? null : (self.__state === 'closed' ? 0 : 1); }
       };
     };
-    WSt.prototype.abort = function () { return Promise.resolve(); };
-    WSt.prototype.close = function () { return Promise.resolve(); };
+    WSt.prototype.abort = function (reason) {
+      if (this.locked) return Promise.reject(new TypeError('Cannot abort a locked stream'));
+      return this.__abort(reason);
+    };
+    WSt.prototype.close = function () {
+      if (this.locked) return Promise.reject(new TypeError('Cannot close a locked stream'));
+      return this.__close();
+    };
     window.WritableStream = WSt;
   }
   if (typeof window.TransformStream === 'undefined') {
     var TS = function (transformer) {
       transformer = transformer || {};
-      var readable = new window.ReadableStream({ start: noop });
+      var rc; // the readable side's controller: every output goes through it
+      var readable = new window.ReadableStream({ start: function (c) { rc = c; } });
+      var writable;
       var controller = {
-        enqueue: function (c) { readable.__q.push(c); },
-        terminate: function () { readable.__closed = true; },
-        error: function (e) { readable.__err = e; readable.__closed = true; }
+        enqueue: function (c) { rc.enqueue(c); },
+        terminate: function () { try { rc.close(); } catch (e) {} if (writable) writable.__fail(new TypeError('TransformStream terminated')); },
+        error: function (e) { rc.error(e); if (writable) writable.__fail(e); },
+        get desiredSize() { return rc.desiredSize; }
       };
-      var writable = new window.WritableStream({
+      var started;
+      try { started = typeof transformer.start === 'function' ? transformer.start(controller) : undefined; }
+      catch (e) { throw e; }
+      writable = new window.WritableStream({
+        start: function () { return started; },
         write: function (chunk) {
-          if (typeof transformer.transform === 'function') { try { transformer.transform(chunk, controller); } catch (e) { controller.error(e); } }
-          else readable.__q.push(chunk);
+          var r;
+          try {
+            if (typeof transformer.transform === 'function') r = transformer.transform(chunk, controller);
+            else rc.enqueue(chunk);
+          } catch (e) { rc.error(e); throw e; }
+          return Promise.resolve(r).then(noop, function (e) { rc.error(e); throw e; });
         },
         close: function () {
-          if (typeof transformer.flush === 'function') { try { transformer.flush(controller); } catch (e) {} }
-          readable.__closed = true;
-        }
+          var r;
+          try { r = typeof transformer.flush === 'function' ? transformer.flush(controller) : undefined; }
+          catch (e) { rc.error(e); throw e; }
+          return Promise.resolve(r).then(function () { try { rc.close(); } catch (e) {} }, function (e) { rc.error(e); throw e; });
+        },
+        abort: function (e) { rc.error(e); }
       });
-      try { if (typeof transformer.start === 'function') transformer.start(controller); } catch (e) {}
       this.readable = readable;
       this.writable = writable;
     };
@@ -745,6 +1032,8 @@ const preludeAPIJS = `
       var ser = serializeBody(body);
       this.__bytes = toU8(ser.data);
       if (!this.headers.has('content-type')) this.headers.set('content-type', ser.type);
+    } else if (typeof window.ReadableStream === 'function' && body instanceof window.ReadableStream) {
+      this.__stream = body; // drained on first consumption (resReady)
     } else {
       this.__text = String(body);
     }
@@ -752,18 +1041,65 @@ const preludeAPIJS = `
   var RES = window.Response.prototype;
   function resText(r) { return r.__text !== null ? r.__text : utf8Decode(r.__bytes || new Uint8Array(0)); }
   function resBytes(r) { return r.__bytes !== null ? r.__bytes : utf8Encode(r.__text || ''); }
-  RES.text = function () { this.bodyUsed = true; return Promise.resolve(resText(this)); };
-  RES.json = function () { this.bodyUsed = true; return Promise.resolve(resText(this)).then(JSON.parse); };
-  RES.arrayBuffer = function () { this.bodyUsed = true; return Promise.resolve(bytesToArrayBuffer(resBytes(this))); };
-  RES.bytes = function () { this.bodyUsed = true; return Promise.resolve(resBytes(this).slice()); };
+  // resReady resolves once the body is buffered. A Response built over a
+  // ReadableStream is drained here (chunks are bytes, or strings encoded as UTF-8).
+  function resReady(r) {
+    if (!r.__stream) return Promise.resolve(r);
+    if (r.__draining) return r.__draining;
+    var reader = r.__stream.getReader(), parts = [], total = 0;
+    r.__draining = (function pump() {
+      return reader.read().then(function (x) {
+        if (x.done) {
+          var out = new Uint8Array(total), off = 0;
+          for (var i = 0; i < parts.length; i++) { out.set(parts[i], off); off += parts[i].length; }
+          r.__bytes = out; r.__text = null; r.__stream = null;
+          return r;
+        }
+        var u = typeof x.value === 'string' ? utf8Encode(x.value) : toU8(x.value);
+        parts.push(u); total += u.length;
+        return pump();
+      });
+    })();
+    return r.__draining;
+  }
+  function resConsume(r) {
+    if (r.bodyUsed) return Promise.reject(new TypeError('Body has already been consumed'));
+    r.bodyUsed = true;
+    return resReady(r);
+  }
+  RES.text = function () { return resConsume(this).then(resText); };
+  RES.json = function () { return resConsume(this).then(resText).then(JSON.parse); };
+  RES.arrayBuffer = function () { return resConsume(this).then(function (r) { return bytesToArrayBuffer(resBytes(r)); }); };
+  RES.bytes = function () { return resConsume(this).then(function (r) { return resBytes(r).slice(); }); };
   RES.blob = function () {
-    this.bodyUsed = true;
-    var b = Object.create(window.Blob.prototype);
-    b.__bytes = resBytes(this).slice();
-    b.size = b.__bytes.length;
-    b.type = (this.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    return Promise.resolve(b);
+    var self = this;
+    return resConsume(this).then(function () {
+      var b = Object.create(window.Blob.prototype);
+      b.__bytes = resBytes(self).slice();
+      b.size = b.__bytes.length;
+      b.type = (self.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      return b;
+    });
   };
+  // body: the buffered payload as a one-chunk byte stream (the transport is
+  // request/response, so there is nothing to stream incrementally). A Response
+  // built over a stream hands that stream back. Null for a null-body status.
+  Object.defineProperty(RES, 'body', { configurable: true, enumerable: true, get: function () {
+    var self = this;
+    if (this.__stream) return this.__stream;
+    if (this.__bodyStream) return this.__bodyStream;
+    if (this.status === 204 || this.status === 205 || this.status === 304) return null;
+    if (typeof window.ReadableStream !== 'function') return null;
+    this.__bodyStream = new window.ReadableStream({
+      pull: function (c) {
+        var bytes = resBytes(self);
+        self.bodyUsed = true;
+        if (bytes.length > 0) c.enqueue(bytes.slice());
+        c.close();
+      }
+    }, { highWaterMark: 0 });
+    return this.__bodyStream;
+  } });
   RES.clone = function () {
     var r = Object.create(RES);
     r.status = this.status; r.statusText = this.statusText; r.ok = this.ok;
@@ -771,6 +1107,7 @@ const preludeAPIJS = `
     r.url = this.url; r.redirected = this.redirected; r.type = this.type;
     r.bodyUsed = false;
     r.__text = this.__text; r.__bytes = this.__bytes;
+    if (this.__stream) { var tee = this.__stream.tee(); this.__stream = tee[0]; r.__stream = tee[1]; }
     return r;
   };
   window.Response.json = function (data, init) {
@@ -1756,7 +2093,7 @@ const preludeAPIJS = `
   // still renders. A truthy getContext also satisfies the common
   // !!canvas.getContext feature test. webgl/webgpu stay null (permanent non-goal).
   (function () {
-    var htmlProto = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    var htmlProto = (window.HTMLElement && window.HTMLElement.prototype) || null;
     if (htmlProto && !('getContext' in htmlProto)) {
       var inert2d = function (canvas) {
         return {
@@ -1977,7 +2314,7 @@ const preludeAPIJS = `
     };
   }
   (function () {
-    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    var ep = (window.HTMLElement && window.HTMLElement.prototype) || null;
     if (ep && typeof ep.animate !== 'function') {
       ep.animate = function (keyframes, options) {
         var anim = new window.Animation(new window.KeyframeEffect(this, keyframes, options), null);
@@ -2290,7 +2627,7 @@ const preludeAPIJS = `
   // new AudioContext() at boot keeps running (and its surrounding DOM renders)
   // instead of throwing. Nothing is ever decoded or played.
   (function () {
-    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    var ep = (window.HTMLElement && window.HTMLElement.prototype) || null;
     if (ep && typeof ep.play !== 'function') {
       ep.play = function () { return Promise.resolve(); };
       ep.pause = noop;
@@ -2457,7 +2794,7 @@ const preludeAPIJS = `
   // View Transitions run the update callback synchronously (so a router's new
   // view materializes) and resolve.
   (function () {
-    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    var ep = (window.HTMLElement && window.HTMLElement.prototype) || null;
     if (ep && typeof ep.showPopover !== 'function') {
       ep.showPopover = noop; ep.hidePopover = noop;
       ep.togglePopover = function (force) { return force !== undefined ? !!force : true; };
@@ -2910,6 +3247,15 @@ const preludeAPIJS = `
     RelativeTimeFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', numeric: this.__o.numeric || 'always', style: this.__o.style || 'long' }; };
     RelativeTimeFormat.supportedLocalesOf = function () { return ['en-US']; };
 
+    // Number.prototype.toLocaleString(locales, options) is Intl.NumberFormat's
+    // format. The engine's built-in ignores locales and — worse — reads the first
+    // argument as a radix, so the everyday n.toLocaleString('en-US') threw a
+    // RangeError and took the surrounding render with it; with no argument it
+    // returned the number ungrouped ("6574" for "6,574").
+    Number.prototype.toLocaleString = function (locales, options) {
+      return new NumberFormat(locales, options).format(Number(this));
+    };
+
     window.Intl = {
       DateTimeFormat: DateTimeFormat,
       NumberFormat: NumberFormat,
@@ -2932,6 +3278,8 @@ const preludeAPIJS = `
       var ev;
       if (/mouse/i.test(iface)) ev = new MouseEvent('');
       else if (/custom/i.test(iface)) ev = new CustomEvent('');
+      else if (/^storage/i.test(iface) && typeof StorageEvent === 'function') ev = new StorageEvent('');
+      else if (/^keyboard/i.test(iface)) ev = new KeyboardEvent('');
       else ev = new Event('');
       ev.__uninitialized = true; // dispatching before initEvent must throw InvalidStateError
       ev.initEvent = function (type, bubbles, cancelable) {
@@ -2942,6 +3290,20 @@ const preludeAPIJS = `
       };
       ev.initMouseEvent = function (type, bubbles, cancelable) {
         ev.initEvent(type, bubbles, cancelable);
+      };
+      ev.initUIEvent = function (type, bubbles, cancelable, view, detail) {
+        ev.initEvent(type, bubbles, cancelable); ev.view = view || null; ev.detail = detail || 0;
+      };
+      ev.initKeyboardEvent = function (type, bubbles, cancelable) { ev.initEvent(type, bubbles, cancelable); };
+      // The legacy initialiser cross-tab storage shims use to synthesise a
+      // 'storage' event (createEvent('StorageEvent') + initStorageEvent).
+      ev.initStorageEvent = function (type, bubbles, cancelable, key, oldValue, newValue, url, storageArea) {
+        ev.initEvent(type, bubbles, cancelable);
+        ev.key = (key != null) ? String(key) : null;
+        ev.oldValue = (oldValue != null) ? String(oldValue) : null;
+        ev.newValue = (newValue != null) ? String(newValue) : null;
+        ev.url = (url != null) ? String(url) : '';
+        ev.storageArea = (storageArea != null) ? storageArea : null;
       };
       return ev;
     };

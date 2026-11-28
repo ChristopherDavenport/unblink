@@ -64,6 +64,44 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   calls. `Crawl-delay` is still only reported; pace with `--rate-limit`. See
   [ADR 0020](docs/decisions/0020-opt-in-robots-enforcement.md).
 
+### Fixed
+
+- **JavaScript engine: DOM and Web API gaps found by the real-page corpus.** Each
+  of these stopped a mainstream framework from booting or hydrating, or made a page
+  update the engine could not see:
+  - `ReadableStream.read()` on an open, empty stream now stays pending until the
+    producer enqueues (it resolved `{done: true}`, which React's Flight client reads
+    as "Connection closed" — no Next.js App Router page hydrated). `tee()`,
+    `pipeTo()`/`pipeThrough()` and `TransformStream` go through the controller;
+    `Response.body`, `Blob.stream()`, `new Response(stream)` and
+    `ReadableStream.from()` are new.
+  - The ParentNode and ChildNode mixins exist on every interface that has them:
+    `append`/`prepend`/`replaceChildren` and `querySelector(All)`/`children`/
+    `getElementById` on `DocumentFragment` (`template.content`, range and created
+    fragments), `ShadowRoot` and parsed documents; `before`/`after`/`replaceWith`/
+    `remove` on elements, text and comment nodes. `new DocumentFragment()`,
+    `new Text()` and `new Comment()` construct real nodes. `ShadowRoot` is a global
+    and a `DocumentFragment`.
+  - Every element is an instance of its tag's interface (`HTMLScriptElement`, …),
+    `Object.prototype.toString.call(el)` names it, and `constructor.name` no longer
+    exposes a Go symbol.
+  - `innerText`/`outerText` exist (a layout-free approximation on read, exact on
+    write). `textContent` on a text or comment node reads and writes its data.
+  - `document.readyState` goes `loading` → `interactive` → `complete` with
+    `readystatechange`, where it was a constant `complete`.
+  - `el.attributes` is live and `removeAttributeNode`/`setAttributeNode` exist;
+    `classList` is a full, live `DOMTokenList` and `link.relList.supports()` answers
+    from what the engine acts on; `document.createNodeIterator`, `document.scripts`/
+    `images`/`links`, `document.domain`, `history.state`, `StorageEvent`,
+    `performance.timing`/`navigation` and the navigation timing entry are new.
+  - `<html>`/`<body>` report the constant 1280×720 viewport rect; element scroll
+    methods exist and `scrollTop` is writable.
+  - `n.toLocaleString('en-US')` formats (it threw a `RangeError`).
+  - `unhandledrejection` is dispatched to window listeners; an element's `load`
+    event no longer reaches window listeners.
+  - A page-global `require` (an AMD loader) is no longer shadowed inside module
+    scripts.
+
 ## v0.25.0 — 2026-11-27
 
 ### Added

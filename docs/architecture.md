@@ -941,7 +941,20 @@ return zeros/empty so framework probes don't crash; no pixels are ever computed.
 The **viewport environment**, by contrast, is now a truthful constant (Phase 21):
 `window.innerWidth`/`screen`/`devicePixelRatio` report a fixed 1280×720@1x desktop
 and `matchMedia` genuinely evaluates queries against it, so responsive code takes
-its real branch instead of the always-false fallback. Shadow DOM is **encapsulated
+its real branch instead of the always-false fallback. The same constant is what the
+**viewport root** reports: the live document's `<html>` and `<body>` answer
+`getBoundingClientRect()` with the 0,0–1280×720 rect and `client*`/`offset*`/
+`scroll*` width and height with 1280/720, and `document.scrollingElement` is
+`<html>` (`isViewportRoot`, `internal/js/proto.go`). That is still not layout — no
+other element has a size, and a detached `<html>`/`<body>` (DOMParser,
+`createHTMLDocument`) stays zero — but it makes the root agree with
+`innerWidth`/`innerHeight`, and it gives code that climbs ancestors looking for a box
+with height (a scroll-spy, a sticky header) somewhere to stop: with every rect zero
+such a walk ran off the top of the tree into `document`, which has no
+`getBoundingClientRect`, and the thrown error took a hydrated page down to its error
+boundary. Scrolling is a no-op everywhere (`scrollTo`/`scroll`/`scrollBy`/
+`scrollIntoView` exist on elements and the window; `scrollTop`/`scrollLeft` accept a
+write and stay 0). Shadow DOM is **encapsulated
 and composed** (Phase 23, ADR 0005): each shadow root is a detached subtree — page-JS
 `document.querySelector` respects the boundary — and a compose pass flattens it,
 resolving `<slot>` distribution, into the light tree so extraction still sees
