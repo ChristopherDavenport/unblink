@@ -112,6 +112,11 @@ type oracle struct {
 	// TransparentHidden counts the opacity:0 subtrees left out of BodyText and
 	// MainText (see oracleJS).
 	TransparentHidden int `json:"transparent_hidden"`
+	// ShadowComposed is true when BodyText/MainText were read across open shadow
+	// roots (the composed tree) because plain innerText stops at a shadow
+	// boundary. False means the page has no open shadow root and the text is
+	// innerText exactly.
+	ShadowComposed bool `json:"shadow_composed"`
 	// Page-shape counts the manifest's feature cells are checked against: data
 	// tables (visible, two rows or more), <details> elements, <text> elements
 	// inside inline SVG, elements carrying an on* handler attribute, and the

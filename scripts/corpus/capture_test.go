@@ -19,8 +19,17 @@ const syntheticPage = `<!doctype html><html><head><title>Synthetic</title></head
 <p>Visible paragraph.</p>
 <div style="opacity:0"><span>Parked Author</span><span>&lt;p&gt;parked &amp;quot;raw&amp;quot; markup&lt;/p&gt;</span></div>
 <p id="late">not yet</p>
+<x-card><span slot="title">Slotted title</span>Light body text<span slot="unused">never assigned</span></x-card>
 </main>
 <script>
+customElements.define('x-card', class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({mode: 'open'}).innerHTML =
+      '<style>.gone{display:none}</style><h2><slot name="title"></slot></h2>' +
+      '<p>Shadow only text</p><p class="gone">Shadow hidden text</p><div><slot></slot></div>';
+  }
+});
 console.error('page said', {code: 7});
 setTimeout(function () { throw new Error('thrown later'); }, 50);
 Promise.reject(new Error('rejected'));
@@ -105,5 +114,29 @@ func TestSettleWaitsForInflightScript(t *testing.T) {
 	}
 	if o.SettleRule != settleRule {
 		t.Errorf("settle_rule = %q", o.SettleRule)
+	}
+}
+
+// Text that exists only inside a shadow tree is on screen and must be in the
+// oracle; innerText alone stops at the host.
+func TestOracleReadsAcrossShadowRoots(t *testing.T) {
+	o, _ := captureSynthetic(t, 0)
+	if !o.ShadowComposed {
+		t.Fatal("shadow_composed = false on a page with an open shadow root")
+	}
+	for _, text := range []string{o.MainText, o.BodyText} {
+		for _, want := range []string{"Shadow only text", "Slotted title", "Light body text", "Visible heading", "arrived late"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("oracle text lacks %q: %q", want, text)
+			}
+		}
+		for _, not := range []string{"Shadow hidden text", "never assigned", "parked", "display:none"} {
+			if strings.Contains(text, not) {
+				t.Errorf("oracle text carries %q: %q", not, text)
+			}
+		}
+		if strings.Count(text, "Slotted title") != 1 {
+			t.Errorf("slotted text appears %d times: %q", strings.Count(text, "Slotted title"), text)
+		}
 	}
 }

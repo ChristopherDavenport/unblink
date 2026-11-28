@@ -60,7 +60,61 @@ const oracleJS = `(() => {
       transparent++;
     }
   }
-  const txt = el => (el && el.innerText) || '';
+  // innerText stops at a shadow boundary: a host's innerText is its light
+  // children's, so text that lives in a shadow tree (a whole app, on a page
+  // built as one custom element) is missing from it. Where an element holds an
+  // open shadow root somewhere below it, walk the composed tree instead —
+  // shadow children in place of light ones, slots replaced by what is assigned
+  // to them — and fall back to innerText for every subtree without one, so
+  // ordinary pages read exactly as before.
+  const holdsShadow = new Set();
+  let composed = 0;
+  const findHosts = root => {
+    for (const el of root.querySelectorAll('*')) {
+      if (!el.shadowRoot) continue;
+      composed++;
+      for (let n = el; n; n = n.parentNode || n.host) holdsShadow.add(n);
+      findHosts(el.shadowRoot);
+    }
+  };
+  findHosts(document);
+  const SKIP = {SCRIPT: 1, STYLE: 1, TEMPLATE: 1, NOSCRIPT: 1, HEAD: 1};
+  const composedText = node => {
+    if (node.nodeType === 3) {
+      const p = node.parentElement;
+      return !p || getComputedStyle(p).visibility === 'visible' ? node.data : '';
+    }
+    if (node.nodeType !== 1 || SKIP[node.tagName]) return '';
+    if (node.tagName === 'BR') return '\n';
+    const st = getComputedStyle(node);
+    if (st.display === 'none') return '';
+    let kids;
+    if (node.tagName === 'SLOT') {
+      kids = node.assignedNodes({flatten: true});
+      if (!kids.length) kids = [...node.childNodes];
+    } else if (node.shadowRoot) {
+      kids = [...node.shadowRoot.childNodes];
+    } else if (!holdsShadow.has(node)) {
+      // No shadow root below. innerText is CSS-aware only for a rendered
+      // element; a display:contents one has no box of its own, so walk it.
+      // The same goes for a shadow-tree element with a <slot> below it: its
+      // innerText does not include what is slotted in.
+      const slotted = node.getRootNode() instanceof ShadowRoot && node.querySelector('slot');
+      if (st.display !== 'contents' && !slotted) return node.innerText || '';
+      kids = [...node.childNodes];
+    } else {
+      kids = [...node.childNodes];
+    }
+    let out = '';
+    for (const k of kids) out += composedText(k);
+    const inline = st.display.startsWith('inline') || st.display === 'contents';
+    return inline ? out : '\n' + out + '\n';
+  };
+  const txt = el => {
+    if (!el) return '';
+    if (!holdsShadow.has(el)) return el.innerText || '';
+    return composedText(el).replace(/[ \t]*\n[ \t\n]*/g, '\n').trim();
+  };
   const longest = sel => {
     let best = null, n = 0;
     for (const el of document.querySelectorAll(sel)) {
@@ -98,6 +152,7 @@ const oracleJS = `(() => {
     charset: document.characterSet,
     user_agent: navigator.userAgent,
     transparent_hidden: transparent,
+    shadow_composed: composed > 0,
     tables: [...document.querySelectorAll('table')].filter(t => t.rows.length >= 2 && vis(t)).length,
     details: document.querySelectorAll('details').length,
     svg_texts: document.querySelectorAll('svg text').length,
