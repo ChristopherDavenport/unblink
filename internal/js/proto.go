@@ -162,6 +162,7 @@ func (b *bridge) installPrototypes() {
 	b.installElementInterfaces()
 	b.installXPath()
 	b.installURLMembers()
+	b.installSelect()
 	b.installDOMGaps()
 
 	for name, proto := range map[string]*goja.Object{

@@ -124,6 +124,18 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **`<select>` has one state.** A select's value is its selected options, kept as
+  the `selected` attribute on the `<option>` elements, and page JavaScript, `interact`,
+  form submission and extraction all read and write that. `select.options`
+  (an `HTMLOptionsCollection`), `selectedOptions`, `selectedIndex`, `value`, `type`,
+  `length`, `add()`, `remove(index)`, `item()`, `namedItem()`, `option.index` and
+  `new Option(…)` are new; `option.selected` reports selectedness, so a single-choice
+  select with nothing marked has its first enabled option selected. React reads
+  `select.options` for every controlled select and threw without it. `interact` no
+  longer writes a `value` attribute on the `<select>`, and a form field's extracted
+  value for a select is its selected option. `NodeList`/`HTMLCollection` are real
+  arrays underneath, so a property set on one sticks.
+
 - **`defer` is honoured.** External classic scripts with `defer` now run after the
   document is parsed — after every other classic script, in document order,
   interleaved with module scripts, with `readyState` `"interactive"` — instead of

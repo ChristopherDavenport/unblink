@@ -93,15 +93,7 @@ func controlValue(n *html.Node) string {
 	case "textarea":
 		return textContent(n)
 	case "select":
-		for _, opt := range queryAll(n, "option") {
-			if hasAttr(opt, "selected") {
-				if v := getAttr(opt, "value"); v != "" || hasAttr(opt, "value") {
-					return v
-				}
-				return textContent(opt)
-			}
-		}
-		return ""
+		return selectValue(n)
 	default:
 		return getAttr(n, "value")
 	}

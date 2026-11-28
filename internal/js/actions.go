@@ -188,6 +188,10 @@ func (b *bridge) dispatchHover(n *html.Node) {
 // through afterAttr: a .value= property write must not fire a custom element's
 // attributeChangedCallback the way a real setAttribute would.
 func (b *bridge) setControlValue(n *html.Node, val string) {
+	if n.Data == "select" {
+		b.selectByValue(n, val) // a select's value is its selected option (selectstate.go)
+		return
+	}
 	if n.Data == "textarea" {
 		setTextContent(n, val)
 		b.onMutate(mutationRecord{typ: "characterData", target: n})

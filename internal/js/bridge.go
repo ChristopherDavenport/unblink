@@ -818,11 +818,11 @@ func (b *bridge) nodeList(nodes []*html.Node) goja.Value {
 	for i, n := range nodes {
 		arr[i] = b.wrap(n)
 	}
-	v := b.vm.ToValue(arr)
-	if o, ok := v.(*goja.Object); ok && b.protoNodeList != nil {
+	o := b.vm.NewArray(arr...) // a real array, so page code can hang properties on it
+	if b.protoNodeList != nil {
 		_ = o.SetPrototype(b.protoNodeList)
 	}
-	return v
+	return o
 }
 
 // classListFor returns the cached DOMTokenList for n.classList.

@@ -69,7 +69,7 @@ func (b *bridge) htmlCollection(nodes []*html.Node) *goja.Object {
 	for i, n := range nodes {
 		arr[i] = b.wrap(n)
 	}
-	o := b.vm.ToValue(arr).(*goja.Object)
+	o := b.vm.NewArray(arr...) // a real array, so page code can hang properties on it
 	if b.protoHTMLCollection != nil {
 		_ = o.SetPrototype(b.protoHTMLCollection)
 	}

@@ -504,6 +504,16 @@ func (b *bridge) reflectSpecialGet(n *html.Node, s *reflSpec) goja.Value {
 	case "action", "formAction":
 		return vm.ToValue(b.reflectURL(n, strings.ToLower(s.idl), true))
 	case "selected":
+		// Selectedness, not just the attribute: a single-choice select with
+		// nothing marked has its first enabled option selected.
+		if sel := enclosingSelect(n); sel != nil {
+			for _, o := range selectedOptions(sel) {
+				if o == n {
+					return vm.ToValue(true)
+				}
+			}
+			return vm.ToValue(false)
+		}
 		return vm.ToValue(hasAttr(n, "selected"))
 	case "label": // <option>: the label attribute, else its text
 		if hasAttr(n, "label") {

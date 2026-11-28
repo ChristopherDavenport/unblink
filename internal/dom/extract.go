@@ -268,12 +268,30 @@ func extractField(n *html.Node, res *idResolver, minter *idMinter) page.Field {
 	switch n.Data {
 	case "select":
 		f.Type = "select"
+		// A select's value is its selected option — the state page JavaScript,
+		// interact and form submission all keep on the options (the `selected`
+		// attribute), never a value attribute on the <select>. With nothing
+		// marked, a single-choice select shows its first enabled option.
+		f.Value = ""
+		var first *html.Node
+		chosen := false
 		for _, o := range selOption.MatchAll(n) {
 			v := attr(o, "value")
 			if v == "" {
 				v = collapsedText(o)
 			}
 			f.Options = append(f.Options, v)
+			if hasAttr(o, "selected") && (!chosen || !hasAttr(n, "multiple")) {
+				f.Value, chosen = v, true // single-choice: the last one marked wins
+			}
+			if first == nil && !hasAttr(o, "disabled") {
+				first = o
+			}
+		}
+		if !chosen && first != nil && !hasAttr(n, "multiple") {
+			if f.Value = attr(first, "value"); f.Value == "" {
+				f.Value = collapsedText(first)
+			}
 		}
 	case "textarea":
 		f.Type = "textarea"

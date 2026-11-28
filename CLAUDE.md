@@ -180,6 +180,9 @@ not `doFetch`).
 
 ## Conventions & gotchas
 
+- **A `<select>`'s value is its selected `<option>`s** (`internal/js/selectstate.go`):
+  the `selected` attribute is the single state page JS, `interact`, submission and
+  `dom` form extraction share — never a `value` attribute on the `<select>`.
 - **Document script order** (`runDocumentScripts`, `internal/js/scripts.go`):
   non-deferred classic scripts in document order, then `readyState` becomes
   `interactive`, then `defer` external scripts and module scripts interleaved in
