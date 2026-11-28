@@ -231,8 +231,13 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   - `n.toLocaleString('en-US')` formats (it threw a `RangeError`).
   - `unhandledrejection` is dispatched to window listeners; an element's `load`
     event no longer reaches window listeners.
-  - A page-global `require` (an AMD loader) is no longer shadowed inside module
-    scripts.
+  - Inside a module script a free `require`, `module` or `exports` is the page's
+    global of that name (usually undefined), as in a browser, instead of the engine's
+    module wrapper: a bundler runtime no longer takes its CommonJS branch, a page's AMD
+    loader is reachable with its properties (`require.entries`), and a UMD prologue in
+    a module no longer clobbers the module's exports. A module with no import/export
+    syntax is still a module (top-level `this` is `undefined`). The page world has no
+    Node-style `require` global, so `typeof require` is `"undefined"`.
 - **`data:` script URLs are decoded locally** on every script path (classic,
   script-inserted, module entry and dependency, `import()`, preload hints) instead
   of being sent to the network. They are subject to `script-src` — only an explicit

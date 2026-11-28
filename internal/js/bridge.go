@@ -201,7 +201,6 @@ type bridge struct {
 	nodeListeners map[*html.Node]map[string][]listenerEntry
 
 	jsSetTimeout   goja.Callable
-	builtinRequire goja.Value // the runtime's disabled require(), before any page script
 	jsClearTimeout goja.Callable
 	noopVal        goja.Value
 
@@ -367,9 +366,12 @@ func (b *bridge) install() {
 
 	_ = vm.Set("window", win)
 	_ = vm.Set("self", win)
-	// The runtime's own (disabled) require, so a module can tell a page-defined
-	// global require from it (see evaluateInst).
-	b.builtinRequire = vm.Get("require")
+	// The event loop's runtime comes with a Node-style `require` global (neutered:
+	// see rejectRequire). A browser has none, and page code tests for it —
+	// `typeof require` is how a bundle decides it is running under CommonJS. The
+	// engine's own modules are wired from Go, so the binding is simply removed
+	// from the page world; a page (an AMD loader) may then define its own.
+	_ = vm.GlobalObject().Delete("require")
 
 	b.installPrototypes()
 

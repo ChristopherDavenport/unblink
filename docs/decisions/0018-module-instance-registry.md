@@ -171,6 +171,22 @@ is the fix. `TestModuleGlobImportCannotReadLocalFS` is the regression test;
   esbuild's interop shims, as dynamic chunks already were: the "CommonJS interop, not
   full ESM" consequence above now applies to static graphs too. As before, esbuild
   does not add a strict-mode directive, so module code is not forced into strict mode.
+- A module's source does not see the wrapper (amended 2026-11-27). Each unit runs in
+  a function whose parameters are named `require`, `module` and `exports`. In a
+  browser a free `require`/`module`/`exports` in an ES module is the page's global of
+  that name, usually undefined, and page code branches on it: a bundler's
+  `__require` helper returns the global `require` when one exists (Discourse then
+  reads its AMD loader's registry off it as `require.entries`), and a UMD prologue
+  assigns to `module.exports`. The transform therefore passes esbuild a `Define` that
+  rewrites exactly the free source references to `globalThis.<name>` — esbuild's own
+  generated plumbing and local bindings are untouched — and appends `export {}` so a
+  module with no import/export syntax is still parsed as ESM (top-level `this` is
+  `undefined`, not `exports`). `Define` is only passed for names the source mentions
+  (`freeWordIn`), because it rebuilds esbuild's globals table per call. The event
+  loop's own neutered Node `require` global is removed from the page world, so
+  `typeof require` is `"undefined"` in classic scripts and modules alike. This
+  replaces the earlier call-time fallback (an unresolvable `require(id)` handed to
+  the page's loader), which covered calls but not `typeof require` or property reads.
 - A failed static dependency no longer prevents the modules that precede it in
   evaluation order from running: evaluation is post-order and stops at the failing
   `require`. A browser evaluates nothing in that graph.

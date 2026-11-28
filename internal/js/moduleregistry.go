@@ -244,25 +244,6 @@ func (r *moduleRegistry) evaluateInst(b *bridge, inst *moduleInstance) (goja.Val
 		spec := call.Argument(0).String()
 		durl, err := b.moduleResolve(url, spec)
 		if err != nil {
-			// The CommonJS wrapper's `require` parameter shadows a page global of
-			// the same name. In a real ES module a free `require` IS that global —
-			// an AMD loader's (Ember's loader.js, RequireJS), which the page calls
-			// with ids only it can resolve. A specifier the module system cannot
-			// resolve was therefore never one of this module's imports (a static
-			// import that does not resolve fails the module at instantiation,
-			// before any code runs): hand the call to the page's own require.
-			pageRequire := vm.GlobalObject().Get("require")
-			if g, ok := goja.AssertFunction(pageRequire); ok && (b.builtinRequire == nil || !pageRequire.SameAs(b.builtinRequire)) {
-				v, gerr := g(goja.Undefined(), call.Arguments...)
-				if gerr != nil {
-					var ex *goja.Exception
-					if errors.As(gerr, &ex) {
-						panic(ex.Value())
-					}
-					panic(vm.NewGoError(gerr))
-				}
-				return v
-			}
 			panic(vm.NewTypeError("cannot resolve %q from %s: %v", spec, inst.label(), err))
 		}
 		ns, err := r.evaluate(b, durl)
@@ -445,12 +426,42 @@ func jsonModuleCJS(src []byte) (string, error) {
 //
 // This is esbuild.Transform, which has no filesystem access; do not replace it with
 // esbuild.Build (see runModules).
+//
+// The unit runs inside a wrapper whose parameters are named require, module and
+// exports, and the transform's own output uses those names for the module
+// plumbing. The module's *source* must not see them: in a browser a free
+// `require`, `module` or `exports` in an ES module is the page's global of that
+// name, usually undefined. Left shadowed, `typeof require` reads "function" and
+// `typeof module` "object" in every module — a bundler runtime then takes its
+// CommonJS branch (rolldown's __require returned the wrapper's function, so
+// Discourse read `require.entries` off it and got undefined where the page's AMD
+// loader keeps its registry), and a UMD prologue assigns to module.exports and
+// clobbers the module's real exports. esbuild's Define rewrites exactly the free
+// source references (not its own generated ones, and not a local binding of the
+// same name) to the global. Define rebuilds esbuild's globals table per call, so
+// it is only passed for names the source mentions (freeWordIn) — most modules
+// mention none.
 func transformModuleCJS(src string) (string, error) {
-	res := esbuild.Transform(src, esbuild.TransformOptions{
+	var define map[string]string
+	for _, name := range cjsWrapperNames {
+		if freeWordIn(src, name) {
+			if define == nil {
+				define = make(map[string]string, len(cjsWrapperNames))
+			}
+			define[name] = "globalThis." + name
+		}
+	}
+	// A module script is an ES module whatever its text looks like. esbuild decides
+	// per file, and one with no import/export syntax it reads as CommonJS: top-level
+	// `this` becomes `exports` (it is undefined in a module) and `module`/`exports`
+	// bind to the wrapper's, which Define cannot then reach. An empty export list
+	// settles it without changing what the module exports or its line numbers.
+	res := esbuild.Transform(src+"\nexport {};", esbuild.TransformOptions{
 		Loader:    esbuild.LoaderJS,
 		Format:    esbuild.FormatCommonJS,
 		Target:    esbuild.ES2017,
 		Supported: map[string]bool{"dynamic-import": false},
+		Define:    define,
 		LogLevel:  esbuild.LogLevelSilent,
 	})
 	if len(res.Errors) > 0 {
@@ -459,6 +470,55 @@ func transformModuleCJS(src string) (string, error) {
 	code := dynImportPrefixRE.ReplaceAllLiteralString(string(res.Code), "Promise.resolve().then(() => "+dynImportGlobal+"((")
 	code = importMetaDeclRE.ReplaceAllString(code, "${1}"+importMetaParam+";")
 	return code, nil
+}
+
+// cjsWrapperNames are the module wrapper's parameters a module's source must see
+// as page globals (see transformModuleCJS).
+var cjsWrapperNames = [...]string{"require", "module", "exports"}
+
+// freeWordIn reports whether src may contain word as a free identifier: an
+// occurrence on word boundaries that is not a property access (`.word`) nor an
+// object-literal key (`word:`). It is a pre-filter for an exact rewrite, so a
+// false positive (a string, a comment) only costs the Define; it never has a
+// false negative for a real free reference.
+func freeWordIn(src, word string) bool {
+	isIdent := func(c byte) bool {
+		return c == '_' || c == '$' || c >= 0x80 || ('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
+	}
+	for from := 0; ; {
+		i := strings.Index(src[from:], word)
+		if i < 0 {
+			return false
+		}
+		i += from
+		end := i + len(word)
+		from = end
+		if i > 0 && (isIdent(src[i-1]) || src[i-1] == '.') {
+			// `a.b` is a property access — unless the dot is the tail of a spread
+			// or rest (`...require`), which names the identifier itself.
+			if src[i-1] != '.' || i < 3 || src[i-3:i] != "..." {
+				continue
+			}
+		}
+		if end < len(src) && isIdent(src[end]) {
+			continue
+		}
+		j := end
+		for j < len(src) && (src[j] == ' ' || src[j] == '\t' || src[j] == '\n' || src[j] == '\r') {
+			j++
+		}
+		if j < len(src) && src[j] == ':' {
+			// `word:` is an object key or a label — but `cond ? word : x` is a use.
+			k := i - 1
+			for k >= 0 && (src[k] == ' ' || src[k] == '\t' || src[k] == '\n' || src[k] == '\r') {
+				k--
+			}
+			if k < 0 || src[k] != '?' {
+				continue
+			}
+		}
+		return true
+	}
 }
 
 // requireRE extracts the string-literal specifiers of static require() calls from

@@ -331,7 +331,10 @@ func TestModuleSyntaxForms(t *testing.T) {
 		origin + "/sub/data.json": `{"answer": 42, "list": [1, 2, 3], "text": "</script> "}`,
 		origin + "/sub/plain.js":  `window.__plain = 1;`,
 	})
-	const want = "default|named|2|2|true|named|s1|s2|42|3|object|https://example.com/sub/app.mjs|null|/sub/asset.png|https://example.com/sub/lib.js" +
+	// plain.js has no exports: it is an ES module all the same, so its default is
+	// undefined (a browser refuses the import outright), not a CommonJS exports
+	// object.
+	const want = "default|named|2|2|true|named|s1|s2|42|3|undefined|https://example.com/sub/app.mjs|null|/sub/asset.png|https://example.com/sub/lib.js" +
 		"|https://example.com/page|null"
 	if out != want {
 		t.Errorf("#out=%q\n want %q (errors: %v)", out, want, diag.Errors)
@@ -477,34 +480,88 @@ func TestModuleEvaluationErrorPropagates(t *testing.T) {
 	}
 }
 
-// A page-global `require` (an AMD loader such as Ember's loader.js) is what a
-// free `require` in an ES module refers to. The CommonJS wrapper must not
-// capture those calls: an id the module system cannot resolve goes to the page.
-func TestModulePageGlobalRequireIsNotShadowed(t *testing.T) {
-	page := `<html><body><div id="out"></div>
-		<script>
-			var registry = { "app/lib/api": { hello: "from-loader" } };
-			window.require = function (id) { if (!(id in registry)) throw new Error("loader: no module " + id); return registry[id]; };
-		</script>
-		<script type="module" src="/app.mjs"></script></body></html>`
-	out, _, diag := renderModules(t, page, map[string]string{
-		"https://example.com/app.mjs": `import { dep } from './dep.mjs';
-			function lookup(id) { return require(id); }
-			var missing = 'none';
-			try { lookup('app/lib/nope'); } catch (e) { missing = e.message; }
-			document.getElementById('out').textContent = dep + ',' + lookup('app/lib/api').hello + ',' + require("app/lib/api").hello + ',' + missing;`,
-		"https://example.com/dep.mjs": `export const dep = 'static-dep';`,
+// In an ES module a free `require`, `module` or `exports` is the page's global of
+// that name — usually undefined. The module runs inside a CommonJS wrapper whose
+// parameters carry those names; the source must not see them.
+func TestModuleFreeCommonJSNamesAreGlobals(t *testing.T) {
+	const page = `<html><body><div id="out"></div><script type="module" src="/app.mjs"></script></body></html>`
+	t.Run("undefined when the page defines none", func(t *testing.T) {
+		out, _, diag := renderModules(t, page, map[string]string{
+			"https://example.com/app.mjs": `import { dep } from './dep.mjs';
+				var called = 'no throw';
+				try { require('bare/spec'); } catch (e) { called = e.name; }
+				document.getElementById('out').textContent = [typeof require, typeof module, typeof exports, called, dep].join();`,
+			"https://example.com/dep.mjs": `export const dep = 'dep';`,
+		})
+		if out != "undefined,undefined,undefined,TypeError,dep" {
+			t.Errorf("got %q; errors: %v", out, diag.Errors)
+		}
 	})
-	if out != "static-dep,from-loader,from-loader,loader: no module app/lib/nope" {
-		t.Errorf("page require was shadowed:\n%s\nerrors: %v", out, diag.Errors)
-	}
+	t.Run("a module with no import or export syntax is still a module", func(t *testing.T) {
+		out, _, diag := renderModules(t, page, map[string]string{
+			"https://example.com/app.mjs": `document.getElementById('out').textContent = [typeof require, typeof module, typeof exports, typeof this].join();`,
+		})
+		if out != "undefined,undefined,undefined,undefined" {
+			t.Errorf("got %q; errors: %v", out, diag.Errors)
+		}
+	})
+	// rolldown's and esbuild's __require helper: it returns the global require when
+	// there is one, and code then reads properties off it (Discourse reads the AMD
+	// loader's registry as require.entries).
+	t.Run("the page's AMD loader is reachable, with its properties", func(t *testing.T) {
+		out, _, diag := renderModules(t, `<html><body><div id="out"></div>
+			<script>
+				var registry = { "app/lib/api": { hello: "from-loader" } };
+				window.require = window.requirejs = function (id) { if (!(id in registry)) throw new Error("loader: no module " + id); return registry[id]; };
+				window.require.entries = registry;
+			</script>
+			<script type="module" src="/app.mjs"></script></body></html>`, map[string]string{
+			"https://example.com/app.mjs": `import { dep } from './dep.mjs';
+				var __require = (x => typeof require < 'u' ? require : x)(function () { throw new Error('no require'); });
+				var missing = 'none';
+				try { __require('app/lib/nope'); } catch (e) { missing = e.message; }
+				document.getElementById('out').textContent = [dep, __require === window.require, Object.keys(__require.entries), __require('app/lib/api').hello, require("app/lib/api").hello, missing].join();`,
+			"https://example.com/dep.mjs": `export const dep = 'static-dep';`,
+		})
+		if out != "static-dep,true,app/lib/api,from-loader,from-loader,loader: no module app/lib/nope" {
+			t.Errorf("got %q; errors: %v", out, diag.Errors)
+		}
+	})
+	// A UMD prologue inside a module must take its browser branch, not assign to
+	// the wrapper's module.exports and clobber the module's real exports.
+	t.Run("a UMD prologue does not clobber the module's exports", func(t *testing.T) {
+		out, _, diag := renderModules(t, page, map[string]string{
+			"https://example.com/app.mjs": `import { named } from './umd.mjs';
+				document.getElementById('out').textContent = [named, window.Lib].join();`,
+			"https://example.com/umd.mjs": `(function (root, factory) {
+					if (typeof exports === 'object' && typeof module !== 'undefined') module.exports = factory();
+					else root.Lib = factory();
+				})(globalThis, function () { return 'lib-on-global'; });
+				export const named = 'named-export';`,
+		})
+		if out != "named-export,lib-on-global" {
+			t.Errorf("got %q; errors: %v", out, diag.Errors)
+		}
+	})
+	// A local binding of the same name is the module's own business.
+	t.Run("local bindings are untouched", func(t *testing.T) {
+		out, _, diag := renderModules(t, page, map[string]string{
+			"https://example.com/app.mjs": `function f(require, module, exports) { return require + module + exports; }
+				const o = { require: 1, module: 2, exports: 3 };
+				document.getElementById('out').textContent = [f('a', 'b', 'c'), o.require + o.module + o.exports].join();`,
+		})
+		if out != "abc,6" {
+			t.Errorf("got %q; errors: %v", out, diag.Errors)
+		}
+	})
 }
 
-// With no page-global require, an unresolvable specifier is still an error.
-func TestModuleUnresolvableRequireStillFails(t *testing.T) {
-	out, _, _ := renderModules(t, `<html><body><div id="out">x</div><script type="module" src="/app.mjs"></script></body></html>`,
-		map[string]string{"https://example.com/app.mjs": `var r = 'ok'; try { require('bare/spec'); } catch (e) { r = /cannot resolve/.test(String(e && e.message || e)); } document.getElementById('out').textContent = String(r);`})
-	if out != "true" {
-		t.Errorf("want a resolution error for an unresolvable require:\n%s", out)
+// Classic scripts see no Node-style require either.
+func TestNoRequireGlobalInThePageWorld(t *testing.T) {
+	out := render(t, `<html><body><div id="out"></div><script>
+		document.getElementById('out').textContent = [typeof require, typeof module, typeof exports, 'require' in window].join();
+	</script></body></html>`)
+	if !strings.Contains(out, `<div id="out">undefined,undefined,undefined,false</div>`) {
+		t.Errorf("a browser has no require/module/exports globals:\n%s", out)
 	}
 }

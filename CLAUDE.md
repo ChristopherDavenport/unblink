@@ -312,7 +312,10 @@ not `doFetch`).
   never be used on page code** — its bundler expands a non-literal relative
   `import()`/`require` as a glob over the real filesystem, bypassing plugins (a
   local-file read by untrusted page JS, v0.16.0–v0.25.0); only `esbuild.Transform`
-  is allowed, and `TestNoEsbuildBundlerOnPageCode` is the tripwire. Import maps (`internal/js/importmap.go`: `imports` + `scopes`)
+  is allowed, and `TestNoEsbuildBundlerOnPageCode` is the tripwire. A module's source must not see
+  the CommonJS wrapper it runs in: free `require`/`module`/`exports` are rewritten to
+  the page's globals with esbuild `Define` (`transformModuleCJS`), and the runtime's
+  neutered Node `require` global is deleted from the page world. Import maps (`internal/js/importmap.go`: `imports` + `scopes`)
   resolve through one `bridge.moduleResolve` on every path — static bundling, registry
   deps, dynamic `import()`; a classic script's or non-literal `import()` uses the
   document base as referrer, only the first import map is read, and its `integrity`
