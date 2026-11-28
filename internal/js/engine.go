@@ -328,23 +328,29 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	case <-done:
 	case <-hard.C:
 		interrupted = true
-		if vm := vmRef.Load(); vm != nil {
-			vm.Interrupt("unblink: render timeout")
-		}
-		<-done
+		interruptUntil(vmRef.Load(), "unblink: render timeout", done)
 	case <-ctx.Done():
 		interrupted = true
-		if vm := vmRef.Load(); vm != nil {
-			vm.Interrupt("unblink: context cancelled")
-		}
-		<-done
+		interruptUntil(vmRef.Load(), "unblink: context cancelled", done)
 		rerr = ctx.Err()
 	}
 	// Terminate before the caller reads doc so no background setInterval mutates the
 	// tree concurrently with extraction. Terminate joins the loop goroutine, giving
 	// the happens-before edge for the b/stats reads below.
-	loop.Terminate()
+	//
+	// The render is over, so page JS must not run again — and Terminate can only
+	// stop a loop BETWEEN jobs. A callback that never returns (a setInterval whose
+	// body spins, the second of two runaway timers) would otherwise start after
+	// the settle closed and block the join forever. Keep interrupting until the
+	// loop goroutine has exited.
+	joined := make(chan struct{})
+	go func() {
+		loop.Terminate()
+		close(joined)
+	}()
+	interruptUntil(vmRef.Load(), "unblink: render finished", joined)
 	if vm := vmRef.Load(); vm != nil {
+		vm.ClearInterrupt() // the post-render reads below may call into the runtime
 		e.memGuard.unregister(vm)
 	}
 	// Flatten shadow content (resolving <slot> distribution) into the light tree so
@@ -410,4 +416,34 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		}
 	}
 	return rerr
+}
+
+// interruptEvery is how often interruptUntil re-arms the interrupt.
+const interruptEvery = 10 * time.Millisecond
+
+// interruptUntil interrupts vm, again and again, until stop is closed.
+//
+// One Interrupt is not enough to stop a page. goja's interrupt is one-shot: it
+// unwinds the call that is running — or the next one to start — and is cleared
+// as that call returns to Go (Runtime.leaveAbrupt). The event loop then starts
+// the next queued callback with no interrupt pending, and if that callback never
+// returns either (the next tick of a setInterval whose body spins, a second
+// runaway timer) nothing stops it: the settle's closing tick never gets to run,
+// the caller waits on it forever, and a core spins until the process exits.
+// Re-arming until the awaited event has happened closes that hole.
+func interruptUntil(vm *goja.Runtime, reason string, stop <-chan struct{}) {
+	if vm == nil {
+		<-stop
+		return
+	}
+	t := time.NewTicker(interruptEvery)
+	defer t.Stop()
+	for {
+		vm.Interrupt(reason)
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+		}
+	}
 }

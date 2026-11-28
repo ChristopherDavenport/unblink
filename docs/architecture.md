@@ -1007,6 +1007,20 @@ form), guarded against a handler that throws, and — unless a handler cancels i
 recorded in the render diagnostics, which are read when the render settles rather
 than after the first script pass.
 
+**Stopping a page that will not stop** (`interruptUntil`, `internal/js/engine.go`).
+goja's `Interrupt` is one-shot: it unwinds the call that is running, or the next
+one to start, and is cleared as that call returns to Go. A page with *two*
+callbacks that never return — or one `setInterval` whose body spins — survives a
+single interrupt: the loop starts the next callback with nothing pending. So
+every place that must get the loop back keeps interrupting, every 10 ms, until
+the event it is waiting for has happened: the render watchdog and context
+cancellation until the settle closes, and `Render`/`Context.Close` until
+`loop.Terminate()` has joined (Terminate can only stop a loop between jobs).
+`TestRenderReturnsWhenASecondRunawayTaskIsQueued` and
+`TestLiveContextSurvivesRunawayCallbacks` hold it. One gap remains: a live
+session's loop is unwatched *between* operations, so a runaway callback there
+spins a core until the next operation or the close.
+
 **Timer clamp, bounded after its deadline.** A one-shot timer whose delay would
 outlast the render budget is pulled in to fire 600 ms before the budget ends, so
 content behind a splash delay or deferred hydration still lands. That deadline is

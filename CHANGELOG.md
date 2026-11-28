@@ -23,6 +23,19 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   access). See the 2026-11-27 amendment to
   [ADR 0018](docs/decisions/0018-module-instance-registry.md).
 
+- **Untrusted page JavaScript could hang a render forever.** Confirmed on v0.25.0;
+  earlier releases were not checked. The render watchdog stops a script that never
+  yields by interrupting the engine, and an interrupt unwinds exactly one call. If
+  another callback that never returns was already queued — the next tick of
+  `setInterval(function () { for (;;) {} }, 10)` is enough — the event loop started
+  it with no interrupt pending. The render never returned, its worker slot was never
+  released and one CPU core spun until the process exited; a few such pages exhaust
+  the render concurrency limit. A live session's operations and its close could hang
+  the same way. The engine now keeps interrupting until the render's settle has
+  closed and until its event loop has stopped. Not fixed here: between two
+  operations of a live session a runaway callback still spins a core until the next
+  operation or the session's close interrupts it. `--disable-js` was not affected.
+
 ### Changed
 
 - **Module scripts load through the module registry.** One instance per module URL is

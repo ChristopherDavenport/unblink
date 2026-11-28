@@ -160,7 +160,11 @@ the agent via the `requests` tool); only the page-JS *read* is denied. The layer
 - **Resource bounds on untrusted JS**: process heap watchdog + `SetMemoryLimit`
   (ADR 0003, `--js-memory-limit`), per-render/dispatch download-**bytes** budget
   (ADR 0009, `--js-max-bytes`), wall-clock render budget + timer clamp, live-runtime
-  LRU cap.
+  LRU cap. **A goja `Interrupt` is one-shot** — it unwinds one call and is cleared
+  — so never follow it with a bare `<-done` or `loop.Terminate()`: a second
+  never-returning callback (`setInterval(() => { for (;;) {} }, 10)`) would run
+  uninterrupted and the wait would never end. Use `interruptUntil`
+  (`internal/js/engine.go`).
 
 Shared implementation pattern for the JS-side policies: an `Env` field
 (`AllowCrossOrigin`/`DisableSRI`/`DisableCSP`/`ResponseHeaders`) → a bridge field →

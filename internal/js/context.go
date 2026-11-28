@@ -258,7 +258,15 @@ func (c *Context) Close() {
 		if c.cancel != nil {
 			c.cancel()
 		}
-		c.loop.Terminate()
+		// Terminate only stops the loop between jobs: keep interrupting until it has
+		// joined, so a page callback that never returns cannot block the close
+		// (see interruptUntil).
+		joined := make(chan struct{})
+		go func() {
+			c.loop.Terminate()
+			close(joined)
+		}()
+		interruptUntil(c.vm.Load(), "unblink: context closed", joined)
 		c.memGuard.unregister(c.vm.Load())
 	})
 }
@@ -303,19 +311,11 @@ func (c *Context) run(ctx context.Context, waitSettle bool, cond *WaitCondition,
 	case <-done:
 		return nil
 	case <-hard.C:
-		c.interrupt("unblink: live op timeout")
-		<-done
+		interruptUntil(c.vm.Load(), "unblink: live op timeout", done)
 		return nil
 	case <-ctx.Done():
-		c.interrupt("unblink: cancelled")
-		<-done
+		interruptUntil(c.vm.Load(), "unblink: cancelled", done)
 		return ctx.Err()
-	}
-}
-
-func (c *Context) interrupt(msg string) {
-	if vm := c.vm.Load(); vm != nil {
-		vm.Interrupt(msg)
 	}
 }
 
