@@ -303,6 +303,15 @@ func classicProgram(name, src string) (*goja.Program, error) {
 			}
 		}
 	}
+	if err != nil && (strings.Contains(src, "async") || strings.Contains(src, "await")) {
+		// Still not compiling: goja also lacks async generators and for-await.
+		// Lower those too (and dynamic import with them) and try once more.
+		if lowered, ok := lowerAsyncIteration(src); ok {
+			if p2, e2 := goja.Compile(name+".lowered", lowered, false); e2 == nil {
+				prog, err = p2, nil
+			}
+		}
+	}
 	progCachePut(key, progEntry{prog: prog, err: err, size: int64(len(src))})
 	return prog, err
 }

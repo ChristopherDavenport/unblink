@@ -27,6 +27,8 @@ func nodeType(n *html.Node) int {
 		return 8
 	case html.DocumentNode:
 		return 11
+	case html.DoctypeNode:
+		return 10
 	default:
 		return 0
 	}
@@ -40,6 +42,8 @@ func nodeName(n *html.Node) string {
 		return "#comment"
 	case html.DocumentNode:
 		return "#document-fragment"
+	case html.DoctypeNode:
+		return n.Data // a doctype's nodeName is its name, as written
 	default:
 		if n.Namespace != "" {
 			return n.Data // SVG/MathML names keep their case

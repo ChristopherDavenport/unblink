@@ -2047,7 +2047,12 @@ const preludeAPIJS = `
     window.Document.prototype.adoptedStyleSheets = [];
   }
   if (typeof document !== 'undefined' && document.styleSheets === undefined) {
-    document.styleSheets = { length: 0, item: function () { return null; } };
+    // An empty StyleSheetList: no CSSOM is built, so there are no sheets — but the
+    // list itself is iterable and indexable, as page code assumes
+    // (for (const sheet of document.styleSheets) …).
+    var sheets = [];
+    sheets.item = function () { return null; };
+    document.styleSheets = sheets;
   }
 
   // ---- CSS namespace ----
@@ -3155,7 +3160,7 @@ const preludeAPIJS = `
     var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     var DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-    var DateTimeFormat = function (locales, opts) { this.__o = opts || {}; };
+    var DateTimeFormat = function (locales, opts) { if (!(this instanceof DateTimeFormat)) return new DateTimeFormat(locales, opts); this.__o = opts || {}; };
     DateTimeFormat.prototype.format = function (d) {
       d = d === undefined ? new Date() : new Date(d);
       if (isNaN(d.getTime())) return 'Invalid Date';
@@ -3197,7 +3202,7 @@ const preludeAPIJS = `
     DateTimeFormat.prototype.formatRange = function (a, b) { return this.format(a) + ' – ' + this.format(b); };
     DateTimeFormat.supportedLocalesOf = function () { return ['en-US']; };
 
-    var NumberFormat = function (locales, opts) { this.__o = opts || {}; };
+    var NumberFormat = function (locales, opts) { if (!(this instanceof NumberFormat)) return new NumberFormat(locales, opts); this.__o = opts || {}; };
     NumberFormat.prototype.format = function (n) {
       n = Number(n);
       if (!isFinite(n)) return String(n);
@@ -3249,7 +3254,7 @@ const preludeAPIJS = `
     };
     NumberFormat.supportedLocalesOf = function () { return ['en-US']; };
 
-    var Collator = function (locales, opts) { this.__o = opts || {}; };
+    var Collator = function (locales, opts) { if (!(this instanceof Collator)) return new Collator(locales, opts); this.__o = opts || {}; };
     Collator.prototype.compare = function (a, b) { a = String(a); b = String(b); return a < b ? -1 : (a > b ? 1 : 0); };
     Collator.prototype.resolvedOptions = function () { return { locale: 'en-US', usage: this.__o.usage || 'sort', sensitivity: 'variant' }; };
     Collator.supportedLocalesOf = function () { return ['en-US']; };
@@ -3283,6 +3288,28 @@ const preludeAPIJS = `
     RelativeTimeFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', numeric: this.__o.numeric || 'always', style: this.__o.style || 'long' }; };
     RelativeTimeFormat.supportedLocalesOf = function () { return ['en-US']; };
 
+    // NumberFormat, DateTimeFormat and Collator are the three Intl constructors that
+    // also work called as plain functions (Intl.NumberFormat('en-GB', …) — nuxt.com
+    // does), handled in each above. Their format/compare are getters returning a
+    // function bound to the formatter, so the everyday detached uses work:
+    // list.map(nf.format), names.sort(collator.compare).
+    function boundGetter(C, name) {
+      var impl = C.prototype[name], key = '__b_' + name;
+      Object.defineProperty(C.prototype, name, {
+        get: function () {
+          var self = this;
+          if (!Object.prototype.hasOwnProperty.call(self, key)) {
+            Object.defineProperty(self, key, { value: function () { return impl.apply(self, arguments); } });
+          }
+          return self[key];
+        },
+        configurable: true
+      });
+    }
+    boundGetter(NumberFormat, 'format');
+    boundGetter(DateTimeFormat, 'format');
+    boundGetter(Collator, 'compare');
+
     // Number.prototype.toLocaleString(locales, options) is Intl.NumberFormat's
     // format. The engine's built-in ignores locales and — worse — reads the first
     // argument as a radix, so the everyday n.toLocaleString('en-US') threw a
@@ -3292,12 +3319,108 @@ const preludeAPIJS = `
       return new NumberFormat(locales, options).format(Number(this));
     };
 
+    // Intl.ListFormat, English rules (the only locale this layer formats in):
+    // conjunction "a, b, and c", disjunction "a, b, or c", unit "a, b, c";
+    // short conjunction "a, b, & c"; narrow unit "a b c".
+    var ListFormat = function (locales, opts) {
+      if (!(this instanceof ListFormat)) throw new TypeError("Constructor Intl.ListFormat requires 'new'");
+      opts = opts || {};
+      this.__type = opts.type === 'disjunction' || opts.type === 'unit' ? opts.type : 'conjunction';
+      this.__style = opts.style === 'short' || opts.style === 'narrow' ? opts.style : 'long';
+    };
+    ListFormat.prototype.formatToParts = function (list) {
+      var items = Array.from(list, function (x) { if (typeof x !== 'string') throw new TypeError('Iterable yielded ' + x + ' which is not a string'); return x; });
+      var t = this.__type, st = this.__style, n = items.length, parts = [];
+      var word = t === 'disjunction' ? 'or' : (t === 'unit' ? '' : (st === 'long' ? 'and' : (st === 'short' ? '&' : '')));
+      var sep = (t === 'unit' && st === 'narrow') ? ' ' : ', ';
+      for (var i = 0; i < n; i++) {
+        if (i > 0) {
+          var lit;
+          if (i < n - 1 || !word) lit = sep;
+          else if (n === 2) lit = ' ' + word + ' ';
+          else lit = sep.replace(/ $/, '') + ' ' + word + ' ';
+          parts.push({ type: 'literal', value: lit });
+        }
+        parts.push({ type: 'element', value: items[i] });
+      }
+      return parts;
+    };
+    ListFormat.prototype.format = function (list) { return this.formatToParts(list).map(function (p) { return p.value; }).join(''); };
+    ListFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', type: this.__type, style: this.__style }; };
+    ListFormat.supportedLocalesOf = function () { return ['en-US']; };
+
+    // Intl.Locale: the identifier's subtags, parsed. No CLDR data is carried, so
+    // maximize()/minimize() return the locale unchanged.
+    var Locale = function (tag, opts) {
+      if (!(this instanceof Locale)) throw new TypeError("Constructor Intl.Locale requires 'new'");
+      if (tag instanceof Locale) tag = tag.toString();
+      if (typeof tag !== 'string') throw new TypeError('First argument to the Intl.Locale constructor must be a string or an object');
+      var m = /^([a-zA-Z]{2,3}|[a-zA-Z]{5,8})(?:[-_]([a-zA-Z]{4}))?(?:[-_]([a-zA-Z]{2}|\d{3}))?(?:[-_].*)?$/.exec(tag.trim());
+      if (!m) throw new RangeError('Incorrect locale information provided');
+      opts = opts || {};
+      this.language = String(opts.language || m[1]).toLowerCase();
+      var sc = opts.script || m[2], rg = opts.region || m[3];
+      this.script = sc ? sc.charAt(0).toUpperCase() + sc.slice(1).toLowerCase() : undefined;
+      this.region = rg ? String(rg).toUpperCase() : undefined;
+      this.baseName = [this.language, this.script, this.region].filter(Boolean).join('-');
+      ['calendar', 'collation', 'hourCycle', 'caseFirst', 'numeric', 'numberingSystem'].forEach(function (k) { this[k] = opts[k]; }, this);
+    };
+    Locale.prototype.toString = function () { return this.baseName; };
+    Locale.prototype.maximize = Locale.prototype.minimize = function () { return new Locale(this.baseName); };
+
+    // Intl.DisplayNames without locale data: of() answers with the code itself,
+    // which is the specified result for fallback "code" when no name is known
+    // (and undefined for fallback "none").
+    var DisplayNames = function (locales, opts) {
+      if (!(this instanceof DisplayNames)) throw new TypeError("Constructor Intl.DisplayNames requires 'new'");
+      if (!opts || typeof opts.type !== 'string') throw new TypeError('Required option "type" must be provided');
+      this.__o = opts;
+    };
+    DisplayNames.prototype.of = function (code) { return this.__o.fallback === 'none' ? undefined : String(code); };
+    DisplayNames.prototype.resolvedOptions = function () { return { locale: 'en-US', type: this.__o.type, style: this.__o.style || 'long', fallback: this.__o.fallback || 'code' }; };
+    DisplayNames.supportedLocalesOf = function () { return ['en-US']; };
+
+    // Intl.Segmenter, approximated without UAX #29 tables: graphemes are code
+    // points (a base character plus any combining marks, variation selectors
+    // and ZWJ-joined followers), words are runs of letters/digits/marks (plus
+    // internal apostrophes) with everything else as its own non-word segment,
+    // and sentences end at ., ! or ? followed by white space.
+    var Segmenter = function (locales, opts) {
+      if (!(this instanceof Segmenter)) throw new TypeError("Constructor Intl.Segmenter requires 'new'");
+      var g = opts && opts.granularity;
+      this.__g = g === 'word' || g === 'sentence' ? g : 'grapheme';
+    };
+    Segmenter.prototype.segment = function (input) {
+      input = String(input);
+      var g = this.__g, out = [], re, m;
+      if (g === 'word') re = /[\p{L}\p{N}\p{M}_]+(?:['’][\p{L}\p{N}\p{M}_]+)*|\s+|[\s\S]/gu;
+      else if (g === 'sentence') re = /[\s\S]*?(?:[.!?]+(?:\s+|$)|$)/gu;
+      else re = /\P{M}[\p{M}\u200d\ufe0e\ufe0f]*(?:\u200d\P{M}[\p{M}\ufe0e\ufe0f]*)*|[\s\S]/gu;
+      while ((m = re.exec(input)) !== null) {
+        if (m[0] === '') { if (re.lastIndex >= input.length) break; re.lastIndex++; continue; }
+        var seg = { segment: m[0], index: m.index, input: input };
+        if (g === 'word') seg.isWordLike = /[\p{L}\p{N}]/u.test(m[0]);
+        out.push(seg);
+      }
+      var segs = {
+        containing: function (i) { i = i | 0; for (var k = 0; k < out.length; k++) if (i >= out[k].index && i < out[k].index + out[k].segment.length) return out[k]; return undefined; }
+      };
+      segs[Symbol.iterator] = function () { return out[Symbol.iterator](); };
+      return segs;
+    };
+    Segmenter.prototype.resolvedOptions = function () { return { locale: 'en-US', granularity: this.__g }; };
+    Segmenter.supportedLocalesOf = function () { return ['en-US']; };
+
     window.Intl = {
       DateTimeFormat: DateTimeFormat,
       NumberFormat: NumberFormat,
       Collator: Collator,
       PluralRules: PluralRules,
       RelativeTimeFormat: RelativeTimeFormat,
+      ListFormat: ListFormat,
+      Locale: Locale,
+      DisplayNames: DisplayNames,
+      Segmenter: Segmenter,
       getCanonicalLocales: function (l) {
         if (l == null) return [];
         if (typeof l === 'string') return [l];

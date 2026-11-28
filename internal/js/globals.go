@@ -3,6 +3,7 @@ package js
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/dop251/goja"
 )
@@ -57,6 +58,26 @@ func (b *bridge) installGlobals(win *goja.Object) {
 	_ = nav.Set("hardwareConcurrency", 4)
 	_ = nav.Set("maxTouchPoints", 0)
 	_ = nav.Set("vendor", "")
+	// The legacy identification members every browser still answers with the same
+	// frozen values. Old-but-live sniffing code reads them unguarded
+	// (navigator.appVersion.indexOf("Mac") threw on open-wc.org and took the
+	// module with it).
+	_ = nav.Set("appVersion", strings.TrimPrefix(userAgent, "Mozilla/"))
+	_ = nav.Set("appName", "Netscape")
+	_ = nav.Set("appCodeName", "Mozilla")
+	_ = nav.Set("product", "Gecko")
+	_ = nav.Set("productSub", "20030107")
+	_ = nav.Set("vendorSub", "")
+	// No plugins, no MIME-type handlers, no built-in PDF viewer, no Java.
+	_ = nav.Set("pdfViewerEnabled", false)
+	_ = nav.Set("javaEnabled", func(goja.FunctionCall) goja.Value { return vm.ToValue(false) })
+	for _, name := range []string{"plugins", "mimeTypes"} {
+		list := vm.NewArray()
+		_ = list.Set("item", func(goja.FunctionCall) goja.Value { return goja.Null() })
+		_ = list.Set("namedItem", func(goja.FunctionCall) goja.Value { return goja.Null() })
+		_ = list.Set("refresh", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+		_ = nav.Set(name, list)
+	}
 	_ = nav.Set("doNotTrack", goja.Null())
 	// webdriver is true by default: unblink is automation and says so (the UA
 	// string already carries "unblink"). Under --tls-mimic the caller opts into

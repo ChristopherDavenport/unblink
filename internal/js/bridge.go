@@ -70,6 +70,10 @@ type bridge struct {
 	protoComment          *goja.Object
 	protoDocumentFragment *goja.Object
 	protoShadowRoot       *goja.Object
+	protoDocumentType     *goja.Object
+	textSelections        map[*html.Node]*textSelection // input/textarea selection state (installTextSelection)
+	animatedStrings       map[*goja.Object]*html.Node   // SVGAnimatedString → its element
+	animatedStringOf      map[*html.Node]*goja.Object
 	protoNodeList         *goja.Object // see installCollections
 	protoHTMLCollection   *goja.Object
 	objectProto           *goja.Object            // Object.prototype, cached for adoptEventInterface
@@ -695,6 +699,16 @@ func (b *bridge) documentObject() *goja.Object {
 		return b.detachedHTMLDocument(title)
 	})
 	_ = impl.Set("hasFeature", func(goja.FunctionCall) goja.Value { return vm.ToValue(true) })
+	_ = impl.Set("createDocumentType", func(call goja.FunctionCall) goja.Value {
+		dt := &html.Node{Type: html.DoctypeNode, Data: call.Argument(0).String()}
+		if v := call.Argument(1).String(); v != "" && !goja.IsUndefined(call.Argument(1)) {
+			dt.Attr = append(dt.Attr, html.Attribute{Key: "public", Val: v})
+		}
+		if v := call.Argument(2).String(); v != "" && !goja.IsUndefined(call.Argument(2)) {
+			dt.Attr = append(dt.Attr, html.Attribute{Key: "system", Val: v})
+		}
+		return b.wrap(dt)
+	})
 	b.defineGetter(d, "implementation", func() goja.Value { return impl })
 
 	return d

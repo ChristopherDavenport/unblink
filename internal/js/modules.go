@@ -193,10 +193,28 @@ func (b *bridge) verifyModuleIntegrity(abs, integrity string) bool {
 // tree-shaking (dropping side-effecting bundle code) and rewrite a CommonJS bundle's
 // top-level `this` to `exports`, breaking `this === window`. Do not pin a Format.
 func lowerDynamicImport(src string) (string, bool) {
+	return lowerClassic(src, map[string]bool{"dynamic-import": false})
+}
+
+// lowerAsyncIteration is lowerDynamicImport plus the two async-iteration forms
+// goja cannot parse: async generator functions (`async function*`, `async *m()`)
+// and `for await`. It is the second fallback, taken only when the script still
+// does not compile: a bundle that merely *contains* an async generator (a
+// streaming API client nobody calls on this page) is otherwise a hard parse
+// error that skips the whole file — the vendor bundle on webpack.js.org, a
+// chunk on bbc.co.uk and arstechnica.com. esbuild lowers both to its
+// __asyncGenerator/__forAwait helpers, which are plain Promise and Symbol code:
+// nothing is routed through WeakMap, so the reason for not downlevelling
+// wholesale (see lowerDynamicImport) does not apply.
+func lowerAsyncIteration(src string) (string, bool) {
+	return lowerClassic(src, map[string]bool{"dynamic-import": false, "async-generator": false, "for-await": false})
+}
+
+func lowerClassic(src string, supported map[string]bool) (string, bool) {
 	res := esbuild.Transform(src, esbuild.TransformOptions{
 		Loader:    esbuild.LoaderJS,
 		Target:    esbuild.ESNext,
-		Supported: map[string]bool{"dynamic-import": false},
+		Supported: supported,
 		LogLevel:  esbuild.LogLevelSilent,
 	})
 	if len(res.Errors) > 0 || len(res.Code) == 0 {

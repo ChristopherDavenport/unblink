@@ -1,7 +1,6 @@
 package js
 
 import (
-	"net/url"
 	"strings"
 	"unicode/utf16"
 
@@ -162,6 +161,8 @@ func (b *bridge) installPrototypes() {
 	// Per-tag interfaces (HTMLDivElement, HTMLScriptElement, …) and SVGElement.
 	b.installElementInterfaces()
 	b.installXPath()
+	b.installURLMembers()
+	b.installDOMGaps()
 
 	for name, proto := range map[string]*goja.Object{
 		"EventTarget": b.protoEventTarget, "Node": b.protoNode, "Element": b.protoElement,
@@ -230,6 +231,8 @@ func (b *bridge) protoFor(n *html.Node) *goja.Object {
 		return b.protoComment
 	case html.DocumentNode:
 		return b.protoDocumentFragment // a synthetic fragment sentinel
+	case html.DoctypeNode:
+		return b.protoDocumentType
 	case html.ElementNode:
 		p := b.elementProto(n)
 		b.reflectOnWrap(p)
@@ -443,12 +446,42 @@ func (b *bridge) installNodeProto() {
 	})
 }
 
+// contentHolder is the node whose children are n's markup: n itself, except for
+// a <template> whose content fragment has been handed out (templateContent moves
+// the children there), where it is that fragment.
+func (b *bridge) contentHolder(n *html.Node) *html.Node {
+	if n.Type == html.ElementNode && n.Data == "template" {
+		if o, ok := b.templateContentCache[n]; ok {
+			if frag := b.unwrap(o); frag != nil {
+				return frag
+			}
+		}
+	}
+	return n
+}
+
 // installInnerHTML adds the innerHTML accessor (Element and ShadowRoot).
 func (b *bridge) installInnerHTML(p *goja.Object) {
 	vm := b.vm
 	b.protoProp(p, "innerHTML",
-		func(n *html.Node) goja.Value { return vm.ToValue(innerHTML(n)) },
+		func(n *html.Node) goja.Value { return vm.ToValue(innerHTML(b.contentHolder(n))) },
 		func(n *html.Node, v goja.Value) {
+			if holder := b.contentHolder(n); holder != n {
+				// A <template>'s markup lives in its content fragment once that
+				// has been handed out; parse as the template's own children would
+				// be, then move the result there.
+				setInnerHTML(n, v.String())
+				for holder.FirstChild != nil {
+					holder.RemoveChild(holder.FirstChild)
+				}
+				for n.FirstChild != nil {
+					c := n.FirstChild
+					n.RemoveChild(c)
+					holder.AppendChild(c)
+				}
+				b.onMutate(mutationRecord{typ: "childList", target: n})
+				return
+			}
 			setInnerHTML(n, v.String())
 			// Parsed-in custom elements upgrade like inserted ones — when the
 			// markup lands in a connected tree (a shadow root's included); a
@@ -702,70 +735,6 @@ func (b *bridge) installHTMLElementProto() {
 			}
 		})
 
-	// href/src reflect their attributes (the getter resolves to an absolute URL,
-	// as real browsers do), so `a.href = "/x"` on a created element produces a
-	// link that extraction sees — not a wrapper-only property.
-	for _, attrName := range []string{"href", "src"} {
-		name := attrName
-		b.protoProp(p, name,
-			func(n *html.Node) goja.Value {
-				v := getAttr(n, name)
-				if v == "" {
-					return vm.ToValue("")
-				}
-				if u := b.resolveNav(v); u != nil {
-					return vm.ToValue(u.String())
-				}
-				return vm.ToValue(v)
-			},
-			func(n *html.Node, v goja.Value) { b.setAttrMut(n, name, v.String()) })
-	}
-
-	// The anchor-as-URL-parser trick (createElement('a'); a.href = u; read back
-	// a.pathname) is load-bearing in Angular's getBaseHref and many libraries.
-	// Mirror HTMLHyperlinkElementUtils on <a>/<area>: each component resolves the
-	// href attribute against the current location; undefined on other tags.
-	for name, comp := range map[string]func(*url.URL) string{
-		"protocol": func(u *url.URL) string { return u.Scheme + ":" },
-		"host":     func(u *url.URL) string { return u.Host },
-		"hostname": func(u *url.URL) string { return u.Hostname() },
-		"port":     func(u *url.URL) string { return u.Port() },
-		"pathname": func(u *url.URL) string {
-			if u.Path == "" && (u.Scheme == "http" || u.Scheme == "https") {
-				return "/"
-			}
-			return u.Path
-		},
-		"search": func(u *url.URL) string { return rawQuery(u.RawQuery) },
-		"hash":   func(u *url.URL) string { return rawFragment(u.Fragment) },
-		"origin": func(u *url.URL) string { return u.Scheme + "://" + u.Host },
-	} {
-		comp := comp
-		b.protoGetter(p, name, func(n *html.Node) goja.Value {
-			if n.Data != "a" && n.Data != "area" {
-				return goja.Undefined()
-			}
-			if !hasAttr(n, "href") {
-				return vm.ToValue("")
-			}
-			if u := b.resolveNav(getAttr(n, "href")); u != nil {
-				return vm.ToValue(comp(u))
-			}
-			return vm.ToValue("")
-		})
-	}
-
-	// relList reflects `rel` on the elements that have it (<a>, <area>, <link>,
-	// <form>); its supports() is how loaders pick modulepreload over preload.
-	b.protoGetter(p, "relList", func(n *html.Node) goja.Value {
-		switch n.Data {
-		case "link":
-			return b.tokenListFor(n, "rel", relSupported)
-		case "a", "area", "form":
-			return b.tokenListFor(n, "rel", map[string]bool{"noreferrer": true, "noopener": true, "opener": true})
-		}
-		return goja.Undefined()
-	})
 	b.protoGetter(p, "dataset", func(n *html.Node) goja.Value { return b.datasetFor(n) })
 	b.protoGetter(p, "style", func(n *html.Node) goja.Value { return b.styleFor(n) })
 

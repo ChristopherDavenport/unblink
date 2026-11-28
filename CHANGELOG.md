@@ -124,6 +124,30 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **DOM and platform gaps traced to script errors on real pages** (each was an
+  error on a corpus page):
+  - `comment.nextElementSibling`/`previousElementSibling` (Lit's SSR hydration
+    walked from its marker comment to `undefined`; every hydrating component threw).
+  - `protocol`, `host`, `hostname`, `port`, `pathname`, `search`, `hash`, `origin`,
+    `href`, `src` and `relList` are on the elements that have them, not on every
+    element. A component class with its own `this.search` or `this.host` no longer
+    throws "Cannot assign to read only property" in its constructor. The anchor
+    components are now writable.
+  - A classic script containing an async generator or `for await` is lowered and
+    run instead of being skipped whole (the vendor bundle on webpack.js.org).
+  - `Intl.NumberFormat`, `DateTimeFormat` and `Collator` work called without `new`,
+    and their `format`/`compare` are bound, so `list.map(nf.format)` works.
+    `Intl.ListFormat`, `Intl.Locale`, `Intl.DisplayNames` (answers with the code) and
+    an approximate `Intl.Segmenter` are new.
+  - `document.doctype` and `DocumentType`, `document.createAttribute`,
+    `Node.normalize`, `document.elementFromPoint`/`elementsFromPoint` (answered from
+    the same no-layout model as the rects: the body inside the viewport, nothing
+    outside), text-control selection (`setSelectionRange`, `select`, `setRangeText`,
+    `selectionStart/End`), `SVGAnimatedString` for an SVG element's `className`,
+    `navigator.appVersion` and the other frozen identification members, an iterable
+    `document.styleSheets`, and `template.innerHTML` reading and writing the
+    template's content.
+
 - **A render no longer closes in the middle of time-sliced work.** React hydrates in
   ~5 ms slices, yielding through `setImmediate`, and changes nothing in the page
   until it commits; with no request in flight that looked like a quiet page, and the

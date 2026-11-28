@@ -1041,6 +1041,26 @@ Interfaces the engine does not implement stay undefined (`TouchEvent`,
 `ServiceWorker`, `Navigation`, `trustedTypes`, canvas), so feature detection
 keeps telling the truth.
 
+**Syntax goja cannot parse, in classic scripts** (`classicProgram`,
+`internal/js/scripts.go`). A classic script is compiled as written. Only if that
+fails is it re-emitted through `esbuild.Transform` with exactly the unsupported
+features switched off, in two steps: dynamic `import()` (`lowerDynamicImport`),
+then also async generators and `for await` (`lowerAsyncIteration`). A bundle that
+merely contains an async generator is otherwise a parse error that skips the
+whole file. The helpers esbuild emits for these are Promise and Symbol code;
+nothing is routed through goja's `WeakMap`, which is why downlevelling is kept
+this narrow. Module scripts already go through the ES2017 transform.
+
+**No layout, answered consistently** (`internal/js/domgaps.go`). Hit testing
+(`document.elementFromPoint`/`elementsFromPoint`) answers from the same model as
+`getBoundingClientRect`: only the root and the body have a box (the constant
+viewport), so a point inside the viewport hits the body and a point outside hits
+nothing. Text-control selection (`setSelectionRange`, `selectionStart`, …) is
+real state with no caret to draw. URL-bearing members (`href`, `src`, the anchor
+URL components, `relList`) live on the interfaces that have them; on
+`HTMLElement.prototype` the read-only ones made `this.search = …` throw in any
+component class.
+
 **Stopping a page that will not stop** (`interruptUntil`, `internal/js/engine.go`).
 goja's `Interrupt` is one-shot: it unwinds the call that is running, or the next
 one to start, and is cleared as that call returns to Go. A page with *two*
