@@ -26,6 +26,7 @@ const (
 	kindImage     = "image"
 	kindFont      = "font"
 	kindMedia     = "media"
+	kindManifest  = "manifest"
 	kindAnalytics = "analytics/ads"
 )
 
@@ -36,7 +37,7 @@ const (
 // stylesheet's load/error event, and it is too rare here to be worth guessing.
 func consequentialKind(k string) bool {
 	switch k {
-	case kindAnalytics, kindImage, kindFont, kindMedia:
+	case kindAnalytics, kindImage, kindFont, kindMedia, kindManifest:
 		return false
 	}
 	return true
@@ -83,6 +84,10 @@ func missKind(req *http.Request) string {
 		return kindFont
 	case "audio", "video", "track":
 		return kindMedia
+	case "manifest":
+		// The web app manifest is installability metadata the browser fetches
+		// for itself; no page renders from it.
+		return kindManifest
 	}
 	// Sec-Fetch-Dest "empty" (fetch/XHR) or absent: the URL is the only hint. A
 	// bundler runtime prefetching a chunk through fetch() is still code.
