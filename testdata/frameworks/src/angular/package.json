@@ -1,0 +1,25 @@
+{
+  "name": "unblink-fixture-angular",
+  "private": true,
+  "scripts": {
+    "//": "Angular 22's prerender worker fails on Node 25 (\"module is not linked\"); the build runs under a pinned Node 24 fetched by npx.",
+    "build": "npx -y -p node@24.22.3 node node_modules/@angular/cli/bin/ng.js build && rm -rf ../../built/angular && cp -r dist/fixture/browser ../../built/angular && rm -f ../../built/angular/index.csr.html"
+  },
+  "dependencies": {
+    "@angular/common": "22.3.0",
+    "@angular/compiler": "22.3.0",
+    "@angular/core": "22.3.0",
+    "@angular/platform-browser": "22.3.0",
+    "@angular/platform-server": "22.3.0",
+    "@angular/router": "22.3.0",
+    "@angular/ssr": "22.3.0",
+    "rxjs": "7.8.2",
+    "tslib": "2.8.1"
+  },
+  "devDependencies": {
+    "@angular/build": "22.3.0",
+    "@angular/cli": "22.3.0",
+    "@angular/compiler-cli": "22.3.0",
+    "typescript": "6.0.3"
+  }
+}

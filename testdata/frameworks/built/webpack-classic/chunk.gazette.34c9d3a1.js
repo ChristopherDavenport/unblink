@@ -1,0 +1,1 @@
+"use strict";(Array.isArray(self.webpackChunkunblinkClassic)?self.webpackChunkunblinkClassic:self.webpackChunkunblinkClassic=[]).push([["gazette"],{"./src/gazette.js"(e,s,n){function r(){return"<h2>Gazette Chunk Never Requested</h2>"}n.r(s),n.d(s,{render:()=>r})}}]);

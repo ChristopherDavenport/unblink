@@ -1,0 +1,17 @@
+{
+  "//": "Which fixture source directory produced each built output, and the packages bundled by toolchains that record-packages.mjs cannot observe (webpack's runtime, Next/Turbopack).",
+  "outputs": {
+    "vite-react": { "fixture": "vite-react" },
+    "vite-vue": { "fixture": "vite-vue" },
+    "webpack-classic": { "fixture": "webpack", "packages": ["webpack"] },
+    "webpack-esm": { "fixture": "webpack", "packages": ["webpack"] },
+    "webpack-esm-concat": { "fixture": "webpack-esm-concat", "packages": ["webpack"] },
+    "next-app": { "fixture": "next-app", "packages": ["next", "react", "react-dom", "scheduler", "@swc/helpers"] },
+    "astro": { "fixture": "astro" },
+    "nuxt": { "fixture": "nuxt" },
+    "sveltekit": { "fixture": "sveltekit" },
+    "sveltekit-poll": { "fixture": "sveltekit" },
+    "angular": { "fixture": "angular", "copy": "dist/fixture/3rdpartylicenses.txt" },
+    "solid": { "fixture": "solid" }
+  }
+}

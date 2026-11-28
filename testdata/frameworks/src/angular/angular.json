@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "cli": { "analytics": false },
+  "projects": {
+    "fixture": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": "dist/fixture",
+            "browser": "src/main.ts",
+            "server": "src/main.server.ts",
+            "outputMode": "static",
+            "index": "src/index.html",
+            "tsConfig": "tsconfig.json",
+            "outputHashing": "all",
+            "sourceMap": false,
+            "optimization": true,
+            "extractLicenses": true
+          }
+        }
+      }
+    }
+  }
+}

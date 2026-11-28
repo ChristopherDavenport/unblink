@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval wpt wpt-sync corpus corpus-capture corpus-compare fuzz bench membench crossbench vet lint fmt tidy clean
+.PHONY: all build run version test eval eval-fixtures wpt wpt-sync corpus corpus-capture corpus-compare fuzz bench membench crossbench vet lint fmt tidy clean
 
 all: build
 
@@ -34,6 +34,12 @@ test:
 # stderr and exits nonzero on regression.
 eval:
 	go test -tags eval ./eval -run TestEval -count=1 -v
+
+# Rebuild the built-from-source framework fixtures the eval renders
+# (testdata/frameworks/built) with their real toolchains. Needs network + Node;
+# local-only like wpt-sync, never run by CI. FIXTURES="next-app nuxt" narrows it.
+eval-fixtures:
+	./scripts/eval-fixtures.sh $(FIXTURES)
 
 # Offline web-platform-tests conformance report over the pinned, vendored corpus
 # (testdata/wpt). Gated behind the `wpt` build tag so it never runs in `make test`;

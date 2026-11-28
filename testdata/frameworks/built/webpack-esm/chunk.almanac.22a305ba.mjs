@@ -1,0 +1,1 @@
+export const __webpack_esm_ids__=["almanac"];export const __webpack_esm_modules__={"./src/almanac.js"(e,a,n){function s(){return"<h2>Webpack Split Chunk Loaded</h2><p>Frost dates and moon phases were supplied by the almanac chunk.</p>"}n.d(a,{render:()=>s})}};

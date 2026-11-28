@@ -1,0 +1,13 @@
+{
+  "name": "unblink-fixture-nuxt",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt generate && rm -rf ../../built/nuxt && cp -rL .output/public ../../built/nuxt && node normalize.mjs"
+  },
+  "dependencies": {
+    "nuxt": "4.7.0",
+    "vue": "3.5.46",
+    "vue-router": "5.5.3"
+  }
+}

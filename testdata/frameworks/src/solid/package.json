@@ -1,0 +1,10 @@
+{
+  "name": "unblink-fixture-solid",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && vite build --ssr src/entry-server.jsx --outDir .ssr && node prerender.mjs"
+  },
+  "dependencies": { "solid-js": "1.9.20" },
+  "devDependencies": { "vite": "8.4.0", "vite-plugin-solid": "2.11.17" }
+}

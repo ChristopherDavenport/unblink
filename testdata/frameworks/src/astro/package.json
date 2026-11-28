@@ -1,0 +1,7 @@
+{
+  "name": "unblink-fixture-astro",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "astro build" },
+  "dependencies": { "astro": "7.4.13", "@astrojs/preact": "6.1.6", "preact": "11.2.0" }
+}

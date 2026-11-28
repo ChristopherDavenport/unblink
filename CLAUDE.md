@@ -24,6 +24,7 @@ lint locally (needs the golangci-lint binary).
 make build     # go build (version stamped from the nearest v* tag)
 make test      # go test ./... (includes every fuzz target's seed corpus)
 make eval      # offline in-process MCP eval gate (build tag `eval`; scorecard on stderr)
+make eval-fixtures # rebuild the built-from-source framework fixtures in testdata/frameworks/built (needs network + Node; local-only)
 make wpt       # offline web-platform-tests conformance report (build tag `wpt`; on-demand, not a gate)
 make wpt-sync  # refresh the vendored WPT subset in testdata/wpt/ (needs network; local-only)
 make corpus    # offline real-page differential report vs. a Chromium oracle (build tag `corpus`; on-demand, not a gate)

@@ -1,0 +1,1 @@
+import{t as e}from"./index-Caa_G_Zr.js";var t=e();function n(){return(0,t.jsxs)(`section`,{children:[(0,t.jsx)(`h2`,{children:`Cellar Chunk Never Requested`}),(0,t.jsx)(`p`,{children:`This text belongs to a chunk that only loads after a click.`})]})}export{n as default};

@@ -1,0 +1,1 @@
+import{t as e}from"./index-Caa_G_Zr.js";var t=e();function n(){return(0,t.jsxs)(`section`,{children:[(0,t.jsx)(`h2`,{children:`Lazy Orchard Chunk Loaded`}),(0,t.jsx)(`p`,{children:`Quince and medlar rows were counted by the lazily imported orchard module.`})]})}export{n as default};
