@@ -81,9 +81,9 @@ func (b *bridge) loadInsertedScript(n *html.Node) {
 	b.loadExternalScript(n, src)
 }
 
-// scriptSrc returns a script element's effective src. `el.src = url` sets a property on
-// the JS wrapper (it does not reflect to the html attribute), while setAttribute('src',
-// url) writes the attribute — so check both, preferring the JS property.
+// scriptSrc returns a script element's effective src. The src property reflects the
+// attribute, so the two normally agree; the property is still read first because a
+// page (or a library patching HTMLScriptElement) can shadow it on the wrapper.
 func (b *bridge) scriptSrc(n *html.Node) string {
 	if obj := b.wrap(n).ToObject(b.vm); obj != nil {
 		if v := obj.Get("src"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {

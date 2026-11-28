@@ -1007,6 +1007,33 @@ form), guarded against a handler that throws, and — unless a handler cancels i
 recorded in the render diagnostics, which are read when the render settles rather
 than after the first script pass.
 
+**Reflected attributes** (`internal/js/reflect.go`): a reflected IDL attribute
+and its content attribute are one piece of state — the attribute on the node —
+because the node tree is the only thing extraction reads. `reflectTable` is the
+HTML Standard's reflection rules per interface in a compact form (string,
+boolean, URL, long/unsigned long with defaults, enumerated with missing/invalid
+defaults, nullable, token list, and a handful of named special cases such as
+`hidden`, `tabIndex`, `option.selected`); per runtime each distinct rule becomes one
+native function that is both getter and setter, shared by every interface that
+uses the rule. Presence is per interface, as in a browser (`'disabled' in input`
+is true, `'disabled' in div` is false): Preact and Vue choose between a property
+and an attribute with exactly that test. `ARIAMixin` (`ariaLabel`, `role`, …)
+reflects on `Element`. `nonce` is deliberately not reflected: nonces are hidden
+from page JS (ADR 0014).
+
+**Inline style** (`internal/js/cssstyle.go`): `el.style` is a
+`CSSStyleDeclaration` over the `style` attribute — per-property get/set/remove,
+`setProperty`/`removeProperty`/`getPropertyValue`/`getPropertyPriority`, `cssText`,
+`length`/`item`, camelCase ↔ dashed names. It is still not a CSSOM: values are not
+validated, shorthands are not expanded, nothing is computed and `getComputedStyle`
+stays an empty-string stub. Its purpose is that an inline-style write reaches the
+tree, where `innerText` and extraction's hidden-element check
+(`display:none`/`visibility:hidden`) already look. A style write is delivered to
+MutationObservers and makes a live session's snapshot stale, but it is **not
+settle activity**: a page animating from `requestAnimationFrame` writes inline
+styles every frame, and counting those would hold the render's quiet window open
+until the budget ran out.
+
 **Programmatic form submission** (`internal/js/forms.go`): `document.forms`,
 `form.elements`, `.namedItem`, and `form.submit()`/`requestSubmit()` are modelled.
 A render never performs the cross-document fetch, so a submit is treated like a

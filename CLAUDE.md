@@ -174,6 +174,16 @@ not `doFetch`).
   (`--log-level`). Never print to stdout outside the MCP transport.
 - **Never return an unbounded blob.** `read` defaults to article-mode extraction
   and paginates via an opaque cursor; whole-page Markdown can be huge.
+- **Page-JS state lives in the node tree, not on wrappers.** Extraction reads only
+  the `*html.Node` tree, so anything page JS can set must land there: reflected IDL
+  attributes come from the one table in `internal/js/reflect.go` (add a row, not a
+  hand-written accessor; presence is per interface because Preact/Vue branch on
+  `name in el`), `el.style` writes go to the `style` attribute
+  (`internal/js/cssstyle.go`), and `on<type>` handlers are real listener entries
+  (`internal/js/eventhandlers.go`). Prototype accessors cost allocations on every
+  render — share one get/set function per rule, as those files do. Inline-style
+  writes bump `styleVersion` (snapshot staleness), **not** `domVersion` (settle
+  activity): an animation loop must not pin the settle.
 - **Article mode checks its own coverage** (`internal/reduce/readability.go`,
   `dom.MeasureContent`): when the readability extraction holds under half of the
   page's content-region text (or under two-thirds with the remainder mostly link
@@ -359,7 +369,8 @@ not `doFetch`).
   `composedPath()`); declarative Shadow DOM (`<template shadowrootmode>`) is flattened
   on the static no-JS path. **Still permanent non-goals** (no layout engine): real
   *element* layout/geometry and CSSOM (constant-stubbed to zeros/empty, never
-  computed), canvas/WebGL, Workers/WebSocket/IndexedDB, and Shadow-DOM *style scoping*
+  computed; `el.style` is a declaration block over the `style` attribute so inline
+  writes reach the tree, but nothing is validated or cascaded), canvas/WebGL, Workers/WebSocket/IndexedDB, and Shadow-DOM *style scoping*
   (`:host`/`::slotted`/`::part`) / slot reprojection / closed-mode privacy from
   extraction. The **viewport
   environment** is the one exception (Phase 21): `innerWidth`/`screen`/

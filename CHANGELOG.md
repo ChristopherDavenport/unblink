@@ -87,6 +87,25 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **Property writes reach the page tree (reflected attributes).** `input.name = …`,
+  `a.title = …`, `img.alt = …`, `el.hidden = true`, `link.rel = …`,
+  `option.selected = true`, `el.ariaLabel = …` set an expando on the JavaScript
+  wrapper and nothing else, so `read`, `forms` and `links` never saw state a page set
+  through properties; only `id`, `className`, `href`, `src`, `value`, `checked` and
+  `slot` reflected. The common reflected attributes of every HTML interface now read
+  and write the content attribute, with the standard's defaults and keyword rules,
+  and exist only on the interfaces that have them (`'disabled' in input` is true,
+  `'disabled' in div` is false — the test Preact and Vue use to choose between a
+  property and an attribute). `meta.content` no longer reads `undefined`.
+- **`el.style` writes reach the `style` attribute.** `el.style.display = 'none'`,
+  `style.setProperty(…)` and `style.cssText = …` changed a private object; the
+  element's `style` attribute, which `innerText` and hidden-content stripping read,
+  never moved. `el.style` is now a declaration block over the attribute. There is
+  still no CSSOM: values are not validated and nothing is computed. Content a page
+  hides with an inline style is now treated as hidden, and content it reveals as
+  visible.
+- **`innerHTML`/`outerHTML` write void elements as `<br>`, not `<br/>`.**
+
 - **Event-handler properties and attributes run.** `window.onload = fn`,
   `el.onclick = fn`, `document.onreadystatechange = fn` and `onclick="…"` in markup
   were stored and never called; only `addEventListener` listeners ran. They are now

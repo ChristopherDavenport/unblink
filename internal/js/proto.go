@@ -230,7 +230,9 @@ func (b *bridge) protoFor(n *html.Node) *goja.Object {
 	case html.DocumentNode:
 		return b.protoDocumentFragment // a synthetic fragment sentinel
 	case html.ElementNode:
-		return b.elementProto(n)
+		p := b.elementProto(n)
+		b.reflectOnWrap(p)
+		return p
 	default:
 		return b.protoNode
 	}

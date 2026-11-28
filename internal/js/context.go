@@ -207,7 +207,7 @@ func (c *Context) Snapshot(ctx context.Context) ([]byte, uint64, error) {
 			// Detach extension-hidden ad markup from the clone (the live tree keeps it,
 			// so a later Dispatch still sees the real DOM).
 			c.bridge.applyCosmeticFilters(root)
-			ver = c.bridge.domVersion
+			ver = c.bridge.domVersion + c.bridge.styleVersion
 		}
 		out = []byte(outerHTML(root))
 	})
@@ -219,7 +219,7 @@ func (c *Context) DOMVersion(ctx context.Context) (uint64, error) {
 	var ver uint64
 	err := c.run(ctx, false, nil, nil, func(*goja.Runtime) {
 		if c.bridge != nil {
-			ver = c.bridge.domVersion
+			ver = c.bridge.domVersion + c.bridge.styleVersion
 		}
 	})
 	return ver, err

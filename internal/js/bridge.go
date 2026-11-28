@@ -81,7 +81,16 @@ type bridge struct {
 	// Per-node companion objects, cached for identity (el.classList === el.classList).
 	tokenListCache map[tokenListKey]*goja.Object // classList / relList, keyed by (node, attribute)
 	styleCache     map[*html.Node]*goja.Object
-	datasetCache   map[*html.Node]*goja.Object
+	// Reflected IDL attributes (reflect.go): the shared accessor per rule, and the
+	// interface prototypes whose attributes are not installed yet.
+	reflectAccessors map[string]goja.Value
+	reflectPending   map[*goja.Object]string
+	styleOf          map[*goja.Object]*cssStyle // style object → its declaration block (cssstyle.go)
+	styleMethods     map[string]goja.Value      // shared CSSStyleDeclaration methods
+	// styleVersion counts inline-style writes made through el.style. They make a
+	// live snapshot stale but are not settle activity (see setStyleAttr).
+	styleVersion uint64
+	datasetCache map[*html.Node]*goja.Object
 
 	// domVersion bumps on every DOM mutation made through the bridge. The live
 	// Context polls it for a "DOM quiet" settle signal; MutationObserver flushing
@@ -372,6 +381,7 @@ func (b *bridge) install() {
 
 	b.installGlobals(win)
 	b.installEventHandlers()
+	b.installReflection()
 	b.installNodeFilter()
 	b.installMutationObserver()
 	b.installCustomElements(win)
@@ -1015,21 +1025,6 @@ func (b *bridge) indexedIter() goja.Value {
 	return b.indexedIterFn
 }
 
-// styleFor returns the cached, writable style object for n. There is no CSSOM:
-// it is a plain property bag (so `el.style.display = 'none'` doesn't throw), not
-// reflected back to the class/serialized output. Cached for identity.
-func (b *bridge) styleFor(n *html.Node) *goja.Object {
-	if o, ok := b.styleCache[n]; ok {
-		return o
-	}
-	o := b.vm.NewObject()
-	_ = o.Set("setProperty", noop)
-	_ = o.Set("removeProperty", func(goja.FunctionCall) goja.Value { return b.vm.ToValue("") })
-	_ = o.Set("getPropertyValue", func(goja.FunctionCall) goja.Value { return b.vm.ToValue("") })
-	b.styleCache[n] = o
-	return o
-}
-
 func noop(goja.FunctionCall) goja.Value { return goja.Undefined() }
 
 var selBaseHref = cascadia.MustCompile("base[href]")
@@ -1229,13 +1224,85 @@ func innerHTML(n *html.Node) string {
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		_ = html.Render(&buf, c)
 	}
-	return buf.String()
+	return htmlVoidStyle(buf.String())
 }
 
 func outerHTML(n *html.Node) string {
 	var buf bytes.Buffer
 	_ = html.Render(&buf, n)
-	return buf.String()
+	return htmlVoidStyle(buf.String())
+}
+
+// rawTextTags are the elements whose text children x/net/html writes verbatim.
+var rawTextTags = map[string]bool{
+	"iframe": true, "noembed": true, "noframes": true, "noscript": true,
+	"plaintext": true, "script": true, "style": true, "xmp": true,
+}
+
+// htmlVoidStyle rewrites x/net/html's XML-style void elements (<br/>, <img …/>)
+// to the HTML serialization a browser's innerHTML/outerHTML produces (<br>,
+// <img …>). Page code compares and re-parses these strings, and "<br/>" is not
+// what the fragment serialization algorithm emits.
+//
+// The renderer escapes < and > in text and attribute values, so outside
+// comments and raw-text elements every "<" opens a tag and the next ">" closes
+// it; those two regions are copied through untouched.
+func htmlVoidStyle(s string) string {
+	if !strings.Contains(s, "/>") {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); {
+		lt := strings.IndexByte(s[i:], '<')
+		if lt < 0 {
+			sb.WriteString(s[i:])
+			break
+		}
+		lt += i
+		sb.WriteString(s[i:lt])
+		if strings.HasPrefix(s[lt:], "<!--") {
+			end := strings.Index(s[lt+4:], "-->")
+			if end < 0 {
+				sb.WriteString(s[lt:])
+				break
+			}
+			end += lt + 4 + 3
+			sb.WriteString(s[lt:end])
+			i = end
+			continue
+		}
+		gt := strings.IndexByte(s[lt:], '>')
+		if gt < 0 {
+			sb.WriteString(s[lt:])
+			break
+		}
+		gt += lt
+		tag := s[lt : gt+1]
+		i = gt + 1
+		if strings.HasSuffix(tag, "/>") {
+			sb.WriteString(tag[:len(tag)-2])
+			sb.WriteByte('>')
+			continue
+		}
+		sb.WriteString(tag)
+		if len(tag) > 2 && tag[1] != '/' {
+			name := tag[1 : len(tag)-1]
+			if sp := strings.IndexAny(name, " \t\n"); sp >= 0 {
+				name = name[:sp]
+			}
+			if rawTextTags[name] {
+				end := strings.Index(s[i:], "</"+name+">")
+				if end < 0 {
+					sb.WriteString(s[i:])
+					break
+				}
+				sb.WriteString(s[i : i+end])
+				i += end
+			}
+		}
+	}
+	return sb.String()
 }
 
 func setInnerHTML(n *html.Node, markup string) {
