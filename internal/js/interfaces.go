@@ -77,6 +77,7 @@ func (b *bridge) installElementInterfaces() {
 	vm := b.vm
 	b.ifaceProtos = make(map[string]*goja.Object)
 	b.tagProtos = make(map[string]*goja.Object)
+	b.svgTagBuild = make(map[string]func() *goja.Object)
 
 	iface := func(name string, parent *goja.Object) *goja.Object {
 		if p, ok := b.ifaceProtos[name]; ok {
@@ -129,6 +130,41 @@ func (b *bridge) installElementInterfaces() {
 		b.setToStringTag(p, name)
 		b.ifaceProtos[name] = p
 	}
+	// The rest of the SVG interface family, for instanceof tests (SvelteKit's
+	// click handler asks `x instanceof SVGAElement` on every click). They are
+	// published as constructors chained to SVGElement / SVGGraphicsElement;
+	// elements other than <svg> keep the SVGElement prototype, so the test
+	// answers false — never a ReferenceError.
+	// Built on first use — the first read of the global, or the first element
+	// of that kind wrapped — because a page with no inline SVG never needs them.
+	global := vm.GlobalObject()
+	lazy := func(name string, parent func() *goja.Object) {
+		tag := svgInterfaceTag[name]
+		build := func() *goja.Object {
+			if p, ok := b.ifaceProtos[name]; ok {
+				return p
+			}
+			_ = global.Delete(name)
+			p := vm.CreateObject(parent())
+			b.ifaceProtos[name] = p
+			b.defineCtor(name, p)
+			b.setToStringTag(p, name)
+			return p
+		}
+		if tag != "" {
+			b.svgTagBuild[tag] = build
+		}
+		_ = global.DefineAccessorProperty(name,
+			vm.ToValue(func(goja.FunctionCall) goja.Value { build(); return global.Get(name) }),
+			nil, // no setter: one function per interface, not two; the property is configurable
+			goja.FLAG_TRUE, goja.FLAG_FALSE)
+	}
+	for _, name := range svgGraphicsInterfaces {
+		lazy(name, func() *goja.Object { return b.ifaceProtos["SVGGraphicsElement"] })
+	}
+	for _, name := range svgPlainInterfaces {
+		lazy(name, func() *goja.Object { return b.protoSVGElement })
+	}
 }
 
 // elementProto picks the interface prototype for an element node.
@@ -137,6 +173,9 @@ func (b *bridge) elementProto(n *html.Node) *goja.Object {
 	case "svg":
 		if n.Data == "svg" {
 			return b.ifaceProtos["SVGSVGElement"]
+		}
+		if build, ok := b.svgTagBuild[n.Data]; ok {
+			return build()
 		}
 		return b.protoSVGElement
 	case "":
@@ -153,3 +192,31 @@ func (b *bridge) elementProto(n *html.Node) *goja.Object {
 	}
 	return b.protoUnknownElement
 }
+
+// SVG interfaces published beyond SVGElement/SVGGraphicsElement/SVGSVGElement,
+// and the element each one is the interface of.
+var (
+	svgGraphicsInterfaces = []string{
+		"SVGAElement", "SVGGElement", "SVGDefsElement", "SVGUseElement", "SVGImageElement", "SVGSwitchElement",
+		"SVGForeignObjectElement", "SVGGeometryElement", "SVGTextContentElement",
+	}
+	svgPlainInterfaces = []string{
+		"SVGTitleElement", "SVGDescElement", "SVGStyleElement", "SVGScriptElement", "SVGSymbolElement", "SVGMarkerElement",
+		"SVGClipPathElement", "SVGMaskElement", "SVGPatternElement", "SVGStopElement", "SVGGradientElement",
+		"SVGLinearGradientElement", "SVGRadialGradientElement", "SVGFilterElement", "SVGMetadataElement", "SVGViewElement",
+		"SVGPathElement", "SVGRectElement", "SVGCircleElement", "SVGEllipseElement", "SVGLineElement",
+		"SVGPolylineElement", "SVGPolygonElement", "SVGTextElement", "SVGTSpanElement", "SVGTextPathElement",
+		"SVGAnimationElement", "SVGAnimateElement", "SVGAnimateTransformElement", "SVGAnimateMotionElement", "SVGSetElement",
+	}
+	svgInterfaceTag = map[string]string{
+		"SVGAElement": "a", "SVGGElement": "g", "SVGDefsElement": "defs", "SVGUseElement": "use", "SVGImageElement": "image",
+		"SVGSwitchElement": "switch", "SVGForeignObjectElement": "foreignObject", "SVGTitleElement": "title", "SVGDescElement": "desc",
+		"SVGStyleElement": "style", "SVGScriptElement": "script", "SVGSymbolElement": "symbol", "SVGMarkerElement": "marker",
+		"SVGClipPathElement": "clipPath", "SVGMaskElement": "mask", "SVGPatternElement": "pattern", "SVGStopElement": "stop",
+		"SVGLinearGradientElement": "linearGradient", "SVGRadialGradientElement": "radialGradient", "SVGFilterElement": "filter",
+		"SVGMetadataElement": "metadata", "SVGViewElement": "view", "SVGPathElement": "path", "SVGRectElement": "rect",
+		"SVGCircleElement": "circle", "SVGEllipseElement": "ellipse", "SVGLineElement": "line", "SVGPolylineElement": "polyline",
+		"SVGPolygonElement": "polygon", "SVGTextElement": "text", "SVGTSpanElement": "tspan", "SVGTextPathElement": "textPath",
+		"SVGAnimateElement": "animate", "SVGAnimateTransformElement": "animateTransform", "SVGAnimateMotionElement": "animateMotion", "SVGSetElement": "set",
+	}
+)

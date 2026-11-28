@@ -51,7 +51,7 @@ func TestInterfaceDetails(t *testing.T) {
 		{"svg", `<svg id="g"><circle id="c"/></svg>`, `
 			var g = document.getElementById('g'), c = document.getElementById('c');
 			return [g instanceof SVGElement, c instanceof SVGElement, g instanceof SVGSVGElement, c instanceof HTMLDivElement, typeof c.style, Object.prototype.toString.call(c)].join(',');`,
-			"true,true,true,false,object,[object SVGElement]"},
+			"true,true,true,false,object,[object SVGCircleElement]"},
 		{"a plain object is still a plain object", ``, `return Object.prototype.toString.call({});`, "[object Object]"},
 	}
 	for _, c := range cases {

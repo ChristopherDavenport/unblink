@@ -1,6 +1,7 @@
 package js
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -72,6 +73,26 @@ func (b *bridge) htmlCollection(nodes []*html.Node) *goja.Object {
 	o := b.vm.NewArray(arr...) // a real array, so page code can hang properties on it
 	if b.protoHTMLCollection != nil {
 		_ = o.SetPrototype(b.protoHTMLCollection)
+	}
+	return o
+}
+
+// namedCollection is htmlCollection plus named access: collection.<id> and
+// collection.<name> (document.forms.login). The first element with a name
+// wins; a name that is already a property — an index, length, a method — is
+// left alone, and the properties are not enumerable, as in a browser. It is
+// used for the document's own collections only: children and
+// getElementsBy* are built far too often to pay for it (namedItem() works on
+// all of them).
+func (b *bridge) namedCollection(nodes []*html.Node) *goja.Object {
+	o := b.htmlCollection(nodes)
+	for i, n := range nodes {
+		for _, key := range [2]string{getAttr(n, "id"), getAttr(n, "name")} {
+			if key == "" || o.Get(key) != nil {
+				continue
+			}
+			_ = o.DefineDataProperty(key, o.Get(strconv.Itoa(i)), goja.FLAG_TRUE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+		}
 	}
 	return o
 }

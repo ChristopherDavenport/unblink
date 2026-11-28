@@ -89,6 +89,7 @@ type bridge struct {
 	protoXPathResult      *goja.Object
 	protoXPathExpression  *goja.Object
 	protoSVGElement       *goja.Object
+	svgTagBuild           map[string]func() *goja.Object // SVG tag → builds (once) its interface prototype (interfaces.go)
 	protoUnknownElement   *goja.Object
 	ifaceProtos           map[string]*goja.Object // interface name → prototype
 	tagProtos             map[string]*goja.Object // HTML tag → interface prototype
@@ -697,13 +698,13 @@ func (b *bridge) documentObject() *goja.Object {
 	_ = d.Set("getElementsByClassName", func(call goja.FunctionCall) goja.Value {
 		return b.htmlCollection(queryAll(b.doc, "."+call.Argument(0).String()))
 	})
-	b.defineGetter(d, "forms", func() goja.Value { return b.htmlCollection(queryAll(b.doc, "form")) })
+	b.defineGetter(d, "forms", func() goja.Value { return b.namedCollection(queryAll(b.doc, "form")) })
 	// The other document-wide element collections. scripts is how a loader finds
 	// its own tag (and its src-relative base) when document.currentScript is null.
-	b.defineGetter(d, "scripts", func() goja.Value { return b.htmlCollection(queryAll(b.doc, "script")) })
-	b.defineGetter(d, "images", func() goja.Value { return b.htmlCollection(queryAll(b.doc, "img")) })
-	b.defineGetter(d, "links", func() goja.Value { return b.htmlCollection(queryAll(b.doc, "a[href], area[href]")) })
-	b.defineGetter(d, "embeds", func() goja.Value { return b.htmlCollection(queryAll(b.doc, "embed")) })
+	b.defineGetter(d, "scripts", func() goja.Value { return b.namedCollection(queryAll(b.doc, "script")) })
+	b.defineGetter(d, "images", func() goja.Value { return b.namedCollection(queryAll(b.doc, "img")) })
+	b.defineGetter(d, "links", func() goja.Value { return b.namedCollection(queryAll(b.doc, "a[href], area[href]")) })
+	b.defineGetter(d, "embeds", func() goja.Value { return b.namedCollection(queryAll(b.doc, "embed")) })
 	_ = d.Set("createElement", func(call goja.FunctionCall) goja.Value {
 		tag := strings.ToLower(call.Argument(0).String())
 		return b.wrap(b.newElement(tag, ""))

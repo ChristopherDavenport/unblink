@@ -179,6 +179,17 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **`document.forms.<name>` and the SVG interfaces exist.** An `HTMLCollection`
+  answers by id and name (`document.forms.login`, `document.images.logo`), not
+  only by index. The SVG interface family (`SVGAElement`, `SVGPathElement`,
+  `SVGGElement` and some forty more) is published and SVG elements are
+  instances of their own interface; `x instanceof SVGAElement`, which
+  SvelteKit's router runs on every click, was a `ReferenceError`. They are
+  built on first use.
+- **A static read no longer includes `<template>` contents.** With JavaScript
+  off (`render=false`, `--disable-js`), the text and links inside a `<template>`
+  were emitted as page content; they are inert markup a browser never renders.
+
 - **Clicking a checkbox or radio button changes it.** A click — from the
   `interact` tool or `element.click()` — dispatched the event and nothing else,
   so `interact` on a checkbox reported `changed: false` and left it unchecked.

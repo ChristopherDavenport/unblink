@@ -105,3 +105,29 @@ func StripHidden(root *html.Node) {
 		}
 	}
 }
+
+// StripTemplates removes every <template> element under root. A template's
+// contents are inert: a browser parses them into a separate fragment that is
+// never rendered, so they are not page text. (With JavaScript on, the engine
+// has already moved them out of the tree; this covers the static path. A
+// declarative shadow root's template is composed into its host at parse time
+// and is gone by now.)
+func StripTemplates(root *html.Node) {
+	var doomed []*html.Node
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if c.Type == html.ElementNode && c.Namespace == "" && c.Data == "template" {
+				doomed = append(doomed, c)
+				continue
+			}
+			walk(c)
+		}
+	}
+	walk(root)
+	for _, n := range doomed {
+		if n.Parent != nil {
+			n.Parent.RemoveChild(n)
+		}
+	}
+}
