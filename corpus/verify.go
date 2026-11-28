@@ -88,6 +88,7 @@ var stackMarkers = []stackMarker{
 	{"solid", inScript, "solid-proxy"},
 	{"angular", inDoc, "ng-version="},
 	{"angular", inDoc, "_nghost-"},
+	{"angular", inScript, "ng-version"}, // the runtime carries the attribute name it stamps: a client-rendered app has it nowhere in the served HTML
 	{"angular-ssr", inDoc, "ng-server-context"},
 	{"angular-ssr", inDoc, " ngh="},
 	{"preact", inURL, "preact"},
