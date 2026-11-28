@@ -82,6 +82,16 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Added
 
+- **Named access on forms and the document.** `form.fieldname`, `form[0]`,
+  `form.elements.fieldname` (an `HTMLFormControlsCollection`, with a
+  `RadioNodeList` and its `.value` where several controls share a name) and
+  `document.formname` / `document.imagename` now resolve, and an inline event
+  handler can name its form's controls directly (`onclick="q.value = ''"`).
+  Two deviations: a built-in member always wins over a control of the same name
+  (a browser lets `<input name="submit">` shadow `form.submit`), and
+  `'fieldname' in form` is false. Window named access (a global per element id)
+  is deliberately not provided.
+
 - **`mode=article` no longer returns a fragment of a hub page.** On a section
   front, a link directory or an index, readability's best block is one card or
   the footer blurb, and `read` (whose default mode is `article`) returned it as

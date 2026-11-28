@@ -373,11 +373,13 @@ func (b *bridge) compileAttrHandler(s *handlerSlot, body string) goja.Value {
 	if !ok {
 		return nil
 	}
+	// The document and the form owner resolve their named elements too
+	// (`onclick="q.value = ''"`), which takes a scope object that answers `has`.
 	var form goja.Value = b.vm.NewObject()
 	if f := b.formOwner(s.attrOwner); f != nil {
-		form = b.wrap(f)
+		form = b.namedScope(b.wrap(f))
 	}
-	fn, err := factory(b.wrap(s.attrOwner), b.documentObj, form)
+	fn, err := factory(b.wrap(s.attrOwner), b.namedScope(b.documentObj), form)
 	if err != nil {
 		b.recordError(err)
 		return nil

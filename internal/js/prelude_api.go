@@ -3554,6 +3554,43 @@ const preludeAPIJS = `
     }
     if (!('length' in window)) Object.defineProperty(window, 'length', { value: 0, writable: true, configurable: true, enumerable: true });
   })();
+  // ---- named access on forms and the document ----
+  //
+  // form.fieldname / form[0] / document.formname (see formnamed.go). A Proxy one
+  // step above HTMLFormElement.prototype and Document.prototype answers what the
+  // real chain does not define; its target is an empty object inheriting the real
+  // parent, so instanceof and isPrototypeOf still see that parent.
+  (function () {
+    var named = window.__unblinkNamedGet;
+    try { delete window.__unblinkNamedGet; } catch (e) {}
+    if (typeof named !== 'function' || typeof Proxy !== 'function' || typeof Reflect !== 'object') return;
+    var splice = function (proto) {
+      if (!proto) return;
+      var parent = Object.getPrototypeOf(proto);
+      if (!parent) return;
+      Object.setPrototypeOf(proto, new Proxy(Object.create(parent), {
+        get: function (t, k, r) {
+          if (typeof k !== 'string' || k in t) return Reflect.get(t, k, r);
+          return named(r, k);
+        }
+      }));
+    };
+    if (window.HTMLFormElement) splice(window.HTMLFormElement.prototype);
+    if (window.Document) splice(window.Document.prototype);
+    // Scope objects for inline event handlers: identifier resolution asks has().
+    window.__unblinkNamedScope = function (o) {
+      return new Proxy(o, {
+        has: function (t, k) { return (k in t) || (typeof k === 'string' && named(t, k) !== undefined); },
+        get: function (t, k) {
+          if (k === Symbol.unscopables) return undefined;
+          if (typeof k !== 'string' || k in t) return t[k];
+          return named(t, k);
+        },
+        set: function (t, k, v) { t[k] = v; return true; }
+      });
+    };
+  })();
+
 })();
 `
 

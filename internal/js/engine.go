@@ -187,6 +187,7 @@ func (e *Engine) prepare(vm *goja.Runtime, loop *eventloop.EventLoop) *bridge {
 	// Intl, messaging). Failure here is non-fatal.
 	_, _ = vm.RunProgram(preludeProgram)
 	_, _ = vm.RunProgram(preludeAPIProgram)
+	b.takePreludeHelpers()
 	b.preludesRan = true
 	return b
 }

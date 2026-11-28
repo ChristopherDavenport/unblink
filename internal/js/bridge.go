@@ -81,6 +81,9 @@ type bridge struct {
 	scriptOrdinal         map[*html.Node]int // classic script → its document position (runDocumentScripts)
 	protoNodeList         *goja.Object       // see installCollections
 	protoHTMLCollection   *goja.Object
+	protoRadioNodeList    *goja.Object // see installFormNamedAccess
+	protoFormControls     *goja.Object
+	namedScopeFn          goja.Callable           // prelude helper behind namedScope
 	objectProto           *goja.Object            // Object.prototype, cached for adoptEventInterface
 	eventProtos           map[string]*goja.Object // interface name → prototype (adoptEventInterface)
 	protoXPathResult      *goja.Object

@@ -163,6 +163,7 @@ func (b *bridge) installPrototypes() {
 	b.installXPath()
 	b.installURLMembers()
 	b.installSelect()
+	b.installFormNamedAccess()
 	b.installDOMGaps()
 
 	for name, proto := range map[string]*goja.Object{
@@ -699,7 +700,7 @@ func (b *bridge) installHTMLElementProto() {
 		if n.Data != "form" {
 			return goja.Undefined()
 		}
-		return b.htmlCollection(b.formControls(n))
+		return b.formControlsCollection(n)
 	})
 	b.protoMethod(p, "submit", func(n *html.Node, _ goja.FunctionCall) goja.Value {
 		b.submitForm(n, false)

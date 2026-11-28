@@ -1117,6 +1117,21 @@ a long delay (a poll loop, a retry backoff) became a busy loop against the page'
 origin for the rest of the budget. `TestTimerClampDoesNotSpinSelfRearmingTimer`
 holds it.
 
+**Named access** (`internal/js/formnamed.go`): `form.fieldname`, `form[0]`,
+`form.elements.fieldname` (`HTMLFormControlsCollection`; `RadioNodeList` with a
+working `.value` when several controls share a name) and
+`document.formname`/`document.imagename`. The lookup is not an own property as
+in a browser: the API prelude splices a Proxy between `HTMLFormElement.prototype`
+(and `Document.prototype`) and its parent, whose `get` trap asks the engine for
+whatever the real chain does not define. So a built-in always wins (no
+`[LegacyOverrideBuiltIns]`: `<input name="submit">` does not shadow
+`form.submit`), `'fieldname' in form` is false (a `has` trap is not told the
+receiver), and a miss on a document costs one walk of its named elements. Inline
+event handlers get scope objects for the document and the form owner that do
+answer `has`, so `onclick="q.value = ''"` resolves. Window named access (a global
+per element id) is deliberately absent — it would sit behind every unresolved
+global name and let an element id answer `typeof module`.
+
 **Reflected attributes** (`internal/js/reflect.go`): a reflected IDL attribute
 and its content attribute are one piece of state — the attribute on the node —
 because the node tree is the only thing extraction reads. `reflectTable` is the
