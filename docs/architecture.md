@@ -416,6 +416,21 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     tenth of a substantial server-rendered page's content text is discarded and
     the server's document restored (`internal/browser/collapse.go`); the result
     reports `render_discarded`. Live session runtimes are never swapped.
+  - **Touching inline elements are separate text (`dom.SeparateInlineSiblings`).**
+    `<span>Jan</span><span>Mar</span>` is laid out apart by CSS (flex/grid items,
+    margins), so a browser shows — and its `innerText` separates — what a
+    tag-only serializer concatenates (`JanMar`, `00Introduction`). With no layout
+    the rule is structural: two inline-level elements with no text node between
+    them, not even whitespace, get one space. A word styled in parts always has
+    text on one side of an element (`un<b>believ</b>able`) and is never matched.
+    Left alone: `pre`/`code`/`kbd`/`samp`/`var`, ruby, SVG, MathML and subtrees
+    classed as highlighted code or typeset maths; CJK/Thai boundaries;
+    digit-to-digit and number-punctuation boundaries; closing and opening
+    punctuation; and anything after a lone letter (drop caps, letter-by-letter
+    animation). A class-gated variant (only inside `flex`/`grid` containers) was
+    measured and rejected: it fixed fewer joins and cannot run after readability,
+    which strips classes. Runs on the reduce clone in `Full`, the main-region
+    fallback and the extracted article.
   - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
     24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
     cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at

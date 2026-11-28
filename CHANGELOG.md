@@ -179,6 +179,13 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   and stores are instances of `IDBRequest`, `IDBOpenDBRequest`, `IDBDatabase`,
   `IDBTransaction` and `IDBObjectStore`, which wrapper libraries test with
   `instanceof`; a missing `IDBRequest` was an unhandled `ReferenceError`.
+- **Adjacent inline elements no longer run together in Markdown.** Markup such as
+  `<span>01</span><span>Getting Started</span>` or a row of touching links is laid
+  out apart by CSS, but came out as `01Getting Started` / `JanMarMay`. Two
+  inline-level elements with no text between them now get a space
+  (`dom.SeparateInlineSiblings`), except inside code, ruby, SVG and maths, at
+  CJK boundaries, between digits, around punctuation and after a lone letter.
+  Found by the Charlotte comparison on the real-page corpus.
 
 - **`<select>` has one state.** A select's value is its selected options, kept as
   the `selected` attribute on the `<option>` elements, and page JavaScript, `interact`,
