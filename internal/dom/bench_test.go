@@ -100,3 +100,24 @@ func BenchmarkStripDuplicateBlocks(b *testing.B) {
 		dom.StripDuplicateBlocks(doc)
 	}
 }
+
+// BenchmarkMeasureContent is the read-only sizing walk behind the
+// partial-article rule and the render-collapse guard (which runs it twice per
+// render). It must stay allocation-free: it rides the hot path of every read.
+func BenchmarkMeasureContent(b *testing.B) {
+	p := benchParsedPage(b, controlHeavyHTML())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = dom.MeasureContent(p.Doc)
+	}
+}
+
+func BenchmarkMeasureDocument(b *testing.B) {
+	p := benchParsedPage(b, controlHeavyHTML())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = dom.MeasureDocument(p.Doc)
+	}
+}

@@ -36,6 +36,17 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Added
 
+- **`mode=article` no longer returns a fragment of a hub page.** On a section
+  front, a link directory or an index, readability's best block is one card or
+  the footer blurb, and `read` (whose default mode is `article`) returned it as
+  the page. The extraction is now checked against the page's content — the main
+  landmark or body, minus navigation, sidebar, header and footer chrome — and
+  when it holds under half of it (or under two thirds, with the rest a list of
+  links) `read` returns the main landmark instead, or the whole page when there
+  is none. The result reports it: `mode` is `main` or `full`, `article_fallback`
+  is true and the new `article_fallback_reason` is `partial_article`
+  (`no_article` for the existing nothing-found fallback). Real article pages are
+  unchanged.
 - **Markdown content negotiation (`read`'s `prefer_markdown`,
   `--prefer-markdown`).** A `text/markdown` response is now returned as-is
   (`kind: "markdown"`), no longer wrapped in a code fence as plain text. `read`

@@ -174,6 +174,12 @@ not `doFetch`).
   (`--log-level`). Never print to stdout outside the MCP transport.
 - **Never return an unbounded blob.** `read` defaults to article-mode extraction
   and paginates via an opaque cursor; whole-page Markdown can be huge.
+- **Article mode checks its own coverage** (`internal/reduce/readability.go`,
+  `dom.MeasureContent`): when the readability extraction holds under half of the
+  page's content-region text (or under two-thirds with the remainder mostly link
+  text), and at least 1000 bytes were left out, `read` falls back to the main
+  landmark (`mode: "main"`) or `Full` and reports `article_fallback_reason`
+  (`partial_article`/`no_article`) — hub and listing pages are not articles.
 - reduce/emit run on a **copy** of the page so shared (cached or session) pages
   are never mutated — see `Browser.Read`.
 - New capability code goes in the relevant `internal/<pkg>`; route everything to

@@ -790,6 +790,26 @@ func WaitMet(at int, want bool) Scorer {
 	}}
 }
 
+// ReadMode asserts what a read reports it returned: the reduction mode that
+// actually ran and, when that is not the one asked for, why
+// (article_fallback_reason; "" for no fallback). A fallback that is not reported
+// hands the agent the wrong content with no signal.
+func ReadMode(at int, wantMode, wantReason string) Scorer {
+	return Scorer{Name: "read-mode", Axis: AxisRecall, Fn: func(tr *Transcript) (float64, string) {
+		r, why, ok := resultAt(tr, at)
+		if !ok {
+			return 0, why
+		}
+		var rr browser.ReadResult
+		if err := into(r.sr.Result, &rr); err != nil {
+			return 0, "decode read: " + err.Error()
+		}
+		got := fmt.Sprintf("mode=%q fallback=%v reason=%q", rr.Mode, rr.ArticleFallback, rr.ArticleFallbackReason)
+		ok = rr.Mode == wantMode && rr.ArticleFallbackReason == wantReason && rr.ArticleFallback == (wantReason != "")
+		return boolScore(ok), fmt.Sprintf("%s (want mode=%q reason=%q)", got, wantMode, wantReason)
+	}}
+}
+
 // RenderSaturation asserts the starved-render diagnostics on a read step: the
 // render_budget_hit / dom_busy flags and a minimum net_denied count. These are
 // the "visible failure modes" the engine emits when a snapshot is taken while

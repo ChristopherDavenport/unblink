@@ -305,11 +305,23 @@ type Article struct {
 	ContentNode *html.Node // the cleaned content subtree (clone, safe to mutate)
 	TextLength  int
 	// Source records which reduction actually produced the content: "readability"
-	// (a distinct article body was extracted) or "full" (the whole reduced page —
-	// either requested, or the fallback when readability found no article). Lets
-	// callers report an article→full fallback instead of silently mislabeling it.
+	// (a distinct article body was extracted), "main" (the page's main landmark)
+	// or "full" (the whole reduced page — either requested, or a fallback). Lets
+	// callers report an article fallback instead of silently mislabeling it.
 	Source string
+	// Fallback says why an article reduction returned something else: "" (it did
+	// not), FallbackNoArticle or FallbackPartialArticle.
+	Fallback string
 }
+
+// Why an article reduction fell back to a wider one (Article.Fallback).
+const (
+	// FallbackNoArticle: readability found no article body at all.
+	FallbackNoArticle = "no_article"
+	// FallbackPartialArticle: readability found one, but it holds only a small
+	// part of the page's content — a hub, listing or index, not an article.
+	FallbackPartialArticle = "partial_article"
+)
 
 // Table is an extracted HTML data table. Computed on demand by dom.Tables (via
 // the data tool), never as part of the per-read Extract pass. Truncated reports

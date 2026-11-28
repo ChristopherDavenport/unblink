@@ -942,10 +942,15 @@ type ReadResult struct {
 	Kind        string `json:"kind,omitempty"`
 	Bytes       int    `json:"bytes,omitempty"`
 
-	// ArticleFallback is true when mode=article was requested but readability found
-	// no distinct article body, so the whole reduced page was returned instead
-	// (Mode then reports "full"). The agent asked for an article and didn't get one.
-	ArticleFallback bool `json:"article_fallback,omitempty"`
+	// ArticleFallback is true when mode=article was requested but the page did not
+	// yield one, so a wider reduction was returned instead. Mode then reports what
+	// that was — "main" (the page's main landmark) or "full" (the whole reduced
+	// page) — and ArticleFallbackReason why: "no_article" (readability found no
+	// article body) or "partial_article" (it found one holding only a small part
+	// of the page's content: a hub, listing or index). The agent asked for an
+	// article and didn't get one.
+	ArticleFallback       bool   `json:"article_fallback,omitempty"`
+	ArticleFallbackReason string `json:"article_fallback_reason,omitempty"`
 
 	// WaitMet is set only when the request carried a wait_for/wait_text gate: true if
 	// the condition appeared before the render returned, false if it never did (the
@@ -1032,7 +1037,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		}
 	}
 
-	articleFallback := false
+	articleFallback, fallbackReason := false, ""
 	pc := *p
 	switch format {
 	case "raw_html", "text":
@@ -1060,7 +1065,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		if v, ok := memo.lookup(mkey); ok {
 			// Repeat read or pagination cursor page within the cache TTL: the
 			// reduced+emitted Markdown is already known for this exact page.
-			pc.Markdown, mode, articleFallback = v.markdown, v.mode, v.articleFallback
+			pc.Markdown, mode, articleFallback, fallbackReason = v.markdown, v.mode, v.articleFallback, v.fallbackReason
 		} else {
 			switch pc.Kind {
 			case "", page.KindHTML:
@@ -1075,10 +1080,11 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 					return nil, fmt.Errorf("reduce: %w", err)
 				}
 				reduceDur = time.Since(tr)
-				// Report what actually ran: readability finding no article falls back to
-				// the full reduction, and pretending otherwise misleads the agent.
-				if mode == "article" && pc.Article != nil && pc.Article.Source == "full" {
-					mode, articleFallback = "full", true
+				// Report what actually ran: an article request that fell back to the
+				// main region or the full reduction (no article, or only a fragment of a
+				// hub page) says so, since pretending otherwise misleads the agent.
+				if mode == "article" && pc.Article != nil && pc.Article.Fallback != "" {
+					mode, articleFallback, fallbackReason = pc.Article.Source, true, pc.Article.Fallback
 				}
 				te := time.Now()
 				if err := emit.Markdown(&pc); err != nil {
@@ -1097,7 +1103,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 			if b.safeOutput {
 				pc.Markdown = emit.DefangImages(pc.Markdown)
 			}
-			memo.store(mkey, memoVal{markdown: pc.Markdown, mode: mode, articleFallback: articleFallback})
+			memo.store(mkey, memoVal{markdown: pc.Markdown, mode: mode, articleFallback: articleFallback, fallbackReason: fallbackReason})
 		}
 	}
 
@@ -1122,14 +1128,15 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	}
 
 	res := &ReadResult{
-		Markdown:        chunks[idx],
-		Mode:            mode,
-		ArticleFallback: articleFallback,
-		Page:            idx + 1,
-		TotalPages:      len(chunks),
-		ContentType:     pc.ContentType,
-		Kind:            kindString(pc.Kind),
-		Bytes:           len(pc.Raw),
+		Markdown:              chunks[idx],
+		Mode:                  mode,
+		ArticleFallback:       articleFallback,
+		ArticleFallbackReason: fallbackReason,
+		Page:                  idx + 1,
+		TotalPages:            len(chunks),
+		ContentType:           pc.ContentType,
+		Kind:                  kindString(pc.Kind),
+		Bytes:                 len(pc.Raw),
 	}
 	if idx+1 < len(chunks) {
 		res.NextCursor = tokens.EncodeCursor(idx+1, fp)

@@ -589,6 +589,7 @@ const (
 	fxArticle    = "../testdata/article.input.html"
 	fxStructured = "../testdata/structured.input.html"
 	fxJSRender   = "../testdata/js_render.input.html"
+	fxHub        = "../testdata/hub.input.html"
 	fxLongread   = "corpus/longread.input.html"
 	fxJunky      = "corpus/junky.input.html"
 	fxJSON       = "corpus/data.input.json"
@@ -705,6 +706,24 @@ func cases() []Case {
 				Recall(0, "Edmund Hale", "Saltmarsh Point", "logged the tide"),
 			},
 			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			// mode=article (the default) on a section front. Readability's best
+			// block is the footer's "about" paragraph; the page's content is the
+			// story river. The read must return the main region and say that it did.
+			Name: "read-article-hub-fallback",
+			Host: htmlHost(fxHub),
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"render": false}},
+			},
+			Scorers: []Scorer{
+				Recall(0, "Hub story 00", "Hub story 19", "Hub story 39", "the harvest supper"),
+				NoJunk(0, "Courier sport section", "set by hand and carried round on a bicycle"),
+				ReadMode(0, "main", "partial_article"),
+				TokenBudget(0, 1500),
+			},
+			Floor:    0.95,
 			MustPass: true,
 		},
 		{

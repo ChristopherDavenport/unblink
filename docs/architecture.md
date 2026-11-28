@@ -380,6 +380,24 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     (`js.DispatchResult.Errors`, captured on-loop around the settle window). The
     article→full readability fallback is reported (`article_fallback:true`, mode says
     `full`) via `page.Article.Source` instead of mislabeling the mode.
+  - **Article mode checks its own extraction (the partial-article rule).**
+    Readability always returns its best-scoring block, so on a hub, listing or
+    index page `mode=article` used to return one card or the footer blurb as
+    though it were the page (the real-page corpus, ADR 0022: 0.000 recall on a
+    news front page whose `mode=full` scored 0.90). `reduce.Article` now measures
+    the extraction against the page's *content region* — the main landmark, or
+    the body, minus navigation/complementary/banner/contentinfo/search chrome
+    (`dom.MeasureContent`) — and treats it as partial when it holds under half of
+    that text, or under two thirds while what it left out is at least half link
+    text (the rest of a story river). At least 1000 bytes must be left out for
+    the rule to act, so small pages never flip. An extraction larger than the
+    whole content region came from chrome (a footer blurb, a sidebar) and is
+    compared with all of the page's text instead. A partial extraction falls
+    back to the main landmark (`Source: "main"`, mode `main`) or, with no usable
+    landmark, to `Full`; `page.Article.Fallback` carries the reason
+    (`no_article` | `partial_article`) to `read`'s `article_fallback_reason`.
+    Chrome is excluded from the denominator so a real article is never
+    penalised for the site's menus, sidebar or footer.
   - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
     24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
     cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at

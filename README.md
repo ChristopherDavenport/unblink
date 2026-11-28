@@ -283,8 +283,21 @@ silently. Errors follow a stable `error [code]: message` convention
 `not_configured`, `blocked` (SSRF guard), `cursor_expired`, `timeout`,
 `fetch_failed`…), and every tool carries MCP annotations (read-only vs
 state-changing) so hosts can gate sensitive actions. JS render diagnostics
-(`framework`, `js_errors`, `article_fallback`) are reported in `read`/`interact`
+(`framework`, `js_errors`) and reduction fallbacks
+(`article_fallback`, `article_fallback_reason`) are reported in `read`/`interact`
 results rather than logged away.
+
+One case where `read` returns something other than what was literally asked
+for, and says so:
+
+- **`mode=article` on a page that is not an article.** On a section front, a
+  link directory or an index, the "article" a readability pass finds is one card
+  or the footer blurb. When the extraction holds under half of the page's
+  content (or under two thirds, with the rest a list of links), `read` returns
+  the page's main landmark instead — or the whole page when there is none —
+  with `mode: "main"`/`"full"`, `article_fallback: true` and
+  `article_fallback_reason: "partial_article"` (`"no_article"` when nothing was
+  found at all). A real article is unaffected.
 
 | Tool          | Input                                              | Returns                                                                 |
 | ------------- | -------------------------------------------------- | ----------------------------------------------------------------------- |

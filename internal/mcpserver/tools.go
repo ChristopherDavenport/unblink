@@ -42,7 +42,7 @@ func renderDefault(r *bool) bool {
 
 type readArgs struct {
 	target
-	Mode         string `json:"mode,omitempty" jsonschema:"article (main content, the default) or full (whole reduced page); ignored for non-HTML content"`
+	Mode         string `json:"mode,omitempty" jsonschema:"article (main content, the default) or full (whole reduced page); ignored for non-HTML content. A hub, listing or index page has no single article: article then returns the page's main region (or the whole page) instead of a fragment, and the result says so (mode, article_fallback, article_fallback_reason)"`
 	Format       string `json:"format,omitempty" jsonschema:"output format: markdown (default; reduced/converted), raw_html (unreduced page source — the post-JS DOM when render=true, else the exact fetched bytes), or text (visible plain text). Use raw_html to reach scripts/forms/SSR-embedded JSON that reduction strips"`
 	Selector     string `json:"selector,omitempty" jsonschema:"CSS selector to return only the matching elements' HTML; applies to format=raw_html only"`
 	MaxTokens    int    `json:"max_tokens,omitempty" jsonschema:"approximate maximum tokens per page (default 6000)"`
@@ -113,7 +113,15 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 		text += fmt.Sprintf("\n\n---\n_%d deferred timer(s) had not fired when this snapshot was taken; content behind a long setTimeout may be missing. Retry with a larger wait_timeout (and a wait_for gate)._\n", r.TimersPending)
 	}
 	if r.ArticleFallback {
-		text += "\n\n---\n_mode=article was requested but no distinct article body was found; this is the full reduced page._\n"
+		what := "the full reduced page"
+		if r.Mode == "main" {
+			what = "the page's main region"
+		}
+		why := "no distinct article body was found"
+		if r.ArticleFallbackReason == page.FallbackPartialArticle {
+			why = "the page is a hub or listing, not a single article (the article extraction held only a small part of its content)"
+		}
+		text += fmt.Sprintf("\n\n---\n_mode=article was requested but %s; this is %s._\n", why, what)
 	}
 	if len(r.JSErrors) > 0 {
 		text += fmt.Sprintf("\n\n---\n_%d uncaught JavaScript error(s) during render — the page may not be fully hydrated (see js_errors in the structured result)._\n", len(r.JSErrors))
