@@ -132,7 +132,7 @@ func (b *bridge) loadExternalScript(n *html.Node, src string) {
 				body, ok = cached, true
 			} else {
 				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
-				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
+				res, ferr := b.scriptDo(ctx, abs)
 				cancel()
 				if ferr == nil && res != nil && res.Status < 400 {
 					if integrity != "" {
@@ -224,7 +224,7 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 				// charset-transcoded body, not the raw bytes SRI must hash) and block
 				// on mismatch, like a browser refusing a tampered script.
 				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
-				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
+				res, ferr := b.scriptDo(ctx, abs)
 				cancel()
 				if ferr != nil || res == nil || res.Status >= 400 {
 					continue
@@ -244,7 +244,7 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 				src = string(body)
 			} else {
 				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
-				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
+				res, ferr := b.scriptDo(ctx, abs)
 				cancel()
 				if ferr != nil || res == nil || res.Status >= 400 {
 					continue

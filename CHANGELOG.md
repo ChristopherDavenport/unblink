@@ -104,6 +104,11 @@ All notable changes are recorded here. Earlier history lives in the phase log of
     event no longer reaches window listeners.
   - A page-global `require` (an AMD loader) is no longer shadowed inside module
     scripts.
+- **`data:` script URLs are decoded locally** on every script path (classic,
+  script-inserted, module entry and dependency, `import()`, preload hints) instead
+  of being sent to the network. They are subject to `script-src` — only an explicit
+  `data:` source or `'strict-dynamic'` admits one — to `integrity`, and to
+  `--js-max-bytes`.
 
 ## v0.25.0 — 2026-11-27
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	neturl "net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -342,9 +343,21 @@ func (b *bridge) fetchModuleSource(url string) ([]byte, error) {
 	if b.transport == nil {
 		return nil, errors.New("import(): JS networking is disabled")
 	}
+	// A data: module carries its own bytes, so nothing upstream has asked CSP
+	// about it yet (a network module's entry was gated where it was declared, and
+	// its dependencies inherit that decision). script-src must name `data:` — or
+	// propagate trust with 'strict-dynamic' — for it to load, as in a browser.
+	// The policy and the document URL are fixed before any script runs, so this
+	// read is safe off the loop; the refusal is returned, not recorded here
+	// (recordError is loop-only), and surfaces as the import's failure.
+	if isDataURL(url) && b.csp != nil {
+		if u, perr := neturl.Parse(url); perr == nil && !b.csp.allowsExternalScript(b.base, u, "", false) {
+			return nil, errors.New("blocked by Content-Security-Policy: script-src does not allow a data: module")
+		}
+	}
 	ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
 	defer cancel()
-	res, err := b.transport.Do(ctx, "GET", url, nil, nil)
+	res, err := b.scriptDo(ctx, url)
 	if err != nil {
 		return nil, err
 	}

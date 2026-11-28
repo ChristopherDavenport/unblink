@@ -152,7 +152,7 @@ func (b *bridge) verifyModuleIntegrity(abs, integrity string) bool {
 		return true
 	}
 	ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
-	res, err := b.transport.Do(ctx, "GET", abs, nil, nil)
+	res, err := b.scriptDo(ctx, abs)
 	cancel()
 	if err != nil || res == nil || res.Status >= 400 {
 		return true

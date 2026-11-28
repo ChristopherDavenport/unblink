@@ -66,6 +66,11 @@ func (a *assetCache) put(key string, body []byte) {
 	if a == nil || int64(len(body)) > assetCacheMaxBytes {
 		return
 	}
+	// A data: URL is its own body: caching it would store the bytes twice (once
+	// as the key) to save a decode.
+	if strings.HasPrefix(key, "asset\x00data:") || strings.HasPrefix(key, "asset\x00DATA:") {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.curBytes+int64(len(body)) > assetCacheMaxBytes {
