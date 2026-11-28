@@ -52,3 +52,15 @@ func TestArticleSeparatesTouchingInlineElements(t *testing.T) {
 		t.Errorf("article Markdown ran the pieces together:\n%s", md)
 	}
 }
+
+// Minified table markup: a data table becomes a Markdown table, and a table
+// the renderer declines still keeps its cells apart.
+func TestFullTables(t *testing.T) {
+	md := fullMarkdown(t, `<main><table><tr><th>Name</th><th>Size</th></tr><tr><td>alpha</td><td>12</td></tr></table>`+
+		`<table role="presentation"><tr><td>12</td><td>34</td></tr></table></main>`)
+	for _, want := range []string{"| Name | Size |", "| alpha | 12 |", "12 34"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown missing %q:\n%s", want, md)
+		}
+	}
+}

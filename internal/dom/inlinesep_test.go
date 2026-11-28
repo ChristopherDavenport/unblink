@@ -39,6 +39,8 @@ func TestSeparateInlineSiblings(t *testing.T) {
 		{"custom elements", `<div><x-tag>new</x-tag><x-tag>beta</x-tag></div>`, "new beta"},
 		{"nested", `<div><span><b>GitHub stars</b></span><span><b>234 contributors</b></span></div>`, "GitHub stars 234 contributors"},
 
+		{"table cells, even digits", `<table><tr><td>12</td><td>34</td><th>x</th></tr></table>`, "12 34 x"},
+
 		// One word, or one expression, styled in parts: untouched.
 		{"text on one side", `<p>un<b>believ</b>able</p>`, "unbelievable"},
 		{"already spaced", `<p><span>a</span> <span>b</span></p>`, "a b"},

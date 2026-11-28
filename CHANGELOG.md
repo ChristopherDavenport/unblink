@@ -179,6 +179,11 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   and stores are instances of `IDBRequest`, `IDBOpenDBRequest`, `IDBDatabase`,
   `IDBTransaction` and `IDBObjectStore`, which wrapper libraries test with
   `instanceof`; a missing `IDBRequest` was an unhandled `ReferenceError`.
+- **Tables in `read` output are Markdown tables.** A `<table>` was emitted as its
+  cell text run together on one line. Data tables are now GFM tables (header row,
+  one line per row); `role="presentation"` tables and tables whose cells hold
+  several lines fall back to rows as paragraphs with the cells kept apart.
+
 - **Angle brackets in page text are no longer HTML entities in Markdown.** Link
   text `<svelte:window>` came out as `&lt;svelte:window&gt;`. Text `<` is now
   `\<`, `>` is bare (or `\>` where it would open a block quote), and `&` is

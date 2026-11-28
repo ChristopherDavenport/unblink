@@ -441,6 +441,15 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     text is ever unescaped, in the body or the title, so a host that renders the
     Markdown builds no element or autolink from it. Code spans and blocks stay
     verbatim.
+  - **Tables are Markdown tables.** `emit` enables the converter's GFM table
+    plugin (minimal padding, empty rows dropped): a data table is a header row
+    and a line per row, where it used to be one run of cell text
+    (`AttributeDescription hx-getIssues a GET…`). A table the plugin declines —
+    `role="presentation"` (the sanitizer now keeps that one attribute value on
+    `<table>`) or a cell holding several lines — falls back to its rows as
+    paragraphs, with touching cells kept apart by `dom.SeparateInlineSiblings`.
+    Undeclared layout tables with single-line cells do come out as grids (Hacker
+    News); that reads no worse than before and keeps each row's cells together.
   - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
     24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
     cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at

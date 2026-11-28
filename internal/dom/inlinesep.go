@@ -29,6 +29,9 @@ import (
 //     are the tokens of one expression;
 //   - not across a boundary where either side is CJK or Thai text, which is
 //     written without spaces;
+//   - table cells are the exception to all of the below: touching cells are always
+//     separated, since a table the Markdown renderer declines is written cell
+//     after cell;
 //   - not digit-to-digit (a number rendered digit group by digit group), not
 //     before closing or after opening punctuation, and not after a lone letter
 //     (a drop cap, or a word animated letter by letter).
@@ -68,7 +71,9 @@ func separateInline(n *html.Node) {
 		}
 		if prev != nil {
 			last, _ := lastTextRune(prev)
-			if needsSpace(last, first) && !loneLetter(prev) {
+			// Table cells are always separate pieces, whatever they hold.
+			cells := isCell(prev) && isCell(c)
+			if cells || (needsSpace(last, first) && !loneLetter(prev)) {
 				n.InsertBefore(&html.Node{Type: html.TextNode, Data: " "}, c)
 			}
 		}
@@ -134,8 +139,16 @@ func sepInline(n *html.Node) bool {
 	case "a", "abbr", "b", "bdi", "bdo", "button", "cite", "data", "dfn", "em", "i",
 		"label", "mark", "q", "s", "small", "span", "strong", "time", "u", "ins", "del", "font":
 		return true
+	case "td", "th":
+		// Not inline, but a table the Markdown table renderer declines (a layout
+		// table, a cell holding blocks) is written cell after cell on one line.
+		return true
 	}
 	return strings.Contains(n.Data, "-") // custom elements are inline unless styled
+}
+
+func isCell(n *html.Node) bool {
+	return n.Namespace == "" && (n.Data == "td" || n.Data == "th")
 }
 
 // loneLetter reports whether n's text is a single letter: a drop cap, or one

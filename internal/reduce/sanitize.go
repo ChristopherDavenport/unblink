@@ -3,6 +3,7 @@ package reduce
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 
 	"github.com/microcosm-cc/bluemonday"
 	"golang.org/x/net/html"
@@ -16,8 +17,13 @@ func sanitizePolicy() *bluemonday.Policy {
 	p := bluemonday.UGCPolicy()
 	p.AllowImages()
 	p.AllowAttrs("title").OnElements("abbr", "a")
+	// A layout table says so with role=presentation; the Markdown table renderer
+	// needs that to leave it as flowing content instead of drawing a grid.
+	p.AllowAttrs("role").Matching(presentationRole).OnElements("table")
 	return p
 }
+
+var presentationRole = regexp.MustCompile(`^presentation$`)
 
 // ugcPolicy is built once and shared: policy construction compiles a large
 // allowlist/regexp set, and a bluemonday policy is safe for concurrent Sanitize
