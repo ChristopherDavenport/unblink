@@ -71,6 +71,12 @@ CORPUS_OUT=/tmp/one.json CORPUS_ONLY=vue-guide make corpus   # don't overwrite l
 CORPUS_ONLY=hn-algolia CORPUS_DEBUG=1 CORPUS_DUMP=/tmp/dump make corpus
 ```
 
+`never requested` lists the documents, scripts and fetch/XHR responses Chromium
+loaded that unblink never asked for — the mirror of a lost request, and the lead
+to follow when a page scores low with no error at all (its data-loading code did
+not run, or ran too late). The count is in every run's JSON (`unrequested`); the
+full list needs `CORPUS_DEBUG`.
+
 `CORPUS_DEBUG=1` prints, per page: scores, oracle health and warnings, render
 diagnostics, **every** lost request (kind, first/third party, how close the
 archive came), every script and console error (uncapped), Chromium's own

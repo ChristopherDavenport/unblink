@@ -323,6 +323,14 @@ const preludeJS = `
     // the budget. Only timers that otherwise never fire change behavior. Intervals
     // are never clamped (they'd busy-loop against the deadline).
     var deadline = (typeof window.__unblinkTimerDeadlineMs === 'number') ? window.__unblinkTimerDeadlineMs : 0;
+    // Once the deadline has passed, "pull it in" would mean "run it now" — and a
+    // timer that re-arms itself with a long delay (a poll loop, a retry backoff)
+    // would become a busy loop for the rest of the budget, issuing its request
+    // every few milliseconds. So after the deadline a timer is pulled in only if
+    // it would outlast the budget (budgetEnd), and only lateClamps times in
+    // total: enough to follow a short chain of deferred timers, never a loop.
+    var budgetEnd = (typeof window.__unblinkTimerBudgetEndMs === 'number') ? window.__unblinkTimerBudgetEndMs : deadline;
+    var lateClamps = 32;
     // clamped tracks one-shot timers whose delay was pulled in because it
     // exceeded the budget. The settle poll holds open while any remain unfired,
     // so a clamped timer's deferred content lands before the snapshot (without
@@ -344,9 +352,12 @@ const preludeJS = `
       ms = +ms || 0;
       var wasClamped = false;
       if (deadline > 0) {
-        var remaining = deadline - Date.now();
-        if (remaining < 0) remaining = 0;
-        if (ms > remaining) { ms = remaining; wasClamped = true; clamped[id] = true; }
+        var now = Date.now(), remaining = deadline - now;
+        if (remaining > 0) {
+          if (ms > remaining) { ms = remaining; wasClamped = true; clamped[id] = true; }
+        } else if (ms > budgetEnd - now && lateClamps > 0) {
+          lateClamps--; ms = 0; wasClamped = true; clamped[id] = true;
+        }
       }
       live[id] = nativeSet(function () { delete live[id]; delete clamped[id]; run(cb, args); }, ms);
       return id;

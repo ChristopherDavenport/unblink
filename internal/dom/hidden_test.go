@@ -61,3 +61,29 @@ func TestTextSkipHidden(t *testing.T) {
 		t.Errorf("skipHidden=true dropped visible text, got %q", got)
 	}
 }
+
+// A <dialog> that is not open is display:none by the user-agent stylesheet: its
+// text is not shown to a reader, so it is hidden content like [hidden].
+func TestClosedDialogIsHidden(t *testing.T) {
+	doc := parse(t, `<html><body><main>
+		<p>visible text</p>
+		<dialog><p>closed dialog text</p></dialog>
+		<dialog open><p>open dialog text</p></dialog>
+	</main></body></html>`)
+	if !dom.HasHidden(doc) {
+		t.Fatal("a closed dialog should count as hidden content")
+	}
+	if text := dom.Text(doc, true); strings.Contains(text, "closed dialog text") || !strings.Contains(text, "open dialog text") {
+		t.Errorf("Text(skipHidden) = %q", text)
+	}
+	dom.StripHidden(doc)
+	text := dom.Text(doc, false)
+	if strings.Contains(text, "closed dialog text") {
+		t.Errorf("closed dialog survived StripHidden: %q", text)
+	}
+	for _, want := range []string{"visible text", "open dialog text"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in %q", want, text)
+		}
+	}
+}

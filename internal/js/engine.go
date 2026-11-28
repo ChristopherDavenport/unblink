@@ -278,7 +278,9 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		if clamp < 0 {
 			clamp = 0
 		}
-		_ = vm.Set("__unblinkTimerDeadlineMs", time.Now().Add(clamp).UnixMilli())
+		renderStart := time.Now()
+		_ = vm.Set("__unblinkTimerDeadlineMs", renderStart.Add(clamp).UnixMilli())
+		_ = vm.Set("__unblinkTimerBudgetEndMs", renderStart.Add(budget).UnixMilli())
 		// Stubs simplest to express in JS (storage, observers, rAF), then the
 		// web-platform API layer (encoding, fetch classes, viewport/matchMedia,
 		// Intl, messaging). Failure here is non-fatal.

@@ -1007,6 +1007,16 @@ form), guarded against a handler that throws, and — unless a handler cancels i
 recorded in the render diagnostics, which are read when the render settles rather
 than after the first script pass.
 
+**Timer clamp, bounded after its deadline.** A one-shot timer whose delay would
+outlast the render budget is pulled in to fire 600 ms before the budget ends, so
+content behind a splash delay or deferred hydration still lands. That deadline is
+a one-time gate, not a mode: a timer scheduled *after* it is pulled in only if it
+would outlast what is left of the budget, and only 32 times per render. Without
+the bound, "pull it in" meant "run it now", and any timer that re-arms itself with
+a long delay (a poll loop, a retry backoff) became a busy loop against the page's
+origin for the rest of the budget. `TestTimerClampDoesNotSpinSelfRearmingTimer`
+holds it.
+
 **Reflected attributes** (`internal/js/reflect.go`): a reflected IDL attribute
 and its content attribute are one piece of state — the attribute on the node —
 because the node tree is the only thing extraction reads. `reflectTable` is the

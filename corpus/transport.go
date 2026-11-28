@@ -57,6 +57,12 @@ type replayStats struct {
 	NonHTTP       int        `json:"non_http"`
 	NonHTTPSample []string   `json:"non_http_sample,omitempty"`
 	Misses        []missInfo `json:"misses,omitempty"` // sample of the lost requests (all of them under CORPUS_DEBUG)
+	// Unrequested is the mirror of Unmatched: documents, scripts and fetch/XHR
+	// responses Chromium loaded that unblink never asked for. A page whose data
+	// requests are all here did not run the code that makes them — a lead no
+	// error message points at.
+	Unrequested       int      `json:"unrequested,omitempty"`
+	UnrequestedSample []string `json:"unrequested_sample,omitempty"` // "Type METHOD url" (all of them under CORPUS_DEBUG)
 }
 
 type missInfo struct {
@@ -82,6 +88,8 @@ type replay struct {
 	byPath  map[string][]*entry // "METHOD scheme://host/path"
 	anyPath map[string]bool     // "scheme://host/path", any method
 	next    map[string]int      // per exact key: next response in capture order
+	entries []*entry            // the archive, in capture order
+	used    map[*entry]bool     // entries some request was answered from
 	stats   replayStats
 }
 
@@ -89,7 +97,7 @@ func newReplay(dir string, a *archive) *replay {
 	r := &replay{
 		dir: dir, site: siteOf(a.URL), allMiss: debugOn(),
 		exact: map[string][]*entry{}, byPath: map[string][]*entry{}, anyPath: map[string]bool{},
-		next: map[string]int{},
+		next: map[string]int{}, entries: a.Entries, used: map[*entry]bool{},
 	}
 	for _, e := range a.Entries {
 		u, err := url.Parse(e.URL)
@@ -276,6 +284,9 @@ func (r *replay) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.mu.Lock()
 	r.stats.Requests++
 	e, tier := r.match(req.Method, req.URL, reqBody)
+	if e != nil {
+		r.used[e] = true
+	}
 	noBody := e != nil && e.Failed == "" && e.bodyLost()
 	switch {
 	case e == nil:
@@ -366,5 +377,28 @@ func (r *replay) snapshot() replayStats {
 	s.Misses = append([]missInfo(nil), r.stats.Misses...)
 	s.MissKinds, s.MissMethods, s.MissNear = cloneCounts(s.MissKinds), cloneCounts(s.MissMethods), cloneCounts(s.MissNear)
 	s.NonHTTPSample = append([]string(nil), r.stats.NonHTTPSample...)
+	// A URL Chromium loaded more than once counts as requested if any of its
+	// responses was served.
+	asked := map[string]bool{}
+	for e := range r.used {
+		asked[strings.ToUpper(e.Method)+" "+e.URL] = true
+	}
+	seen := map[string]bool{}
+	for _, e := range r.entries {
+		switch e.Type {
+		case "Document", "Script", "Fetch", "XHR":
+		default:
+			continue
+		}
+		key := strings.ToUpper(e.Method) + " " + e.URL
+		if e.Failed != "" || asked[key] || seen[key] {
+			continue
+		}
+		seen[key] = true
+		s.Unrequested++
+		if r.allMiss || len(s.UnrequestedSample) < maxMissSample {
+			s.UnrequestedSample = append(s.UnrequestedSample, e.Type+" "+key)
+		}
+	}
 	return s
 }

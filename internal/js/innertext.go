@@ -83,6 +83,9 @@ func notRendered(n *html.Node) bool {
 	if unrenderedTags[n.Data] || hasAttr(n, "hidden") {
 		return true
 	}
+	if n.Data == "dialog" && n.Namespace == "" && !hasAttr(n, "open") {
+		return true // UA stylesheet: dialog:not([open]) { display: none }
+	}
 	return inlineStyleDecl(n, "display") == "none"
 }
 

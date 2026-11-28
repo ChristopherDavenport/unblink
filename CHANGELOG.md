@@ -87,6 +87,27 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **A self-rearming timer no longer becomes a busy loop at the end of a render.** A
+  one-shot timer longer than the render budget is pulled in so the content behind it
+  still appears. Once that deadline had passed, *every* new timer was pulled in to
+  zero delay, so a timer that re-arms itself — a 30-second poll, a retry backoff —
+  ran back to back for the last 600 ms of the budget: about 20,000 times in a test,
+  and on a Discourse forum 1,731 `POST …/message-bus/…/poll` requests in one read.
+  After the deadline a timer is now pulled in only if it would outlast the budget,
+  and at most 32 times per render.
+- **`CSS.supports()` no longer claims other engines' vendor properties.** It answered
+  `true` to everything, including `-webkit-backdrop-filter`, `-webkit-touch-callout`
+  and `-moz-appearance` — the probes pages use to detect Safari, iOS and Firefox. A
+  component library took its WebKit branch, rendered different markup on the client,
+  and React hydration failed (error #418) on Next.js App Router pages. Standard
+  properties still answer `true`; vendor-prefixed ones answer as desktop Chrome does.
+- **A closed `<dialog>` is hidden content, and `dialog.show()`/`showModal()`/`close()`
+  exist.** A `<dialog>` without `open` is not rendered by any browser, but its text
+  was extracted like visible text; a page that builds hundreds of closed dialogs (a
+  specification's per-term reference panels) grew its Markdown by half. It now counts
+  as hidden, like `[hidden]`, and the three methods set and remove `open`, so a dialog
+  a script opens is visible. Calling them used to throw.
+
 - **Property writes reach the page tree (reflected attributes).** `input.name = …`,
   `a.title = …`, `img.alt = …`, `el.hidden = true`, `link.rel = …`,
   `option.selected = true`, `el.ariaLabel = …` set an expando on the JavaScript

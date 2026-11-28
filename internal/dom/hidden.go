@@ -7,7 +7,9 @@ import (
 )
 
 // IsHidden reports whether an element node is hidden from a human reader by common
-// means: the `hidden` boolean attribute, aria-hidden="true", or an inline style that
+// means: the `hidden` boolean attribute, aria-hidden="true", a <dialog> that is not
+// open (the user-agent stylesheet's `dialog:not([open]) { display: none }`, which
+// needs no cascade to know), or an inline style that
 // sets display:none / visibility:hidden / pushes the element off-screen. It is a
 // heuristic (no full CSS/layout engine), aimed at the channels used to smuggle
 // prompt-injection text past a human — hidden divs, off-screen "screen-reader" text —
@@ -16,6 +18,18 @@ import (
 func IsHidden(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
+	}
+	if n.Data == "dialog" && n.Namespace == "" {
+		open := false
+		for _, a := range n.Attr {
+			if a.Key == "open" {
+				open = true
+				break
+			}
+		}
+		if !open {
+			return true
+		}
 	}
 	for _, a := range n.Attr {
 		switch a.Key {

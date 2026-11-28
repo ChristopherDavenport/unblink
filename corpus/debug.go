@@ -84,6 +84,12 @@ func (d *pageDebug) report(w io.Writer, r pageResult, o *oracle) {
 		}
 		fmt.Fprintf(w, "  lost %-13s %s %-6s near=%-6s %s %s\n", m.Kind, party, m.Dest, m.Near, m.Method, m.URL)
 	}
+	if rs.Unrequested > 0 {
+		fmt.Fprintf(w, "never requested: %d document/script/fetch response(s) Chromium loaded\n", rs.Unrequested)
+	}
+	for _, u := range rs.UnrequestedSample {
+		fmt.Fprintf(w, "  never requested %s\n", u)
+	}
 	for _, u := range rs.NonHTTPSample {
 		fmt.Fprintf(w, "  non-http URL sent to the transport: %s\n", u)
 	}

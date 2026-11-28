@@ -81,6 +81,7 @@ type bridge struct {
 	// Per-node companion objects, cached for identity (el.classList === el.classList).
 	tokenListCache map[tokenListKey]*goja.Object // classList / relList, keyed by (node, attribute)
 	styleCache     map[*html.Node]*goja.Object
+	dialogReturns  map[*html.Node]string // HTMLDialogElement.returnValue (dialog.go)
 	// Reflected IDL attributes (reflect.go): the shared accessor per rule, and the
 	// interface prototypes whose attributes are not installed yet.
 	reflectAccessors map[string]goja.Value
@@ -382,6 +383,7 @@ func (b *bridge) install() {
 	b.installGlobals(win)
 	b.installEventHandlers()
 	b.installReflection()
+	b.installDialog()
 	b.installNodeFilter()
 	b.installMutationObserver()
 	b.installCustomElements(win)

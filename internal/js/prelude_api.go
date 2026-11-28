@@ -2044,8 +2044,18 @@ const preludeAPIJS = `
   // CSS.escape is a pure function (the WHATWG serialize-an-identifier algorithm),
   // so it is implemented for real — selector and CSS-in-JS libraries call it at
   // import time and would ReferenceError without it. CSS.supports is optimistic
-  // (true for well-formed input): there is no CSSOM to consult, and returning true
-  // keeps feature-gated code on its main path instead of loading a visual polyfill.
+  // for standard CSS (there is no CSSOM to consult, and returning true keeps
+  // feature-gated code on its main path instead of loading a visual polyfill)
+  // and answers like Chrome for vendor-prefixed properties.
+  // -webkit- properties Chrome does not implement (Safari's own). Chrome aliases
+  // most other -webkit- properties, so those stay supported.
+  var notInChrome = {
+    'backdrop-filter': 1, 'touch-callout': 1, 'overflow-scrolling': 1, 'nbsp-mode': 1,
+    'text-decoration-skip': 1, 'initial-letter': 1, 'hyphens': 1, 'line-grid': 1, 'line-snap': 1,
+    'line-align': 1, 'text-zoom': 1, 'cursor-visibility': 1, 'dashboard-region': 1,
+    'marquee': 1, 'marquee-direction': 1, 'marquee-increment': 1, 'marquee-repetition': 1,
+    'marquee-speed': 1, 'marquee-style': 1, 'font-kerning': 1, 'aspect-ratio': 1
+  };
   if (typeof window.CSS === 'undefined') {
     window.CSS = {
       escape: function (value) {
@@ -2073,8 +2083,26 @@ const preludeAPIJS = `
         return out;
       },
       supports: function (prop, value) {
-        // supports(property, value) or supports(conditionText); optimistic.
-        return arguments.length >= 1 && String(prop).length > 0;
+        // supports(property, value) or supports(conditionText). Optimistic for
+        // standard CSS — but not for another engine's vendor properties, which
+        // is how pages tell browsers apart: '-moz-appearance' means Firefox,
+        // '-webkit-touch-callout' iOS, '-webkit-backdrop-filter' Safari. The
+        // engine presents as desktop Chrome, and answering yes to those sent
+        // pages down Safari and Firefox code paths at the same time.
+        if (arguments.length < 1) return false;
+        var text = String(prop);
+        if (!text.length) return false;
+        // A prefixed name starts at the hyphen: "-webkit-x", never the middle of
+        // "grid-template-rows".
+        var names = arguments.length >= 2 ? [text] : (text.match(/(^|[^a-z0-9_-])-[a-z]+-[a-z-]+(?=\s*:)/gi) || []);
+        for (var i = 0; i < names.length; i++) {
+          var m = /^[^a-z0-9_-]*-([a-z]+)-([a-z-]+)\s*$/i.exec(names[i]);
+          if (!m) continue;
+          var vendor = m[1].toLowerCase();
+          if (vendor !== 'webkit') return false; // -moz-, -ms-, -o-, -khtml-, -apple-
+          if (notInChrome[m[2].toLowerCase()]) return false;
+        }
+        return true;
       }
     };
   }
