@@ -421,8 +421,6 @@ func builtCases() []Case {
 				NoJSErrors(2),
 			},
 			Floor: 0.99,
-			KnownGap: "SVGAElement is not defined: SvelteKit's document-level click listener (its client router) tests `a instanceof SVGAElement` on every click, " +
-				"so each click on a SvelteKit page records a ReferenceError and the router's link handling never runs. The component's own handler still fires.",
 		},
 		{
 			// The same app with SvelteKit's default configuration, which checks
@@ -439,9 +437,6 @@ func builtCases() []Case {
 				Requested(1, []string{"/_app/immutable/entry/start."}, []string{"version.json"}),
 			},
 			Floor: 0.99,
-			KnownGap: "a self-rearming long timer becomes a request storm: SvelteKit schedules its version check with setTimeout(check, 3600000) and re-arms it " +
-				"after each check; the engine pulls the hour-long timer in, runs it, and pulls in each re-armed one, fetching /_app/version.json about 32 times " +
-				"and holding the render open until its wall-clock budget (4.5s of a 5s budget). A browser fetches it zero times during load.",
 		},
 		{
 			// Angular with build-time prerendering and client hydration
@@ -625,9 +620,6 @@ func builtCases() []Case {
 				Recall(5, "dark roast", "rush true"),
 			},
 			Floor: 0.99,
-			KnownGap: "interact click does not activate a checkable control: clicking <input type=radio> or <input type=checkbox> dispatches the event " +
-				"but leaves .checked unchanged (changed=false), so a form read back by page code, FormData or submission keeps its old state. " +
-				"A browser toggles checkedness before the click listeners run.",
 		},
 		{
 			Name:    "platform-document-forms-named-access",
@@ -638,8 +630,6 @@ func builtCases() []Case {
 				Recall(0, "document-forms: 1 form, by name true, by index true, on document true"),
 			},
 			Floor: 0.99,
-			KnownGap: "document.forms has no named access: document.forms.order (and document.forms['order'], namedItem aside) is undefined though " +
-				"document.forms[0] and document.order both resolve to the form — `document.forms.<name>.<field>` is the classic way old scripts reach a form.",
 		},
 		{
 			Name:    "platform-intl-date-time",
@@ -660,9 +650,6 @@ func builtCases() []Case {
 				),
 			},
 			Floor: 0.99,
-			KnownGap: "date/time formatting ignores its options: Intl.DateTimeFormat drops timeZone (a UTC instant is shown in the host's zone, so output " +
-				"depends on the machine) and timeZoneName; Date.prototype.toLocaleTimeString/toLocaleDateString ignore the options bag entirely " +
-				"(\"05:37:09\" for {hour:'numeric',minute:'2-digit'}, \"03/05/2024\" for a long date).",
 		},
 		{
 			Name:    "platform-intl-relative-unit-collator",
@@ -677,8 +664,6 @@ func builtCases() []Case {
 				),
 			},
 			Floor: 0.99,
-			KnownGap: "three Intl gaps: RelativeTimeFormat ignores numeric:'auto' (\"1 day ago\" for \"yesterday\"); NumberFormat style:'unit' drops the unit " +
-				"(\"88\" for \"88 km/h\"); Collator.compare sorts by code point (\"Cabä\" for \"aäbC\").",
 		},
 		{
 			Name:  "platform-static-template-contents",
