@@ -1205,6 +1205,19 @@ A timer that is not pulled in keeps its real delay — it does not fire in the
 render and does not hold the settle. `internal/js/timerff_test.go` holds each
 rule. No new async primitive: the fast-forward runs inside the settle's own tick.
 
+**Lazy prelude sections** (`lazyGlobals`, top of `internal/js/prelude_api.go`).
+Measured per section, a few parts of the API prelude that most pages never touch
+were a fifth of its allocations: the ElementInternals ARIA accessors (about
+2,300 per runtime), `DOMMatrix`, the IndexedDB stub, `crypto.subtle` and `Intl`.
+Each is now built on first use. The global is a configurable accessor until
+then: `'Intl' in window` is true without building it; `typeof Intl`, a read, or
+`attachInternals()` builds the section, whose own assignments land on the
+accessor's setter and turn it into the ordinary data property it always was; a
+page that assigns its own value first wins the same way. A lazy section must not
+read page state while it is being defined (it runs at an arbitrary later point)
+and must not patch a prototype — `Number.prototype.toLocaleString` stays eager
+and reaches `Intl` when called. `internal/js/lazyglobals_test.go` holds these.
+
 **Template contents** (`internal/js/templates.go`): the x/net/html tree keeps a
 `<template>`'s contents under the element; a browser keeps them in the content
 `DocumentFragment`, where no child accessor, selector query or tree walk on the

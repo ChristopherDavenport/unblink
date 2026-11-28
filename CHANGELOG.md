@@ -48,6 +48,13 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Changed
 
+- **A cold JavaScript runtime is about 10% cheaper to build.** `Intl`, the
+  IndexedDB stub, `crypto.subtle`, `DOMMatrix` and the ElementInternals ARIA
+  accessors are built when page code first uses them instead of for every
+  runtime (28.8k to 25.9k allocations for a minimal render). Each global exists
+  from the start (`'Intl' in window` is true) and becomes an ordinary data
+  property on first use.
+
 - **A page with a long timer no longer takes the whole render budget to read.**
   A one-shot timer that would outlast the budget is pulled in so content behind
   it lands; the render then waited for it to fire, 600 ms before the budget

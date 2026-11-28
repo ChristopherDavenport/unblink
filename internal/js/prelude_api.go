@@ -18,6 +18,37 @@ const preludeAPIJS = `
 (function () {
   var noop = function () {};
 
+  // lazyGlobals defers a whole section until page code first touches one of
+  // the globals it defines. Most pages never use IndexedDB, crypto.subtle or
+  // Intl, and building them is thousands of function objects per runtime. Each
+  // name becomes a configurable accessor; the first read (or a typeof, an "in"
+  // never triggers it) runs build() once, which assigns the real values as it
+  // always did — the assignment lands on the accessor's setter, which replaces
+  // it with an ordinary data property. A page assigning its own value first
+  // wins the same way. build() must not need page state at definition time
+  // beyond what any later call would see.
+  var lazyGlobals = function (target, names, build) {
+    var state = 0; // 0 unbuilt, 1 building, 2 built
+    var settle = function (n, v) { Object.defineProperty(target, n, { value: v, writable: true, configurable: true, enumerable: true }); };
+    var pending = {};
+    var run = function () {
+      if (state !== 0) return;
+      state = 1;
+      try { build(); } finally {
+        state = 2;
+        for (var n in pending) { if (pending[n]) settle(n, undefined); }
+      }
+    };
+    names.forEach(function (n) {
+      pending[n] = true;
+      Object.defineProperty(target, n, {
+        configurable: true, enumerable: true,
+        get: function () { run(); return pending[n] ? undefined : target[n]; },
+        set: function (v) { pending[n] = false; settle(n, v); }
+      });
+    });
+  };
+
   // ---- encoding primitives (used by Blob/FormData/fetch below) ----
 
   function utf8Encode(s) {
@@ -2240,6 +2271,7 @@ const preludeAPIJS = `
     window.DOMPoint = DP;
   }
   if (typeof window.DOMMatrixReadOnly === 'undefined') {
+    lazyGlobals(window, ['DOMMatrixReadOnly', 'DOMMatrix', 'WebKitCSSMatrix'], function () {
     // 2D affine matrix [a c e / b d f / 0 0 1]; 3D is reported as 2D identity extras.
     var matMul = function (m, n) {
       return [m.a * n.a + m.c * n.b, m.b * n.a + m.d * n.b, m.a * n.c + m.c * n.d,
@@ -2303,6 +2335,7 @@ const preludeAPIJS = `
     DM.fromFloat64Array = function (a) { return new DM(a); };
     window.DOMMatrix = DM;
     window.WebKitCSSMatrix = DM;
+    });
   }
   if (typeof window.DOMQuad === 'undefined') {
     window.DOMQuad = function (p1, p2, p3, p4) {
@@ -2521,6 +2554,13 @@ const preludeAPIJS = `
 
     // ARIAMixin: default accessibility semantics. Go keeps the ones extraction
     // reads, under their attribute names (ariaLabel → aria-label), and ignores the rest.
+    // Some sixty accessors, built when the interface is first used (the first
+    // attachInternals() or the first read of the ElementInternals global) —
+    // most pages have no form-associated custom element at all.
+    var ariaFilled = false;
+    function fillAria() {
+    if (ariaFilled) return;
+    ariaFilled = true;
     ['role', 'ariaAtomic', 'ariaAutoComplete', 'ariaBrailleLabel', 'ariaBrailleRoleDescription', 'ariaBusy', 'ariaChecked', 'ariaColCount', 'ariaColIndex', 'ariaColIndexText', 'ariaColSpan', 'ariaCurrent', 'ariaDescription', 'ariaDisabled', 'ariaExpanded', 'ariaHasPopup', 'ariaHidden', 'ariaInvalid', 'ariaKeyShortcuts', 'ariaLabel', 'ariaLevel', 'ariaLive', 'ariaModal', 'ariaMultiLine', 'ariaMultiSelectable', 'ariaOrientation', 'ariaPlaceholder', 'ariaPosInSet', 'ariaPressed', 'ariaReadOnly', 'ariaRelevant', 'ariaRequired', 'ariaRoleDescription', 'ariaRowCount', 'ariaRowIndex', 'ariaRowIndexText', 'ariaRowSpan', 'ariaSelected', 'ariaSetSize', 'ariaSort', 'ariaValueMax', 'ariaValueMin', 'ariaValueNow', 'ariaValueText'].forEach(function (name) {
       accessor(EI, name, function () { var v = state(this).aria[name]; return v === undefined ? null : v; },
         function (v) {
@@ -2537,8 +2577,10 @@ const preludeAPIJS = `
           if (name === 'ariaLabelledByElements') hook.setLabelledBy(s.host, s.aria[name]);
         });
     });
+    }
 
     HP.attachInternals = function () {
+      fillAria();
       var kind = hook.kind(this);
       if (kind === 0) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': Unable to attach ElementInternals to non-custom elements.");
       if (kind < 0) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': ElementInternals is disabled by disabledFeatures.");
@@ -2573,7 +2615,7 @@ const preludeAPIJS = `
       });
     });
 
-    window.ElementInternals = ElementInternals;
+    lazyGlobals(window, ['ElementInternals'], function () { fillAria(); window.ElementInternals = ElementInternals; });
     window.CustomStateSet = CustomStateSet;
     if (typeof window.ValidityState === 'undefined') window.ValidityState = ValidityState;
   })();
@@ -2927,6 +2969,7 @@ const preludeAPIJS = `
     };
   }
   if (window.crypto && !window.crypto.subtle && typeof __unblinkDigest === 'function') {
+    lazyGlobals(window.crypto, ['subtle'], function () {
     var algoName = function (a) { return (typeof a === 'string') ? a.toUpperCase() : (a && a.name ? String(a.name).toUpperCase() : ''); };
     var normHash = function (a) { var h = (a && typeof a === 'object' && a.hash) ? a.hash : a; return algoName(h); };
     var ab = function (data) { return bytesToArrayBuffer(toU8(data)); };
@@ -3025,6 +3068,7 @@ const preludeAPIJS = `
       wrapKey: function () { return Promise.reject(new Error('NotSupportedError: crypto.subtle.wrapKey')); },
       unwrapKey: function () { return Promise.reject(new Error('NotSupportedError: crypto.subtle.unwrapKey')); }
     };
+    });
   }
 
   // ---- indexedDB: in-memory, non-persistent stub ----
@@ -3036,6 +3080,7 @@ const preludeAPIJS = `
   // through the WRAPPED setTimeout so it registers in the live-timer audit; a
   // native timer would let the render close early and truncate content.
   if (typeof window.indexedDB === 'undefined') {
+    lazyGlobals(window, ['indexedDB', 'IDBKeyRange', 'IDBRequest', 'IDBOpenDBRequest', 'IDBDatabase', 'IDBTransaction', 'IDBObjectStore', 'IDBIndex', 'IDBFactory', 'IDBCursor', 'IDBCursorWithValue'], function () {
     var idbDBs = {}; // name -> { version, stores: { storeName -> rec } }
 
     var idbKey = function (k) {
@@ -3205,6 +3250,7 @@ const preludeAPIJS = `
       lowerBound: function (l, o) { return { lower: l, lowerOpen: !!o }; },
       upperBound: function (u, o) { return { upper: u, upperOpen: !!o }; }
     };
+    });
   }
 
   // ---- Intl (crash-avoidance shim; goja has no native Intl) ----
@@ -3214,6 +3260,7 @@ const preludeAPIJS = `
   // produce readable text, not locale fidelity.
 
   if (typeof Intl === 'undefined') {
+    lazyGlobals(window, ['Intl'], function () {
     var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     var DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -3409,9 +3456,7 @@ const preludeAPIJS = `
     // argument as a radix, so the everyday n.toLocaleString('en-US') threw a
     // RangeError and took the surrounding render with it; with no argument it
     // returned the number ungrouped ("6574" for "6,574").
-    Number.prototype.toLocaleString = function (locales, options) {
-      return new NumberFormat(locales, options).format(Number(this));
-    };
+    // (installed eagerly, below the lazy section.)
 
     // Intl.ListFormat, English rules (the only locale this layer formats in):
     // conjunction "a, b, and c", disjunction "a, b, or c", unit "a, b, c";
@@ -3599,6 +3644,10 @@ const preludeAPIJS = `
         if (typeof l === 'string') return [l];
         return Array.prototype.slice.call(l).map(String);
       }
+    };
+    });
+    Number.prototype.toLocaleString = function (locales, options) {
+      return new window.Intl.NumberFormat(locales, options).format(Number(this));
     };
   }
 

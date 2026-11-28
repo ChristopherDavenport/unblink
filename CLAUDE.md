@@ -196,6 +196,11 @@ not `doFetch`).
     page-dependent state (URL, navigation start, timer deadline, isolation flags,
     storage, "is there a network") — take it in a bind hook. A cold render runs
     the same two steps, so tests exercise the pooled path.
+  - *Rarely used prelude sections are lazy* (`lazyGlobals` in
+    `prelude_api.go`: Intl, IndexedDB, `crypto.subtle`, DOMMatrix, the
+    ElementInternals ARIA accessors). A lazy section runs at first use, so it
+    must not read page state at definition time, register a bind hook, or patch
+    a prototype; anything that must exist up front stays outside it.
   - *Scripts run via `runDocumentScripts`* (`internal/js/scripts.go`):
     non-deferred classic scripts, `readyState` → `interactive`, then deferred
     classic scripts and modules by document position. `Render`, `Open` and
