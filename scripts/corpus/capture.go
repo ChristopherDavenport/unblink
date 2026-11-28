@@ -72,9 +72,10 @@ const oracleJS = `(() => {
   let sel = 'main', main = longest('main, [role=main]');
   if (!main) { sel = 'article'; main = longest('article'); }
   if (!main) sel = '';
-  let shadow = 0, custom = 0, nodes = 0;
+  let shadow = 0, custom = 0, nodes = 0, handlers = 0;
   for (const el of document.getElementsByTagName('*')) {
     nodes++;
+    for (const a of el.attributes) if (a.name.length > 2 && a.name.startsWith('on')) { handlers++; break; }
     if (el.shadowRoot) shadow++;
     if (el.localName.includes('-')) custom++;
   }
@@ -97,6 +98,12 @@ const oracleJS = `(() => {
     charset: document.characterSet,
     user_agent: navigator.userAgent,
     transparent_hidden: transparent,
+    tables: [...document.querySelectorAll('table')].filter(t => t.rows.length >= 2 && vis(t)).length,
+    details: document.querySelectorAll('details').length,
+    svg_texts: document.querySelectorAll('svg text').length,
+    handler_attrs: handlers,
+    dir: body ? getComputedStyle(body).direction : '',
+    lang: document.documentElement.lang || '',
     screen_width: screen.width, screen_height: screen.height,
     inner_width: innerWidth, inner_height: innerHeight,
     device_pixel_ratio: devicePixelRatio,

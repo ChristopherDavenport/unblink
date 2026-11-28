@@ -112,6 +112,16 @@ type oracle struct {
 	// TransparentHidden counts the opacity:0 subtrees left out of BodyText and
 	// MainText (see oracleJS).
 	TransparentHidden int `json:"transparent_hidden"`
+	// Page-shape counts the manifest's feature cells are checked against: data
+	// tables (visible, two rows or more), <details> elements, <text> elements
+	// inside inline SVG, elements carrying an on* handler attribute, and the
+	// body's computed text direction and the document language.
+	Tables       int    `json:"tables"`
+	Details      int    `json:"details"`
+	SVGTexts     int    `json:"svg_texts"`
+	HandlerAttrs int    `json:"handler_attrs"`
+	Dir          string `json:"dir"`
+	Lang         string `json:"lang"`
 }
 
 var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
