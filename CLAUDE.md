@@ -28,6 +28,7 @@ make wpt       # offline web-platform-tests conformance report (build tag `wpt`;
 make wpt-sync  # refresh the vendored WPT subset in testdata/wpt/ (needs network; local-only)
 make corpus    # offline real-page differential report vs. a Chromium oracle (build tag `corpus`; on-demand, not a gate)
 make corpus-capture # capture corpus/manifest.json with local headless Chromium into testdata/corpus/ (needs network; local-only, not committed)
+make corpus-compare # unblink vs. Charlotte over the captured corpus, same oracle and scorer (scripts/membench, tag `corpus`; CHROME=<capture Chromium>, TOOLS=, ARGS=)
 make fuzz      # coverage-guided fuzzing of the untrusted-input parsers (FUZZTIME=15s each)
 make bench     # perf benchmarks over the hot-path packages (narrow: BENCH=regexp, repeat: BENCHCOUNT=N)
 make membench  # unblink vs. headless Chromium footprint/latency (scripts/membench, separate module)
@@ -187,6 +188,53 @@ not `doFetch`).
   non-deferred classic scripts in document order, then `readyState` becomes
   `interactive`, then `defer` external scripts and module scripts interleaved in
   document order, then `DOMContentLoaded`. Both `Render` and `Open` go through it.
+- **JS engine invariants added by the real-page corpus work** (each has a test;
+  break one and real sites break):
+  - *Prepare, then bind.* The prewarm pool prepares a whole runtime (install +
+    both preludes) with **no page**; a render binds it (`bind`/`finishBind`,
+    `internal/js/bridge.go`). Install and prelude code must never read
+    page-dependent state (URL, navigation start, timer deadline, isolation flags,
+    storage, "is there a network") — take it in a bind hook. A cold render runs
+    the same two steps, so tests exercise the pooled path.
+  - *Scripts run via `runDocumentScripts`* (`internal/js/scripts.go`):
+    non-deferred classic scripts, `readyState` → `interactive`, then deferred
+    classic scripts and modules by document position. `Render`, `Open` and
+    extension background pages all use it.
+  - *A `<template>`'s contents are inert from the start*: every path that parses
+    markup into the tree must call `sealTemplates`.
+  - *Runaway page code is interrupted repeatedly, not once.* goja's `Interrupt`
+    is one-shot, so `interruptUntil` re-arms it until the loop has stopped; a
+    live session's loop is watched between operations (`DefaultLiveTaskBudget`,
+    three strikes → `js.ErrRunaway` → `live_js_stopped`).
+  - *Queued tasks hold the settle* (ADR 0004, 2026-11-27 amendment):
+    `setImmediate`/`MessageChannel`/`postMessage` continuations keep the quiet
+    window open, capped at 2s per settle; `setTimeout(fn, 0)` and rAF do not.
+    After the timer-clamp deadline only timers that outlast the budget are
+    pulled in, 32 per render.
+  - *`js_errors` covers the whole render*, including errors after settle began.
+  - *Property state reaches extraction.* Reflected IDL attributes are
+    table-driven (`internal/js/reflect.go`), `el.style` is a view over the
+    `style` attribute, and a select's value is the `selected` attribute on its
+    options — one state for page JS, `interact`, submission and `dom`.
+    Event-handler properties and `on*` attributes run (CSP gates the
+    attributes as inline script).
+  - *Module source sees the page's `require`/`module`/`exports`*, never the CJS
+    wrapper's (`transformModuleCJS`, ADR 0018).
+  - *Known deviations*: `Array.isArray(nodeList)` is true; with form/document
+    named access a built-in always wins and `'name' in form` is false; a
+    single-choice select is never in the nothing-selected state; `innerText`
+    judges visibility from tags and inline style only.
+- **Markdown output rules** (`internal/dom`, `internal/emit`, `internal/reduce`):
+  two inline elements with no text node between them are separated by a space
+  (`dom/inlinesep.go`; never inside `pre`/`code`, ruby, SVG, CJK or digit runs);
+  a text `<` is written `\<`, never as an entity and never raw
+  (`emit/escape.go` — this is also what stops page text becoming markup);
+  tables are Markdown tables unless `role="presentation"` or multi-line cells;
+  a collapsed `<details>` is kept with its summary marked `▸ ` (unlike `hidden`,
+  `aria-hidden`, inline `display:none` and a closed `<dialog>`, which are
+  dropped); an inline SVG emits its `<text>` labels joined with ` · `. A
+  paginated `read` reports `total_tokens`, and an article extraction holding
+  under 85% of the content region reports `article_coverage`.
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr via `slog`
   (`--log-level`). Never print to stdout outside the MCP transport.
 - **Never return an unbounded blob.** `read` defaults to article-mode extraction
