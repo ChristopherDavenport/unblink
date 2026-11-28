@@ -220,7 +220,8 @@ make test            # run the test suite
 JavaScript rendering (pure Go, no cgo, no Chromium) runs a page's scripts against
 a hand-rolled DOM over the parsed tree: inline **and external** scripts,
 **ES modules** (`<script type=module>`, `import`/`export`, dynamic `import()`,
-import maps including `scopes` — bundled with esbuild), `window.fetch` +
+import maps including `scopes` — each module transformed with esbuild and loaded
+once through a per-render module registry), `window.fetch` +
 `XMLHttpRequest` (with working `abort()`, `timeout`, and the
 `HEADERS_RECEIVED`→`LOADING`→`DONE` state walk), DOM
 **events with full capture/bubble propagation** (delegated listeners,
@@ -505,7 +506,7 @@ All configuration is via CLI flags (pass them in your MCP client's `args`).
 | `--js-concurrency` | auto | Max concurrent JS renders (auto = CPU count clamped to 4..16). Same-host fetch pacing stays `--rate-limit`'s job. |
 | `--js-max-live` | `16` | Max concurrent live per-session JS runtimes (LRU torn down over the cap). |
 | `--js-memory-limit` | `1024` | MiB of Go heap page JS may grow before every render is interrupted (0 disables the guard). |
-| `--js-asset-cache` | on | Cache page-JS script/module/bundle downloads across renders for 60s (data fetch/XHR never cached). |
+| `--js-asset-cache` | on | Cache page-JS script/module downloads and module transforms across renders for 60s (data fetch/XHR never cached). |
 | `--session-ttl` | `30m` | Idle time before a session is evicted. |
 | `--session-cap` | `256` | Max concurrent sessions (oldest evicted on overflow). |
 | `--search-provider` | none | Web-search backend for the `search` tool: `searxng` or `brave` (empty disables it). |

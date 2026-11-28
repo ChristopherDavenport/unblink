@@ -111,7 +111,7 @@ func (w *bgWorker) start(memGuard *memGuard) {
 // (MV2, used by uBlock Origin / Privacy Badger) is an HTML file whose scripts are run in
 // order (classics first, then modules, matching how those pages are authored). Classic
 // scripts (MV2 background.scripts, or a non-module service_worker) run directly; a module
-// service worker is bundled through the esbuild module path.
+// service worker is loaded through the module registry (runModules).
 func (w *bgWorker) runBackgroundScripts(b *bridge) {
 	bg := w.bundle.Manifest.Background
 	if bg.Page != "" {
@@ -140,8 +140,8 @@ func (w *bgWorker) runBackgroundScripts(b *bridge) {
 }
 
 // runBackgroundPage runs an MV2 background HTML page's scripts: classic scripts first
-// (they set up the globals the module entry expects), then module scripts (bundled via
-// esbuild, their imports fetched from the extension through the bundle transport).
+// (they set up the globals the module entry expects), then module scripts (loaded via
+// the module registry, their imports fetched from the extension through the bundle transport).
 func (w *bgWorker) runBackgroundPage(b *bridge, page string) {
 	data, err := w.bundle.ReadResource(page)
 	if err != nil {

@@ -47,7 +47,7 @@ type Engine struct {
 	pool      chan *eventloop.EventLoop // pre-warmed, fresh, single-use loops; nil when disabled
 	stop      chan struct{}
 	closeOnce sync.Once
-	assets    *assetCache    // TTL'd script/module/bundle cache; nil when disabled
+	assets    *assetCache    // TTL'd script/module/transform cache; nil when disabled
 	webdriver bool           // navigator.webdriver; true unless the operator opted into --tls-mimic parity
 	memGuard  *memGuard      // heap watchdog over all live/one-shot runtimes; nil when disabled
 	extHost   *ExtensionHost // loaded WebExtensions (network rules); nil when none configured
@@ -78,7 +78,7 @@ func WithConcurrency(n int) Option { return func(c *config) { c.concurrent = n }
 func WithPrewarm(n int) Option { return func(c *config) { c.prewarm = n } }
 
 // WithAssetCache caches page-JS *asset* downloads (external scripts, module
-// sources) and esbuild bundle outputs across renders for ttl. Page data
+// sources) and each module's esbuild transform across renders for ttl. Page data
 // requests (fetch/XHR) are never cached. 0 disables (the default).
 func WithAssetCache(ttl time.Duration) Option { return func(c *config) { c.assetTTL = ttl } }
 
@@ -129,8 +129,9 @@ func New(opts ...Option) *Engine {
 // goja_nodejs's DefaultSourceLoader is os.Open, so a zero-value registry lets page
 // JS read arbitrary host files (e.g. require('/etc/passwd'), and .json paths are
 // parsed and handed back to the script) and exfiltrate them via fetch. We refuse
-// all module source loads instead. ESM `import` is unaffected: it is bundled by
-// esbuild through the guarded network transport, not through require().
+// all module source loads instead. ESM `import` is unaffected: modules are fetched
+// through the guarded network transport and transformed by esbuild.Transform (which
+// has no filesystem access; see runModules), not loaded through require().
 func rejectRequire(string) ([]byte, error) {
 	return nil, errors.New("unblink: require() is disabled")
 }

@@ -5,6 +5,35 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ## Unreleased
 
+### Security
+
+- **Untrusted page JavaScript could read local files (esbuild glob imports).**
+  Affected versions: v0.16.0 (the first public release) through v0.25.0.
+  `<script type=module>` was bundled with esbuild, whose bundler expands a dynamic
+  import or `require` with a non-literal relative argument (``import(`./${x}.json`)``,
+  `import("./" + x)`, `../` forms too) as a glob over the real filesystem, without
+  consulting unblink's network-only resolver. A page could read files under the
+  server's working directory or its parents — or anywhere under `/` from an inline
+  module — for every file type esbuild loads by default (JavaScript, TypeScript, JSON,
+  CSS, text), and send the contents to any origin. The inline form also walked the
+  whole filesystem, stalling the render and consuming gigabytes of memory. It needed
+  JavaScript rendering (the default) and one visit to a hostile page; `--disable-js`
+  was not affected. Page modules are no longer bundled: they load through the
+  per-render module registry, which only uses esbuild's `Transform` (no filesystem
+  access). See the 2026-11-27 amendment to
+  [ADR 0018](docs/decisions/0018-module-instance-registry.md).
+
+### Changed
+
+- **Module scripts load through the module registry.** One instance per module URL is
+  now shared by every importer in a render, static or dynamic. A literal `import()`
+  the page never calls is no longer fetched at load, and a module that fails to load
+  fails only the importers that need it instead of the whole entry. `import.meta.url`
+  and `import.meta.resolve()` work, `import()` of a `.json` URL works on every path,
+  and a module's own non-literal `import()` resolves against that module's URL. An
+  external module named by two script tags now runs once. A wide module graph costs
+  more CPU per render than the single bundle did.
+
 ### Added
 
 - **Opt-in robots.txt enforcement (`--respect-robots`).** Off by default, so

@@ -57,7 +57,7 @@ func main() {
 	jsConcurrency := flag.Int("js-concurrency", 0, "max concurrent JS renders (0 = auto: CPU count clamped to 4..16); same-host fetch pacing is --rate-limit's job")
 	jsMaxLive := flag.Int("js-max-live", browser.DefaultJSMaxLive, "max concurrent live per-session JS runtimes (LRU torn down over the cap)")
 	jsMemLimit := flag.Int64("js-memory-limit", browser.DefaultJSMemLimit/(1024*1024), "MiB of Go heap page JS may grow before every render is interrupted (0 disables the guard)")
-	jsAssetCache := flag.Bool("js-asset-cache", true, "cache page-JS script/module downloads and bundle outputs across renders for 60s (page fetch/XHR data requests are never cached)")
+	jsAssetCache := flag.Bool("js-asset-cache", true, "cache page-JS script/module downloads and module transforms across renders for 60s (page fetch/XHR data requests are never cached)")
 	sessionTTL := flag.Duration("session-ttl", 0, "idle time before a session is evicted (default 30m)")
 	sessionCap := flag.Int("session-cap", 0, "maximum concurrent sessions, oldest evicted on overflow (default 256)")
 	searchProvider := flag.String("search-provider", "", "web search provider for the search tool: searxng|brave (empty disables it)")

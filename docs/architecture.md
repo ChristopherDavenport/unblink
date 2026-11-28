@@ -70,7 +70,7 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
 - Emit: `github.com/JohannesKaufmann/html-to-markdown/v2`
 - MCP: `github.com/modelcontextprotocol/go-sdk` (official; the module as a whole requires Go ≥ 1.27)
 - JS: `github.com/dop251/goja` + `github.com/dop251/goja_nodejs` (eventloop) — pure Go, no cgo
-- JS modules: `github.com/evanw/esbuild/pkg/api` (bundles ESM → classic IIFE) — pure Go, no cgo
+- JS modules: `github.com/evanw/esbuild/pkg/api` (`Transform` only: each ES module → a CommonJS unit; the bundler, `Build`, is never run on page code — ADR 0018) — pure Go, no cgo
 - Robustness: `github.com/andybalholm/brotli` (decode), `golang.org/x/time/rate` (per-host limit),
   `github.com/refraction-networking/utls` (TLS mimic, opt-in) — pure Go, no cgo
 
@@ -104,7 +104,9 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   esbuild (pure Go) via a network-resolver plugin routed through the guarded
   transport, then run as a classic IIFE on the goja path. (Import map `scopes`
   and a registry-backed dynamic `import()` came later — see the *Module loading*
-  entry later in this roadmap and ADR 0018.)
+  entry later in this roadmap and ADR 0018. Since 2026-11-27 static module scripts
+  are no longer bundled at all: they load through the same registry, after esbuild's
+  bundler was found to read the local filesystem for non-literal relative imports.)
 - **Phase 4d — Event propagation & cookies.** ✅ Full capture → target → bubble
   event dispatch (delegated listeners fire; `stopPropagation`/`preventDefault`/
   real `removeEventListener`), and `document.cookie` read/write backed by the
@@ -870,12 +872,33 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   semantics: each resolved URL is fetched, transformed and evaluated once. After v0.24.0, import
   maps are parsed and resolved per the HTML Standard (`internal/js/importmap.go`): `"imports"`
   and `"scopes"`, exact and trailing-slash prefix keys, most specific scope first, through one
-  resolver (`bridge.moduleResolve`) shared by static module bundling, the registry's static
-  dependencies, and dynamic `import()`. A registry module's nested `import()` is resolved
-  against that module's own URL. Limits: a classic script's `import()` and a non-literal
-  `import()` in a bundled module use the document base as referrer, because the calling
-  script's URL is not known there; only the first `<script type="importmap">` is read; and the
-  import map `"integrity"` key is not handled.
+  resolver (`bridge.moduleResolve`) shared by `<script type=module>` entries, the registry's
+  static dependencies, and dynamic `import()`. A registry module's nested `import()` is resolved
+  against that module's own URL. Limits: a classic script's `import()` uses the document base as
+  referrer, because the calling script's URL is not known there; only the first
+  `<script type="importmap">` is read; and the import map `"integrity"` key is not handled.
+
+- **Static modules moved onto the registry (2026-11-27, security).** ✅ `runModules` no longer
+  runs `esbuild.Build`. Every `<script type=module>` — external or inline — and its static graph
+  now loads through the module registry (ADR 0018, 2026-11-27 amendment): per-module
+  `esbuild.Transform` to CommonJS, one instance per URL shared with dynamic `import()`. The
+  reason is a file-disclosure bug: esbuild's bundler expands a non-literal relative import
+  (``import(`./${x}.json`)``, `import("./"+x)`, also `../` and `require("./"+x)`) as a glob over
+  the **real filesystem** — the process working directory for a fetched module, `/` for an
+  inline one — without consulting the plugin resolver, so untrusted page JS could read local
+  files and send them out (and an inline module could stall the render walking `/`).
+  `Transform` has no filesystem access. Two behaviour fixes come with it: a literal `import()`
+  the page never calls is no longer fetched at load (the bundler inlined every lazy chunk and
+  its static graph — 410 extra script fetches on one real page), and a module that fails to
+  load now fails only the importers that need it, not the whole entry. `import.meta.url` and
+  `import.meta.resolve()` are real, an integrity-checked module entry runs the exact bytes that
+  were hashed, and a module's own non-literal `import()` resolves against that module's URL.
+  No async primitive is added: the load still blocks the loop goroutine before
+  `DOMContentLoaded`, as the bundle build did (ADR 0004). Cost: a wide module graph pays one
+  transform and one CommonJS wrapper per module instead of one bundle
+  (`BenchmarkRenderModuleGraph*`). Unchanged limits: top-level `await` in a module is still a
+  transform error (it was a bundle error), and CSP/SRI still gate the module *entry*, with
+  static dependencies inheriting the decision.
 
 - **DOM and XHR fidelity after v0.24.0.** ✅ Four changes that replace a stub or a wrong default
   with the standard's behaviour, none adding an async primitive (ADR 0004). **Passive listeners**

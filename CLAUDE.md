@@ -273,8 +273,14 @@ not `doFetch`).
   component + renderer chunks) isn't duplicated into two singleton copies (the
   "useMemoCache of null" failure); two-phase (off-loop instantiate/dedup, on-loop
   post-order evaluate), replaces bundleDynamicChunk, preserves the ADR 0004 settle
-  bracket; scope = the dynamic-import path only (static `<script type=module>` still
-  bundles per entry). Import maps (`internal/js/importmap.go`: `imports` + `scopes`)
+  bracket; as of the 2026-11-27 amendment static `<script type=module>` entries
+  (external and inline) load through the same registry, so a module URL is one
+  instance across static entries and `import()`, an uncalled literal `import()` is
+  not fetched, and a failed module fails only its importers. **`esbuild.Build` must
+  never be used on page code** — its bundler expands a non-literal relative
+  `import()`/`require` as a glob over the real filesystem, bypassing plugins (a
+  local-file read by untrusted page JS, v0.16.0–v0.25.0); only `esbuild.Transform`
+  is allowed, and `TestNoEsbuildBundlerOnPageCode` is the tripwire. Import maps (`internal/js/importmap.go`: `imports` + `scopes`)
   resolve through one `bridge.moduleResolve` on every path — static bundling, registry
   deps, dynamic `import()`; a classic script's or non-literal `import()` uses the
   document base as referrer, only the first import map is read, and its `integrity`

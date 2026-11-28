@@ -11,8 +11,8 @@ import (
 
 // Import map "scopes" (HTML Standard, "resolve a module specifier"): a bare
 // specifier may map to a different module depending on the URL of the module that
-// imports it. These tests pin that on both loaders — the esbuild static bundle
-// (<script type=module>) and the dynamic import() module registry.
+// imports it. These tests pin that on both loaders — the static
+// <script type=module> path and dynamic import(), both now the module registry.
 
 // exactTransport serves module bodies by exact URL, so two routes that differ only
 // by a path prefix (/dep.js vs /scoped/dep.js) can never be confused, and records

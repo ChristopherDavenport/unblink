@@ -1,9 +1,6 @@
 package js
 
-import (
-	"net/url"
-	"testing"
-)
+import "testing"
 
 // The program cache is content-only within a compile pathway: the same bytes
 // delivered under a different name (URL, position, query-busted variant) must
@@ -32,19 +29,5 @@ func TestClassicProgramCachesCompileErrors(t *testing.T) {
 	}
 	if err1.Error() != err2.Error() {
 		t.Fatalf("cached error mismatch:\n%v\n%v", err1, err2)
-	}
-}
-
-// Bundle keys ignore the base URL's query and fragment (relative specifiers
-// resolve against scheme/host/path only) but stay sensitive to the path.
-func TestBundleKeyIgnoresBaseQueryAndFragment(t *testing.T) {
-	b1, _ := url.Parse("https://example.com/page?bust=1#frag")
-	b2, _ := url.Parse("https://example.com/page?bust=2")
-	b3, _ := url.Parse("https://example.com/other")
-	if bundleKey(b1, "entry", nil) != bundleKey(b2, "entry", nil) {
-		t.Error("base query/fragment split the bundle key — query-busted pages rebuild the module graph")
-	}
-	if bundleKey(b1, "entry", nil) == bundleKey(b3, "entry", nil) {
-		t.Error("base path must affect the bundle key — relative imports resolve against it")
 	}
 }

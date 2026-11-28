@@ -21,9 +21,8 @@ const moduleDepPage = `<html><body><div id="out"></div>
 	</script></body></html>`
 
 // Module pages must render identically when the page URL carries a varying
-// query (?utm=, cache busting): the bundle cache is keyed on the resolution
-// base with query/fragment cleared, so the rebuilt-per-query pathology stays
-// gone. Correctness net for TestBundleKeyIgnoresBaseQueryAndFragment.
+// query (?utm=, cache busting), and must not redo the esbuild work per query:
+// module transforms are cached by source content, independent of the page URL.
 func TestModuleRenderStableAcrossBustedBase(t *testing.T) {
 	tr := newRoutedTransport(map[string]routedScript{
 		"https://example.com/dep.js": {body: "export const msg = 'dep-ran';"},
@@ -51,8 +50,8 @@ func TestModuleRenderStableAcrossBustedBase(t *testing.T) {
 
 // BenchmarkRenderModuleBustedBase renders a module page under a unique page
 // query per iteration — the crossbench methodology and the `?utm=` reality.
-// Before the bundle-key canonicalization every iteration re-ran the whole
-// esbuild build; now iteration 2+ hits the cached bundle program.
+// Iteration 2+ reuses the cached module sources, their cached transforms and
+// the cached compiled programs.
 func BenchmarkRenderModuleBustedBase(b *testing.B) {
 	tr := newRoutedTransport(map[string]routedScript{
 		"https://example.com/dep.js": {body: "export const msg = 'dep-ran';"},

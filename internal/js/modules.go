@@ -3,7 +3,6 @@ package js
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/andybalholm/cascadia"
@@ -11,8 +10,6 @@ import (
 	urlpkg "github.com/nationallibraryofnorway/whatwg-url/url"
 	"golang.org/x/net/html"
 )
-
-const moduleNamespace = "unblink-url"
 
 var (
 	selModuleScript = cascadia.MustCompile("script[type=module]")
@@ -79,20 +76,30 @@ func relHasToken(rel, tok string) bool {
 	return false
 }
 
-// runModules bundles and runs each <script type="module"> via esbuild — the
-// module graph is fetched through the guarded transport, bundled to a classic
-// IIFE, and run on the existing goja path. goja has no native ESM, so bundling is
-// the pure-Go route. A build failure (incl. a blocked/failed module fetch) skips
-// that module script; it is never fatal. Requires a transport (network).
+// runModules loads and runs each <script type="module"> through the per-render
+// module registry (moduleregistry.go, ADR 0018): every module is fetched through
+// the guarded transport, esbuild-*transformed* (never bundled) to a CommonJS unit,
+// and evaluated once on the existing goja path, its instance shared with every
+// other importer — static or dynamic — in this render. goja has no native ESM, so
+// the per-module transform is the pure-Go route.
+//
+// esbuild.Build is deliberately NOT used for page modules. Its bundler expands a
+// non-literal relative import (import("./"+x), import(`./${x}.json`)) as a glob
+// against the real filesystem, bypassing any plugin resolver — untrusted page JS
+// could read files under the server's working directory (TestModuleGlobImport*).
+// esbuild.Transform has no filesystem access by construction.
+//
+// Runs on the loop goroutine and blocks it for the instantiate phase (the fetches
+// themselves run concurrently off-loop), exactly as the bundle build used to, so
+// module scripts still execute in document order before DOMContentLoaded and add
+// no async primitive (ADR 0004). A module whose graph fails to load or evaluate is
+// recorded and skipped; later module scripts still run. Requires a transport.
 func (b *bridge) runModules(modules []*html.Node) {
 	if b.transport == nil {
 		return
 	}
 	b.acquireImportMap(b.doc) // module loading begins: the import map is now fixed
-	importMap := b.importMap
-	plugin := b.modulePlugin()
 	for _, m := range modules {
-		var entry string
 		if src := strings.TrimSpace(getAttr(m, "src")); src != "" {
 			abs, err := b.resolveURL(src)
 			if err != nil {
@@ -110,65 +117,40 @@ func (b *bridge) runModules(modules []*html.Node) {
 					continue
 				}
 			}
-			entry = "import " + strconv.Quote(abs) + ";"
-		} else {
-			entry = scriptText(m)
-			// CSP script-src gates inline modules (nonce / hash / 'unsafe-inline').
-			if !b.cspAllowInline(entry, b.nodeNonce(m)) {
-				continue
+			b.reg.instantiateGraph(b, abs)
+			if _, err := b.reg.evaluate(b, abs); err != nil {
+				b.recordError(fmt.Errorf("module %s: %w", abs, err))
 			}
+			continue
+		}
+		entry := scriptText(m)
+		// CSP script-src gates inline modules (nonce / hash / 'unsafe-inline').
+		if !b.cspAllowInline(entry, b.nodeNonce(m)) {
+			continue
 		}
 		if strings.TrimSpace(entry) == "" {
 			continue
 		}
-
-		// The bundle output is a pure function of (base, entry, import map) —
-		// its module fetches are asset requests — so it shares the asset cache's
-		// TTL/flag, skipping the whole esbuild build on repeat renders.
-		bkey := bundleKey(b.docBaseNow(), entry, importMap)
-		bundled, hit := b.assets.get(bkey)
-		if !hit {
-			res := esbuild.Build(esbuild.BuildOptions{
-				Stdin: &esbuild.StdinOptions{
-					Contents:   entry,
-					Loader:     esbuild.LoaderJS,
-					Sourcefile: "entry.js",
-					ResolveDir: "/",
-				},
-				Bundle:   true,
-				Write:    false,
-				Format:   esbuild.FormatIIFE,
-				Target:   esbuild.ES2017,
-				LogLevel: esbuild.LogLevelSilent,
-				Plugins:  []esbuild.Plugin{plugin},
-			})
-			if len(res.Errors) > 0 || len(res.OutputFiles) == 0 {
-				if len(res.Errors) > 0 {
-					b.recordError(fmt.Errorf("esbuild: %s", res.Errors[0].Text))
-				}
-				continue
-			}
-			bundled = res.OutputFiles[0].Contents
-			b.assets.put(bkey, bundled)
-		}
-		prog, err := compileCached("module.js", string(bundled))
-		if err != nil {
-			b.recordError(err)
-			continue
-		}
-		if _, err := b.vm.RunProgram(prog); err != nil {
-			b.recordError(err)
+		inst := b.reg.instantiateInline(b, entry)
+		if _, err := b.reg.evaluateInst(b, inst); err != nil {
+			b.recordError(fmt.Errorf("inline module: %w", err))
 		}
 	}
 }
 
-// verifyModuleIntegrity fetches the entry module and checks its integrity against
-// the raw bytes, priming the asset cache with the fetched body so the esbuild
-// loader (modulePlugin OnLoad) reuses it instead of re-fetching. It returns false
-// (and records a diagnostic) only on a real hash mismatch, so the caller skips the
-// module — a browser refusing a tampered module. A fetch failure returns true and
-// lets the normal loader path surface the error, rather than blocking on SRI.
+// verifyModuleIntegrity fetches the entry module, checks its integrity against the
+// raw bytes, and registers the module from those same bytes (instantiateFrom), so
+// what was verified is what runs — the loader never fetches the entry a second
+// time, which would let an origin serve the pinned bytes once and others after. It
+// returns false (and records a diagnostic) only on a real hash mismatch, so the
+// caller skips the module — a browser refusing a tampered module. A fetch failure
+// returns true and lets the normal loader path surface the error, rather than
+// blocking on SRI. A URL already in the module map keeps its instance (a browser's
+// module map is keyed by URL alone).
 func (b *bridge) verifyModuleIntegrity(abs, integrity string) bool {
+	if b.reg.lookup(abs) != nil {
+		return true
+	}
 	ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
 	res, err := b.transport.Do(ctx, "GET", abs, nil, nil)
 	cancel()
@@ -180,6 +162,7 @@ func (b *bridge) verifyModuleIntegrity(abs, integrity string) bool {
 		return false
 	}
 	b.assets.put(assetKey(abs), res.Body)
+	b.reg.instantiateFrom(b, abs, res.Body)
 	return true
 }
 
@@ -228,66 +211,9 @@ func lowerDynamicImport(src string) (string, bool) {
 	return code, true
 }
 
-// modulePlugin resolves every specifier to an absolute URL in a custom namespace
-// and loads its bytes through the guarded transport, so esbuild never touches a
-// filesystem and all module fetches obey the SSRF guard + budget.
-func (b *bridge) modulePlugin() esbuild.Plugin {
-	resolve := func(a esbuild.OnResolveArgs) (esbuild.OnResolveResult, error) {
-		// a.Importer is the importing module's URL (moduleNamespace) or the stdin
-		// entry name, which moduleResolve treats as "the document is the referrer".
-		abs, err := b.moduleResolve(a.Importer, a.Path)
-		if err != nil {
-			return esbuild.OnResolveResult{}, err
-		}
-		return esbuild.OnResolveResult{Path: abs, Namespace: moduleNamespace}, nil
-	}
-
-	return esbuild.Plugin{
-		Name: "unblink-net",
-		Setup: func(pb esbuild.PluginBuild) {
-			// Entry-point imports (file namespace) and imports within already
-			// downloaded modules (moduleNamespace) both go through the same resolver.
-			pb.OnResolve(esbuild.OnResolveOptions{Filter: ".*"}, resolve)
-			pb.OnResolve(esbuild.OnResolveOptions{Filter: ".*", Namespace: moduleNamespace}, resolve)
-
-			pb.OnLoad(esbuild.OnLoadOptions{Filter: ".*", Namespace: moduleNamespace}, func(a esbuild.OnLoadArgs) (esbuild.OnLoadResult, error) {
-				loader := esbuild.LoaderJS
-				if strings.HasSuffix(strings.ToLower(a.Path), ".json") {
-					loader = esbuild.LoaderJSON
-				}
-				if body, ok := b.assets.get(assetKey(a.Path)); ok {
-					contents := string(body)
-					return esbuild.OnLoadResult{Contents: &contents, Loader: loader}, nil
-				}
-				// A modulepreload/prefetch warm may be in flight for this chunk; join
-				// it (overlapping this build's wait with the other warmers) rather than
-				// issuing a duplicate fetch. On a warm that failed, fall through to a
-				// fresh fetch — a missing module is more consequential than a skipped
-				// classic script, so we retry rather than skip.
-				if body, ok, found := b.prefetched(a.Path); found && ok {
-					contents := string(body)
-					return esbuild.OnLoadResult{Contents: &contents, Loader: loader}, nil
-				}
-				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
-				defer cancel()
-				res, err := b.transport.Do(ctx, "GET", a.Path, nil, nil)
-				if err != nil {
-					return esbuild.OnLoadResult{}, err
-				}
-				if res.Status >= 400 {
-					return esbuild.OnLoadResult{}, fmt.Errorf("module %s: status %d", a.Path, res.Status)
-				}
-				contents := string(res.Body)
-				b.assets.put(assetKey(a.Path), res.Body)
-				return esbuild.OnLoadResult{Contents: &contents, Loader: loader}, nil
-			})
-		},
-	}
-}
-
 // moduleResolve resolves a module specifier written in the module at importer (an
 // absolute URL), or in the document itself when importer is not one (an inline
-// module's stdin entry, a classic script): the import map's matching scopes, then
+// module, whose instance URL is "", or a classic script): the import map's matching scopes, then
 // its top-level imports, then the specifier as a URL relative to the referrer.
 //
 // An absolute importer never reads docBaseNow, so the off-loop registry instantiate
