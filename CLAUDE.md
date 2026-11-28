@@ -231,6 +231,10 @@ not `doFetch`).
     attributes as inline script).
   - *Module source sees the page's `require`/`module`/`exports`*, never the CJS
     wrapper's (`transformModuleCJS`, ADR 0018).
+  - *Intl is en-US only, and the default time zone is the process zone*
+    (`internal/js/datetime.go`): `Date` getters come from goja's `time.Local`,
+    so the Intl default must match it. Formatting tests name a `timeZone` and
+    must pass under any `TZ` (run them with `TZ=Pacific/Auckland` too).
   - *Known deviations*: `Array.isArray(nodeList)` is true; with form/document
     named access a built-in always wins and `'name' in form` is false; a
     single-choice select is never in the nothing-selected state; `innerText`

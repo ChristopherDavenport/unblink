@@ -171,6 +171,23 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **Dates, times and relative times format as a browser's do, in English.**
+  `Date.prototype.toLocaleString`/`toLocaleDateString`/`toLocaleTimeString`
+  ignored their arguments and printed 24-hour ISO-like text ("13:37:00" where a
+  browser shows "1:37 PM"), and `Intl.DateTimeFormat` ignored `timeZone`,
+  `timeZoneName`, `hour12`/`hourCycle`, `fractionalSecondDigits` and most field
+  widths. Both now follow the CLDR English patterns for every field
+  combination and style, resolve time zones (IANA names, case-insensitively,
+  and ±hh:mm offsets) from the system zone database, return typed
+  `formatToParts`, and throw the specified `RangeError`/`TypeError` for bad
+  options. With no `timeZone` the formatter uses the process zone — the one
+  `Date`'s own getters use — and reports its IANA name instead of always
+  claiming UTC. `Intl.RelativeTimeFormat` honours `numeric: "auto"`
+  ("yesterday") and `style`; `Intl.PluralRules` validates and reports its
+  categories; `Intl.NumberFormat` formats `style: "unit"`; `Intl.Collator`
+  orders accents and case as English does instead of by code point. Other
+  locales still format as en-US.
+
 - **A `<template>`'s contents are inert from the start.** They were moved into
   the content fragment only when page code first read `.content`; until then
   they were the element's children, reachable by `firstElementChild`,

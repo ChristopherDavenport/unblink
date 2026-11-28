@@ -463,6 +463,7 @@ func (b *bridge) install() {
 	_ = vm.GlobalObject().Delete("require")
 
 	b.installPrototypes()
+	b.installZoneInfo()
 
 	doc := b.documentObject()
 	b.documentObj = doc

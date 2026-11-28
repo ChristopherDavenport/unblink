@@ -3260,52 +3260,227 @@ const preludeAPIJS = `
   // produce readable text, not locale fidelity.
 
   if (typeof Intl === 'undefined') {
-    lazyGlobals(window, ['Intl'], function () {
+    // The zone lookup is taken now: the section below runs later, on first use.
+    var zoneInfo = window.__unblinkZoneInfo;
+    try { delete window.__unblinkZoneInfo; } catch (e) {}
+    // priv is what the eager Date/Number methods below reach the section
+    // through; intl() builds it once, whether or not the page ever reads (or
+    // has replaced) window.Intl — those methods use the intrinsic formatters.
+    var priv = {}, intlObj = null;
+    var intl = function () { if (!intlObj) intlObj = buildIntl(); return intlObj; };
+    lazyGlobals(window, ['Intl'], function () { window.Intl = intl(); });
+    var buildIntl = function () {
     var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     var DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-    var DateTimeFormat = function (locales, opts) { if (!(this instanceof DateTimeFormat)) return new DateTimeFormat(locales, opts); this.__o = opts || {}; };
-    DateTimeFormat.prototype.format = function (d) {
-      d = d === undefined ? new Date() : new Date(d);
-      if (isNaN(d.getTime())) return 'Invalid Date';
-      var o = this.__o;
-      var wantsDate = o.year !== undefined || o.month !== undefined || o.day !== undefined || o.weekday !== undefined || o.dateStyle !== undefined;
-      var wantsTime = o.hour !== undefined || o.minute !== undefined || o.second !== undefined || o.timeStyle !== undefined;
-      if (!wantsDate && !wantsTime) wantsDate = true;
-      var parts = [];
-      if (wantsDate) {
-        var long = o.dateStyle === 'full' || o.dateStyle === 'long' || o.month === 'long';
-        var med = o.dateStyle === 'medium' || o.month === 'short';
-        var ds;
-        if (long) ds = MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
-        else if (med) ds = MONTHS[d.getMonth()].slice(0, 3) + ' ' + d.getDate() + ', ' + d.getFullYear();
-        else ds = (d.getMonth() + 1) + '/' + d.getDate() + '/' + d.getFullYear();
-        if (o.weekday !== undefined || o.dateStyle === 'full') {
-          var wd = DAYS[d.getDay()];
-          if (o.weekday === 'short') wd = wd.slice(0, 3);
-          ds = wd + ', ' + ds;
-        }
-        parts.push(ds);
+    // ---- Intl.DateTimeFormat, en-US ----
+    // Patterns are CLDR's English ones (common/main/en.xml: dateFormats,
+    // timeFormats, dateTimeFormats and the availableFormats skeletons): numeric
+    // dates "M/d/y", text months "MMM d, y", times "h:mm:ss a", date and time
+    // joined with ", " — or " at " when the month is spelled out in full. The
+    // space before AM/PM is U+0020, as shipping browsers print it. Other
+    // locales format as en-US. Time zones come from the system zone database
+    // through zoneInfo; the default zone is the process's, the one Date's own
+    // getters use.
+    var pad2 = function (n) { return n < 10 ? '0' + n : String(n); };
+    var zoneOf = function (ms, tz) {
+      var r = zoneInfo ? zoneInfo(ms, tz === undefined ? null : tz) : null;
+      if (!r) {
+        if (tz !== undefined) throw new RangeError('Invalid time zone specified: ' + tz);
+        return { off: -new Date(ms).getTimezoneOffset(), abbr: 'UTC', name: 'UTC', so: 'GMT', lo: 'GMT' };
       }
-      if (wantsTime) {
-        var h = d.getHours(), ampm = h < 12 ? 'AM' : 'PM';
-        var h12 = h % 12 === 0 ? 12 : h % 12;
-        var pad = function (n) { return n < 10 ? '0' + n : String(n); };
-        var ts = h12 + ':' + pad(d.getMinutes());
-        if (o.second !== undefined || o.timeStyle === 'medium' || o.timeStyle === 'long' || o.timeStyle === 'full') ts += ':' + pad(d.getSeconds());
-        parts.push(ts + ' ' + ampm);
-      }
-      return parts.join(', ');
+      return { off: r[0], abbr: r[1], name: r[2], so: r[3], lo: r[4] };
     };
-    DateTimeFormat.prototype.formatToParts = function (d) { return [{ type: 'literal', value: this.format(d) }]; };
-    DateTimeFormat.prototype.resolvedOptions = function () {
-      var out = { locale: 'en-US', calendar: 'gregory', numberingSystem: 'latn', timeZone: 'UTC' };
-      for (var k in this.__o) if (Object.prototype.hasOwnProperty.call(this.__o, k)) out[k] = this.__o[k];
+    var DTF_FIELDS = ['weekday', 'era', 'year', 'month', 'day', 'dayPeriod', 'hour', 'minute', 'second', 'fractionalSecondDigits', 'timeZoneName'];
+    var DTF_DATE = ['weekday', 'year', 'month', 'day'], DTF_TIME = ['dayPeriod', 'hour', 'minute', 'second', 'fractionalSecondDigits'];
+    var DTF_VALUES = {
+      weekday: ['narrow', 'short', 'long'], era: ['narrow', 'short', 'long'], year: ['2-digit', 'numeric'],
+      month: ['2-digit', 'numeric', 'narrow', 'short', 'long'], day: ['2-digit', 'numeric'], dayPeriod: ['narrow', 'short', 'long'],
+      hour: ['2-digit', 'numeric'], minute: ['2-digit', 'numeric'], second: ['2-digit', 'numeric'],
+      timeZoneName: ['short', 'long', 'shortOffset', 'longOffset', 'shortGeneric', 'longGeneric']
+    };
+    var STYLE_DATE = {
+      full: { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }, long: { month: 'long', day: 'numeric', year: 'numeric' },
+      medium: { month: 'short', day: 'numeric', year: 'numeric' }, short: { month: 'numeric', day: 'numeric', year: '2-digit' }
+    };
+    var STYLE_TIME = {
+      full: { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'long' }, long: { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' },
+      medium: { hour: 'numeric', minute: '2-digit', second: '2-digit' }, short: { hour: 'numeric', minute: '2-digit' }
+    };
+    var anyOf = function (o, keys) { for (var i = 0; i < keys.length; i++) if (o[keys[i]] !== undefined) return true; return false; };
+    // initDTF resolves options the way ECMA-402's CreateDateTimeFormat does.
+    // required/defaults are the toLocale*String modes: 'date', 'time' or 'any'
+    // for which fields must be present, and which are added when none is.
+    var initDTF = function (self, opts, required, defaults) {
+      opts = (opts === undefined || opts === null) ? {} : Object(opts);
+      var r = {}, i, f;
+      var ds = opts.dateStyle, ts = opts.timeStyle;
+      if (ds !== undefined || ts !== undefined) {
+        if (anyOf(opts, DTF_FIELDS)) throw new TypeError("Can't set option when dateStyle or timeStyle is used");
+        if (ds !== undefined && !STYLE_DATE[ds]) throw new RangeError('Value ' + ds + ' out of range for Intl.DateTimeFormat options property dateStyle');
+        if (ts !== undefined && !STYLE_TIME[ts]) throw new RangeError('Value ' + ts + ' out of range for Intl.DateTimeFormat options property timeStyle');
+        if (ds !== undefined) for (f in STYLE_DATE[ds]) r[f] = STYLE_DATE[ds][f];
+        if (ts !== undefined) for (f in STYLE_TIME[ts]) r[f] = STYLE_TIME[ts][f];
+        self.__ds = ds; self.__ts = ts;
+      } else {
+        for (i = 0; i < DTF_FIELDS.length; i++) {
+          f = DTF_FIELDS[i];
+          var v = opts[f];
+          if (v === undefined) continue;
+          if (f === 'fractionalSecondDigits') {
+            v = Number(v);
+            if (!(v >= 1 && v <= 3)) throw new RangeError('fractionalSecondDigits value is out of range.');
+            r[f] = Math.floor(v);
+            continue;
+          }
+          v = String(v);
+          if (DTF_VALUES[f].indexOf(v) < 0) throw new RangeError('Value ' + v + ' out of range for Intl.DateTimeFormat options property ' + f);
+          r[f] = v;
+        }
+        var need = true;
+        if ((required === 'date' || required === 'any') && anyOf(r, DTF_DATE)) need = false;
+        if ((required === 'time' || required === 'any') && anyOf(r, DTF_TIME)) need = false;
+        if (need && (defaults === 'date' || defaults === 'all')) { r.year = 'numeric'; r.month = 'numeric'; r.day = 'numeric'; }
+        if (need && (defaults === 'time' || defaults === 'all')) { r.hour = 'numeric'; r.minute = '2-digit'; r.second = '2-digit'; }
+      }
+      var hc = opts.hourCycle;
+      if (hc !== undefined && ['h11', 'h12', 'h23', 'h24'].indexOf(String(hc)) < 0) throw new RangeError('Value ' + hc + ' out of range for Intl.DateTimeFormat options property hourCycle');
+      if (opts.hour12 !== undefined) hc = opts.hour12 ? 'h12' : 'h23';
+      self.__hc = hc === undefined ? 'h12' : String(hc);
+      var tz = opts.timeZone;
+      self.__tz = zoneOf(Date.now(), tz === undefined ? undefined : String(tz)).name;
+      self.__explicitTZ = tz !== undefined;
+      self.__r = r;
+    };
+    var DateTimeFormat = function (locales, opts) {
+      if (!(this instanceof DateTimeFormat)) return new DateTimeFormat(locales, opts);
+      initDTF(this, opts, 'any', 'date');
+    };
+    var dtfParts = function (self, date) {
+      var ms = date === undefined ? Date.now() : (date instanceof Date ? date.getTime() : Number(date));
+      if (!isFinite(ms)) throw new RangeError('Invalid time value');
+      var z = zoneOf(ms, self.__explicitTZ ? self.__tz : undefined);
+      var d = new Date(ms + z.off * 60000); // read through the UTC getters
+      var r = self.__r, out = [];
+      var lit = function (s) { out.push({ type: 'literal', value: s }); };
+      var put = function (t, v) { out.push({ type: t, value: String(v) }); };
+      var hasDate = anyOf(r, DTF_DATE), hasTime = anyOf(r, ['hour', 'minute', 'second', 'fractionalSecondDigits']);
+      if (hasDate) {
+        var mo = d.getUTCMonth(), y = d.getUTCFullYear(), wdName = DAYS[d.getUTCDay()];
+        var wd = r.weekday === undefined ? null : (r.weekday === 'long' ? wdName : (r.weekday === 'short' ? wdName.slice(0, 3) : wdName.charAt(0)));
+        var ys = r.year === undefined ? null : (r.year === '2-digit' ? pad2(Math.abs(y) % 100) : String(y));
+        var dd = r.day === undefined ? null : (r.day === '2-digit' ? pad2(d.getUTCDate()) : String(d.getUTCDate()));
+        var textMonth = r.month === 'long' || r.month === 'short' || r.month === 'narrow';
+        var mm = r.month === undefined ? null : (r.month === 'long' ? MONTHS[mo] : (r.month === 'short' ? MONTHS[mo].slice(0, 3) : (r.month === 'narrow' ? MONTHS[mo].charAt(0) : (r.month === '2-digit' ? pad2(mo + 1) : String(mo + 1)))));
+        var rest = mm !== null || dd !== null || ys !== null;
+        if (wd !== null) { put('weekday', wd); if (rest) lit(', '); }
+        if (textMonth) {
+          put('month', mm);
+          if (dd !== null) { lit(' '); put('day', dd); }
+          if (ys !== null) { lit(dd !== null ? ', ' : ' '); put('year', ys); }
+        } else {
+          var first = true;
+          var slash = function (t, v) { if (v === null) return; if (!first) lit('/'); first = false; put(t, v); };
+          slash('month', mm); slash('day', dd); slash('year', ys);
+        }
+      }
+      if (hasDate && hasTime) lit((r.month === 'long') ? ' at ' : ', ');
+      if (hasTime) {
+        var H = d.getUTCHours(), hc = self.__hc, twelve = hc === 'h12' || hc === 'h11', sep = false;
+        if (r.hour !== undefined) {
+          var hv = hc === 'h23' ? H : (hc === 'h24' ? (H === 0 ? 24 : H) : (hc === 'h11' ? H % 12 : (H % 12 === 0 ? 12 : H % 12)));
+          put('hour', (r.hour === '2-digit' || !twelve) ? pad2(hv) : String(hv));
+          sep = true;
+        }
+        if (r.minute !== undefined) {
+          if (sep) lit(':');
+          put('minute', (sep || r.minute === '2-digit' || r.second !== undefined) ? pad2(d.getUTCMinutes()) : String(d.getUTCMinutes()));
+          sep = true;
+        }
+        if (r.second !== undefined) {
+          if (sep) lit(':');
+          put('second', (sep || r.second === '2-digit') ? pad2(d.getUTCSeconds()) : String(d.getUTCSeconds()));
+          sep = true;
+        }
+        if (r.fractionalSecondDigits !== undefined) {
+          if (sep) lit('.');
+          put('fractionalSecond', ('00' + d.getUTCMilliseconds()).slice(-3).slice(0, r.fractionalSecondDigits));
+        }
+        if (r.hour !== undefined && twelve) { lit(' '); put('dayPeriod', H < 12 ? 'AM' : 'PM'); }
+      }
+      if (r.timeZoneName !== undefined) {
+        // No CLDR zone names are carried: "long" and the generic forms print
+        // the zone database's abbreviation, as "short" does.
+        var zn = r.timeZoneName === 'shortOffset' ? z.so : (r.timeZoneName === 'longOffset' ? z.lo : z.abbr);
+        if (out.length) lit(' ');
+        put('timeZoneName', zn);
+      }
       return out;
     };
-    DateTimeFormat.prototype.formatRange = function (a, b) { return this.format(a) + ' – ' + this.format(b); };
+    var joinParts = function (parts) { var s = ''; for (var i = 0; i < parts.length; i++) s += parts[i].value; return s; };
+    DateTimeFormat.prototype.format = function (d) { return joinParts(dtfParts(this, d)); };
+    DateTimeFormat.prototype.formatToParts = function (d) { return dtfParts(this, d); };
+    DateTimeFormat.prototype.resolvedOptions = function () {
+      var out = { locale: 'en-US', calendar: 'gregory', numberingSystem: 'latn', timeZone: this.__tz };
+      if (this.__r.hour !== undefined) { out.hourCycle = this.__hc; out.hour12 = this.__hc === 'h12' || this.__hc === 'h11'; }
+      if (this.__ds !== undefined || this.__ts !== undefined) {
+        if (this.__ds !== undefined) out.dateStyle = this.__ds;
+        if (this.__ts !== undefined) out.timeStyle = this.__ts;
+      } else {
+        for (var i = 0; i < DTF_FIELDS.length; i++) if (this.__r[DTF_FIELDS[i]] !== undefined) out[DTF_FIELDS[i]] = this.__r[DTF_FIELDS[i]];
+      }
+      return out;
+    };
+    DateTimeFormat.prototype.formatRange = function (a, b) {
+      var x = this.format(a), y = this.format(b);
+      return x === y ? x : x + ' – ' + y;
+    };
+    DateTimeFormat.prototype.formatRangeToParts = function (a, b) {
+      var tag = function (parts, src) { return parts.map(function (p) { return { type: p.type, value: p.value, source: src }; }); };
+      return tag(dtfParts(this, a), 'startRange').concat([{ type: 'literal', value: ' – ', source: 'shared' }], tag(dtfParts(this, b), 'endRange'));
+    };
     DateTimeFormat.supportedLocalesOf = function () { return ['en-US']; };
+    // The Date locale methods: (date, locales, options, required, defaults).
+    priv.dateToLocale = function (date, opts, required, defaults) {
+      if (!(date instanceof Date)) throw new TypeError('this is not a Date object.');
+      if (isNaN(date.getTime())) return 'Invalid Date';
+      var f = Object.create(DateTimeFormat.prototype);
+      initDTF(f, opts, required, defaults);
+      return joinParts(dtfParts(f, date));
+    };
 
+    // style:"unit" — English unit patterns (CLDR en.xml units): short "88 km",
+    // long "88 kilometers", narrow "88km"; "x-per-y" compounds as "km/h" or
+    // "kilometers per hour". An unknown unit prints its identifier.
+    var UNITS = {
+      percent: ['%', 'percent', 'percent', '%'], degree: [' deg', 'degree', 'degrees', '°'], celsius: ['°C', 'degree Celsius', 'degrees Celsius', '°C'], fahrenheit: ['°F', 'degree Fahrenheit', 'degrees Fahrenheit', '°'],
+      millimeter: [' mm', 'millimeter', 'millimeters', 'mm'], centimeter: [' cm', 'centimeter', 'centimeters', 'cm'], meter: [' m', 'meter', 'meters', 'm'], kilometer: [' km', 'kilometer', 'kilometers', 'km'],
+      inch: [' in', 'inch', 'inches', '″'], foot: [' ft', 'foot', 'feet', '′'], yard: [' yd', 'yard', 'yards', 'yd'], mile: [' mi', 'mile', 'miles', 'mi'],
+      gram: [' g', 'gram', 'grams', 'g'], kilogram: [' kg', 'kilogram', 'kilograms', 'kg'], ounce: [' oz', 'ounce', 'ounces', 'oz'], pound: [' lb', 'pound', 'pounds', '#'], stone: [' st', 'stone', 'stones', 'st'],
+      milliliter: [' mL', 'milliliter', 'milliliters', 'mL'], liter: [' L', 'liter', 'liters', 'L'], gallon: [' gal', 'gallon', 'gallons', 'gal'], 'fluid-ounce': [' fl oz', 'fluid ounce', 'fluid ounces', 'fl oz'],
+      bit: [' bit', 'bit', 'bits', 'bit'], byte: [' byte', 'byte', 'bytes', 'B'], kilobit: [' kb', 'kilobit', 'kilobits', 'kb'], kilobyte: [' kB', 'kilobyte', 'kilobytes', 'kB'], megabit: [' Mb', 'megabit', 'megabits', 'Mb'],
+      megabyte: [' MB', 'megabyte', 'megabytes', 'MB'], gigabit: [' Gb', 'gigabit', 'gigabits', 'Gb'], gigabyte: [' GB', 'gigabyte', 'gigabytes', 'GB'], terabyte: [' TB', 'terabyte', 'terabytes', 'TB'], petabyte: [' PB', 'petabyte', 'petabytes', 'PB'],
+      millisecond: [' ms', 'millisecond', 'milliseconds', 'ms'], second: [' sec', 'second', 'seconds', 's'], minute: [' min', 'minute', 'minutes', 'm'], hour: [' hr', 'hour', 'hours', 'h'],
+      'kilometer-per-hour': [' km/h', 'kilometer per hour', 'kilometers per hour', 'km/h'], 'mile-per-hour': [' mph', 'mile per hour', 'miles per hour', 'mph'], 'meter-per-second': [' m/s', 'meter per second', 'meters per second', 'm/s'],
+      day: [' day', 'day', 'days', 'd'], week: [' wk', 'week', 'weeks', 'w'], month: [' mth', 'month', 'months', 'm'], year: [' yr', 'year', 'years', 'y'], acre: [' ac', 'acre', 'acres', 'ac'], hectare: [' ha', 'hectare', 'hectares', 'ha']
+    };
+    var UNIT_SHORT_PLURAL = { ' day': ' days', ' wk': ' wks', ' mth': ' mths', ' yr': ' yrs', ' byte': ' byte' };
+    var unitText = function (num, abs, unit, display) {
+      var per = UNITS[unit] ? -1 : unit.indexOf('-per-');
+      if (per > 0) {
+        var a = UNITS[unit.slice(0, per)], b = UNITS[unit.slice(per + 5)];
+        if (a && b) {
+          if (display === 'long') return num + ' ' + (abs === 1 ? a[1] : a[2]) + ' per ' + b[1];
+          return num + (display === 'narrow' ? a[3] : a[0]) + '/' + (display === 'narrow' ? b[3] : b[0].replace(/^ /, ''));
+        }
+        return num + ' ' + unit;
+      }
+      var u = UNITS[unit];
+      if (!u) return num + ' ' + unit;
+      if (display === 'long') return num + ' ' + (abs === 1 ? u[1] : u[2]);
+      if (display === 'narrow') return num + u[3];
+      return num + ((abs !== 1 && UNIT_SHORT_PLURAL[u[0]]) || u[0]);
+    };
     var NumberFormat = function (locales, opts) { if (!(this instanceof NumberFormat)) return new NumberFormat(locales, opts); this.__o = opts || {}; };
     NumberFormat.prototype.format = function (n) {
       n = Number(n);
@@ -3380,6 +3555,7 @@ const preludeAPIJS = `
       }
       var s = pieces.join('.') + suffix;
       if (isPct) return (neg ? '-' : '') + s + '%';
+      if (o.style === 'unit') return (neg ? '-' : '') + unitText(s, abs, String(o.unit), o.unitDisplay || 'short');
       if (isCur) {
         var cur = String(o.currency || 'USD').toUpperCase();
         var sym = cur === 'USD' ? '$' : (cur === 'EUR' ? '€' : (cur === 'GBP' ? '£' : (cur === 'JPY' ? '¥' : cur + ' ')));
@@ -3396,37 +3572,107 @@ const preludeAPIJS = `
     NumberFormat.supportedLocalesOf = function () { return ['en-US']; };
 
     var Collator = function (locales, opts) { if (!(this instanceof Collator)) return new Collator(locales, opts); this.__o = opts || {}; };
-    Collator.prototype.compare = function (a, b) { a = String(a); b = String(b); return a < b ? -1 : (a > b ? 1 : 0); };
+    // English collation, approximated without the CLDR root table: strings are
+    // compared first with accents and case folded away (so "a" < "ä" < "b" <
+    // "C"), then by accent, then lower case before upper — the three levels
+    // of the default "variant" sensitivity. "base" and "accent" stop early;
+    // numeric compares digit runs by value.
+    Collator.prototype.compare = function (a, b) {
+      a = String(a); b = String(b);
+      var o = this.__o, sens = o.sensitivity || 'variant';
+      var strip = function (s) { return s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); };
+      var cmp = function (x, y) {
+        if (!o.numeric) return x < y ? -1 : (x > y ? 1 : 0);
+        var rx = /(\d+)|(\D+)/g, xs = x.match(rx) || [], ys = y.match(rx) || [];
+        for (var i = 0; i < xs.length && i < ys.length; i++) {
+          var p = xs[i], q = ys[i], c;
+          if (/^\d/.test(p) && /^\d/.test(q)) c = Number(p) - Number(q); else c = p < q ? -1 : (p > q ? 1 : 0);
+          if (c !== 0) return c < 0 ? -1 : 1;
+        }
+        return xs.length - ys.length < 0 ? -1 : (xs.length > ys.length ? 1 : 0);
+      };
+      var c = cmp(strip(a).toLowerCase(), strip(b).toLowerCase());
+      if (c !== 0 || sens === 'base') return c;
+      c = cmp(a.normalize('NFD').toLowerCase(), b.normalize('NFD').toLowerCase());
+      if (c !== 0 || sens === 'accent') return c;
+      if (sens === 'case') { c = cmp(strip(a), strip(b)); return c === 0 ? 0 : -c; }
+      if (a === b) return 0;
+      // lower case first at the tertiary level
+      for (var i = 0; i < a.length && i < b.length; i++) {
+        if (a.charAt(i) !== b.charAt(i)) return a.charAt(i) === a.charAt(i).toLowerCase() ? -1 : 1;
+      }
+      return a.length < b.length ? -1 : 1;
+    };
     Collator.prototype.resolvedOptions = function () { return { locale: 'en-US', usage: this.__o.usage || 'sort', sensitivity: 'variant' }; };
     Collator.supportedLocalesOf = function () { return ['en-US']; };
 
-    var PluralRules = function (locales, opts) { this.__o = opts || {}; };
+    // Intl.PluralRules, English (CLDR supplemental/plurals.xml and
+    // ordinals.xml): cardinal "one" for the integer 1 with no visible fraction
+    // digits; ordinal one/two/few by last digit except 11–13.
+    var PluralRules = function (locales, opts) {
+      if (!(this instanceof PluralRules)) throw new TypeError("Constructor Intl.PluralRules requires 'new'");
+      this.__o = (opts === undefined || opts === null) ? {} : Object(opts);
+      var t = this.__o.type;
+      if (t !== undefined && t !== 'cardinal' && t !== 'ordinal') throw new RangeError('Value ' + t + ' out of range for Intl.PluralRules options property type');
+    };
     PluralRules.prototype.select = function (n) {
+      n = Math.abs(Number(n));
       if (this.__o.type === 'ordinal') {
-        n = Math.abs(Number(n));
         var mod10 = n % 10, mod100 = n % 100;
         if (mod10 === 1 && mod100 !== 11) return 'one';
         if (mod10 === 2 && mod100 !== 12) return 'two';
         if (mod10 === 3 && mod100 !== 13) return 'few';
         return 'other';
       }
-      return Number(n) === 1 ? 'one' : 'other';
+      return (n === 1 && !(this.__o.minimumFractionDigits > 0)) ? 'one' : 'other';
     };
-    PluralRules.prototype.resolvedOptions = function () { return { locale: 'en-US', type: this.__o.type || 'cardinal', pluralCategories: ['one', 'other'] }; };
+    PluralRules.prototype.selectRange = function () { return 'other'; };
+    PluralRules.prototype.resolvedOptions = function () {
+      var ord = this.__o.type === 'ordinal';
+      return { locale: 'en-US', type: ord ? 'ordinal' : 'cardinal', minimumIntegerDigits: 1, minimumFractionDigits: 0, maximumFractionDigits: 3, pluralCategories: ord ? ['few', 'one', 'two', 'other'] : ['one', 'other'] };
+    };
     PluralRules.supportedLocalesOf = function () { return ['en-US']; };
 
-    var RelativeTimeFormat = function (locales, opts) { this.__o = opts || {}; };
-    RelativeTimeFormat.prototype.format = function (value, unit) {
-      var v = Number(value);
-      unit = String(unit).replace(/s$/, '');
-      var abs = Math.abs(v);
-      var u = abs === 1 ? unit : unit + 's';
-      if (v < 0) return abs + ' ' + u + ' ago';
-      if (v > 0) return 'in ' + abs + ' ' + u;
-      return 'this ' + unit;
+    // Intl.RelativeTimeFormat, English (CLDR en.xml dateFields): "in 3 days",
+    // "3 days ago"; numeric "auto" gives the named forms (yesterday, next
+    // month, now). short and narrow use the abbreviated unit names.
+    var RTF_UNITS = ['second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year'];
+    var RTF_SHORT = { second: ['sec.', 'sec.'], minute: ['min.', 'min.'], hour: ['hr.', 'hr.'], day: ['day', 'days'], week: ['wk.', 'wk.'], month: ['mo.', 'mo.'], quarter: ['qtr.', 'qtrs.'], year: ['yr.', 'yr.'] };
+    var RTF_AUTO = {
+      second: { '0': 'now' }, minute: { '0': 'this minute' }, hour: { '0': 'this hour' },
+      day: { '-1': 'yesterday', '0': 'today', '1': 'tomorrow' }, week: { '-1': 'last week', '0': 'this week', '1': 'next week' },
+      month: { '-1': 'last month', '0': 'this month', '1': 'next month' }, quarter: { '-1': 'last quarter', '0': 'this quarter', '1': 'next quarter' },
+      year: { '-1': 'last year', '0': 'this year', '1': 'next year' }
     };
-    RelativeTimeFormat.prototype.formatToParts = function (value, unit) { return [{ type: 'literal', value: this.format(value, unit) }]; };
-    RelativeTimeFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', numeric: this.__o.numeric || 'always', style: this.__o.style || 'long' }; };
+    var RelativeTimeFormat = function (locales, opts) {
+      if (!(this instanceof RelativeTimeFormat)) throw new TypeError("Constructor Intl.RelativeTimeFormat requires 'new'");
+      this.__o = (opts === undefined || opts === null) ? {} : Object(opts);
+      var o = this.__o;
+      if (o.numeric !== undefined && o.numeric !== 'always' && o.numeric !== 'auto') throw new RangeError('Value ' + o.numeric + ' out of range for Intl.RelativeTimeFormat options property numeric');
+      if (o.style !== undefined && ['long', 'short', 'narrow'].indexOf(o.style) < 0) throw new RangeError('Value ' + o.style + ' out of range for Intl.RelativeTimeFormat options property style');
+    };
+    RelativeTimeFormat.prototype.formatToParts = function (value, unit) {
+      var v = Number(value);
+      if (!isFinite(v)) throw new RangeError('Invalid value ' + value + ' for Intl.RelativeTimeFormat format()');
+      unit = String(unit);
+      var u = unit.charAt(unit.length - 1) === 's' ? unit.slice(0, -1) : unit;
+      if (RTF_UNITS.indexOf(u) < 0) throw new RangeError('Invalid unit argument for format() \'' + unit + '\'');
+      if (this.__o.numeric === 'auto') {
+        var named = RTF_AUTO[u][String(v)];
+        if (named !== undefined) return [{ type: 'literal', value: named }];
+      }
+      var past = v < 0 || (v === 0 && 1 / v < 0), abs = Math.abs(v);
+      var style = this.__o.style || 'long';
+      var name = style === 'long' ? (abs === 1 ? u : u + 's') : RTF_SHORT[u][abs === 1 ? 0 : 1];
+      var num = new NumberFormat('en-US').format(abs);
+      var parts = [];
+      if (!past) parts.push({ type: 'literal', value: 'in ' });
+      parts.push({ type: 'integer', value: num, unit: u });
+      parts.push({ type: 'literal', value: ' ' + name + (past ? ' ago' : '') });
+      return parts;
+    };
+    RelativeTimeFormat.prototype.format = function (value, unit) { return joinParts(this.formatToParts(value, unit)); };
+    RelativeTimeFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', style: this.__o.style || 'long', numeric: this.__o.numeric || 'always', numberingSystem: 'latn' }; };
     RelativeTimeFormat.supportedLocalesOf = function () { return ['en-US']; };
 
     // NumberFormat, DateTimeFormat and Collator are the three Intl constructors that
@@ -3628,7 +3874,8 @@ const preludeAPIJS = `
     Segmenter.prototype.resolvedOptions = function () { return { locale: 'en-US', granularity: this.__g }; };
     Segmenter.supportedLocalesOf = function () { return ['en-US']; };
 
-    window.Intl = {
+    priv.NumberFormat = NumberFormat;
+    return {
       DateTimeFormat: DateTimeFormat,
       NumberFormat: NumberFormat,
       Collator: Collator,
@@ -3645,10 +3892,17 @@ const preludeAPIJS = `
         return Array.prototype.slice.call(l).map(String);
       }
     };
-    });
-    Number.prototype.toLocaleString = function (locales, options) {
-      return new window.Intl.NumberFormat(locales, options).format(Number(this));
     };
+    Number.prototype.toLocaleString = function (locales, options) {
+      intl();
+      return new priv.NumberFormat(locales, options).format(Number(this));
+    };
+    // Date's locale methods are Intl.DateTimeFormat with defaults: date and
+    // time, date only, time only. The engine's built-ins ignore both arguments
+    // and print ISO-like 24-hour text.
+    Date.prototype.toLocaleString = function (locales, options) { intl(); return priv.dateToLocale(this, options, 'any', 'all'); };
+    Date.prototype.toLocaleDateString = function (locales, options) { intl(); return priv.dateToLocale(this, options, 'date', 'date'); };
+    Date.prototype.toLocaleTimeString = function (locales, options) { intl(); return priv.dateToLocale(this, options, 'time', 'time'); };
   }
 
   // ---- legacy document.createEvent ----

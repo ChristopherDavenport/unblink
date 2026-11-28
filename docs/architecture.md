@@ -1218,6 +1218,19 @@ read page state while it is being defined (it runs at an arbitrary later point)
 and must not patch a prototype — `Number.prototype.toLocaleString` stays eager
 and reaches `Intl` when called. `internal/js/lazyglobals_test.go` holds these.
 
+**Intl dates and time zones** (`internal/js/datetime.go`, the Intl section of
+the API prelude). goja has no Intl and its `Date` locale methods ignore their
+arguments. `Intl.DateTimeFormat` and the three `Date` methods are implemented
+for en-US from the CLDR English patterns; every other locale formats as en-US.
+The default time zone is the process zone, because that is the zone goja's
+`Date` getters read (`time.Local`) and the two must agree; it is reported by
+IANA name (`$TZ`, else the `/etc/localtime` link). An explicit `timeZone` is
+resolved in Go against the system zone database — the page-supplied name is
+length-bounded and never reaches a path with a separator the database lookup
+would follow. No CLDR zone names are carried, so `timeZoneName: "long"` prints
+the abbreviation. `internal/js/intl_datetime_test.go` names a zone in every
+case and is meant to pass under any `TZ`.
+
 **Template contents** (`internal/js/templates.go`): the x/net/html tree keeps a
 `<template>`'s contents under the element; a browser keeps them in the content
 `DocumentFragment`, where no child accessor, selector query or tree walk on the
