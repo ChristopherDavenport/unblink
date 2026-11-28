@@ -1,0 +1,14 @@
+# Installed dependencies and intermediate build output of the fixture apps.
+# Only the sources, the lockfiles and ../built are tracked.
+node_modules/
+.bundled-packages.json
+dist
+out/
+.next/
+next-env.d.ts
+.nuxt/
+.output/
+.svelte-kit/
+.astro/
+.angular/
+.ssr/

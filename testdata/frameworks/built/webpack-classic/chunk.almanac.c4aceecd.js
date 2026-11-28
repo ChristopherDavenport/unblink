@@ -1,0 +1,1 @@
+"use strict";(Array.isArray(self.webpackChunkunblinkClassic)?self.webpackChunkunblinkClassic:self.webpackChunkunblinkClassic=[]).push([["almanac"],{"./src/almanac.js"(a,n,s){function e(){return"<h2>Webpack Split Chunk Loaded</h2><p>Frost dates and moon phases were supplied by the almanac chunk.</p>"}s.d(n,{render:()=>e})}}]);

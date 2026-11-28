@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,12 +43,15 @@ func renderDefault(r *bool) bool {
 
 type readArgs struct {
 	target
-	Mode         string `json:"mode,omitempty" jsonschema:"article (main content, the default) or full (whole reduced page); ignored for non-HTML content"`
+	Mode         string `json:"mode,omitempty" jsonschema:"article (main content, the default) or full (whole reduced page); ignored for non-HTML content. A hub, listing or index page has no single article: article then returns the page's main region (or the whole page) instead of a fragment, and the result says so (mode, article_fallback, article_fallback_reason)"`
 	Format       string `json:"format,omitempty" jsonschema:"output format: markdown (default; reduced/converted), raw_html (unreduced page source — the post-JS DOM when render=true, else the exact fetched bytes), or text (visible plain text). Use raw_html to reach scripts/forms/SSR-embedded JSON that reduction strips"`
 	Selector     string `json:"selector,omitempty" jsonschema:"CSS selector to return only the matching elements' HTML; applies to format=raw_html only"`
 	MaxTokens    int    `json:"max_tokens,omitempty" jsonschema:"approximate maximum tokens per page (default 6000)"`
 	Cursor       string `json:"cursor,omitempty" jsonschema:"pagination cursor returned by a previous read call"`
 	IncludeBytes bool   `json:"include_bytes,omitempty" jsonschema:"for an image url, also return the raw image as base64 (default: only a text manifest with type/dimensions/size)"`
+	// prefer_markdown is tri-state (ADR 0021): nil follows the operator's
+	// --prefer-markdown default, true/false choose for this one navigation.
+	PreferMarkdown *bool `json:"prefer_markdown,omitempty" jsonschema:"choose which version of the page to fetch. true: ask the site for its own Markdown version (Accept: text/markdown). If the site has one it is returned as-is with kind=markdown — written by the site for agents, usually far fewer tokens, no JavaScript run — but it may differ from what a browser shows, mode=article/full do not apply, and that page has no DOM (links/forms/click/data/extract see nothing on it). If the site has none you get the normal HTML read. false: fetch the normal HTML page, e.g. to re-read a url you first got as Markdown, or before using DOM tools. Omit to use the server default. Works with or without a session, but only when navigating to a url with format=markdown and no wait_for/wait_text; it cannot change a session's current page (use_current) — pass the url again"`
 	// wait_for/wait_text let an agent block the JS render until the content it wants
 	// has hydrated (both imply render=true and need the server started with --js).
 	WaitFor     string `json:"wait_for,omitempty" jsonschema:"CSS selector to wait for in the rendered DOM before returning; forces the JS render even if render=false. wait_met in the result reports whether it appeared"`
@@ -67,6 +71,7 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 	req.IncludeBytes = args.IncludeBytes
 	req.Format = args.Format
 	req.Selector = args.Selector
+	req.PreferMarkdown = args.PreferMarkdown
 	req.WaitFor = args.WaitFor
 	req.WaitText = args.WaitText
 	if args.WaitTimeout > 0 {
@@ -80,8 +85,7 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 	// notes stay outside the fence so they read as trusted server output.
 	text := s.frame(r.Markdown)
 	if r.Truncated {
-		text += fmt.Sprintf("\n\n---\n_Page %d of %d. To continue, call read again with cursor %q._\n",
-			r.Page, r.TotalPages, r.NextCursor)
+		text += continuationNote(r)
 	}
 	if r.WaitMet != nil && !*r.WaitMet {
 		text += "\n\n---\n_wait_for/wait_text never appeared within the timeout; the expected content may be missing from this render._\n"
@@ -109,7 +113,22 @@ func (s *Server) handleRead(ctx context.Context, _ *mcp.CallToolRequest, args re
 		text += fmt.Sprintf("\n\n---\n_%d deferred timer(s) had not fired when this snapshot was taken; content behind a long setTimeout may be missing. Retry with a larger wait_timeout (and a wait_for gate)._\n", r.TimersPending)
 	}
 	if r.ArticleFallback {
-		text += "\n\n---\n_mode=article was requested but no distinct article body was found; this is the full reduced page._\n"
+		what := "the full reduced page"
+		if r.Mode == "main" {
+			what = "the page's main region"
+		}
+		why := "no distinct article body was found"
+		if r.ArticleFallbackReason == page.FallbackPartialArticle {
+			why = "the page is a hub or listing, not a single article (the article extraction held only a small part of its content)"
+		}
+		text += fmt.Sprintf("\n\n---\n_mode=article was requested but %s; this is %s._\n", why, what)
+	}
+	if r.ArticleCoverage > 0 {
+		text += fmt.Sprintf("\n\n---\n_mode=article returned the page's article, which holds about %d%% of its main content; the rest (other sections, an index, shorter items beside it) was left out. Call read with mode=full for all of it._\n",
+			int(r.ArticleCoverage*100+0.5))
+	}
+	if r.RenderDiscarded {
+		text += "\n\n---\n_The page's JavaScript ran but left almost none of the server-rendered content (a crashed hydration, or an error/consent shell), so its result was discarded: this is the page as the server sent it, as with render=false. Content only JavaScript adds is absent._\n"
 	}
 	if len(r.JSErrors) > 0 {
 		text += fmt.Sprintf("\n\n---\n_%d uncaught JavaScript error(s) during render — the page may not be fully hydrated (see js_errors in the structured result)._\n", len(r.JSErrors))
@@ -711,6 +730,29 @@ func (s *Server) handleSession(ctx context.Context, _ *mcp.CallToolRequest, args
 			sessionResult{}, nil
 	}
 	return jsonResult(out), out, nil
+}
+
+// continuationNote tells the agent that this is one page of several, how much
+// of the document it has seen, and the two ways on: follow the cursor, or go
+// straight to the part it wants. A first page is routinely a small share of a
+// long document (a spec, an API reference), and the bare "page 1 of 22" did not
+// say whether what remained was a paragraph or two hundred thousand tokens.
+func continuationNote(r *browser.ReadResult) string {
+	size := ""
+	if r.TotalTokens > 0 {
+		size = fmt.Sprintf(" of a document of about %s tokens", groupThousands(r.TotalTokens))
+	}
+	return fmt.Sprintf("\n\n---\n_Page %d of %d%s — the content above is incomplete. To continue, call read again with cursor %q. To go to one part instead, use find (text search) or browse (heading outline)._\n",
+		r.Page, r.TotalPages, size, r.NextCursor)
+}
+
+// groupThousands formats n with comma thousands separators.
+func groupThousands(n int) string {
+	s := strconv.Itoa(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
 }
 
 // --- untrusted-content framing ---

@@ -46,7 +46,7 @@ re-fetch or re-parse. See `internal/page/page.go`.
 | `internal/fetch`     | HTTP client-as-browser: cookies, redirects, gzip, charset → UTF-8, UA.|
 | `internal/ratelimit` | Process-global, per-host token-bucket limiter behind `--rate-limit` (off by default).|
 | `internal/dom`       | The only importer of `x/net/html`/`cascadia`: parse; extraction (regions/ARIA state/stable ids/outline); caller-directed schema extraction (`dom.Records`) + collection discovery (`dom.detectCollections`); find.|
-| `internal/content`   | Non-HTML bodies → Markdown: JSON/plain text inline + `feed`/`image`/`pdf` subpackages (RSS/Atom/JSON feeds, image manifests, PDF text via `third_party/pdf`).|
+| `internal/content`   | Non-HTML bodies → Markdown: JSON/plain text inline, `text/markdown` passed through unfenced (ADR 0021) + `feed`/`image`/`pdf` subpackages (RSS/Atom/JSON feeds, image manifests, PDF text via `third_party/pdf`).|
 | `internal/reduce`    | Semantic reduction: readability extraction + bluemonday sanitize. Full mode also drops repeated link-dense blocks (`dom.StripDuplicateBlocks` — desktop nav + its mobile-drawer twin emit once). |
 | `internal/emit`      | Serialize reduced content to Markdown + heading outline.              |
 | `internal/session`   | Per-session cookie jar (own `fetch.Client`) + navigation history + per-page interaction replay log (imports `js` for `js.Action`). |
@@ -70,7 +70,7 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
 - Emit: `github.com/JohannesKaufmann/html-to-markdown/v2`
 - MCP: `github.com/modelcontextprotocol/go-sdk` (official; the module as a whole requires Go ≥ 1.27)
 - JS: `github.com/dop251/goja` + `github.com/dop251/goja_nodejs` (eventloop) — pure Go, no cgo
-- JS modules: `github.com/evanw/esbuild/pkg/api` (bundles ESM → classic IIFE) — pure Go, no cgo
+- JS modules: `github.com/evanw/esbuild/pkg/api` (`Transform` only: each ES module → a CommonJS unit; the bundler, `Build`, is never run on page code — ADR 0018) — pure Go, no cgo
 - Robustness: `github.com/andybalholm/brotli` (decode), `golang.org/x/time/rate` (per-host limit),
   `github.com/refraction-networking/utls` (TLS mimic, opt-in) — pure Go, no cgo
 
@@ -104,7 +104,9 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   esbuild (pure Go) via a network-resolver plugin routed through the guarded
   transport, then run as a classic IIFE on the goja path. (Import map `scopes`
   and a registry-backed dynamic `import()` came later — see the *Module loading*
-  entry later in this roadmap and ADR 0018.)
+  entry later in this roadmap and ADR 0018. Since 2026-11-27 static module scripts
+  are no longer bundled at all: they load through the same registry, after esbuild's
+  bundler was found to read the local filesystem for non-literal relative imports.)
 - **Phase 4d — Event propagation & cookies.** ✅ Full capture → target → bubble
   event dispatch (delegated listeners fire; `stopPropagation`/`preventDefault`/
   real `removeEventListener`), and `document.cookie` read/write backed by the
@@ -112,7 +114,21 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
 - **Phase 4e — Pre-warm runtime pool.** ✅ A background pool of fresh, single-use
   goja event loops keeps runtime-creation latency off the render critical path
   (no reuse → isolation unchanged; goja has no safe reset). Opt-in/tunable via
-  `--js-prewarm`.
+  `--js-prewarm`. Since 2026-11-27 a pooled runtime is *prepared*, not just
+  created: `Engine.prepare` runs `bridge.install()` and both preludes on a bridge
+  *shell* with no page, and a render `bind()`s it to its document, base URL,
+  transport and stores. Setup had grown to most of a small render (≈27k
+  allocations, ≈2.5 ms) as the DOM/Web API surface widened; it is the same work,
+  moved off the request path — a cold render (pool off, or a burst past the pool)
+  still pays it, in the same prepare-then-bind order, so every render exercises
+  the one path. What the preludes need from the page — its URL, the navigation
+  start instant, the timer-clamp deadline, the isolation flags, the real storage
+  areas — they take in *bind hooks* (`__unblinkOnBind`, run by
+  `bridge.finishBind` and removed before any page script). **Rule for new engine
+  code:** nothing in `install()` or a prelude may read `b.doc`, `b.base`, the
+  transport, a store or the clock at setup time; read them when called, or
+  register a bind hook. `TestPooledRuntimeIsBoundToItsPage` compares a cold
+  render's page state with a pooled, aged runtime's.
 - **Phase 4f — Listener options & typed Events.** ✅ `once`/`passive`/`{signal}`
   addEventListener options, `AbortController`/`AbortSignal` (+ `fetch {signal}`),
   and typed Event constructors (`MouseEvent`/`KeyboardEvent`/…). **Phase 4 (the
@@ -139,6 +155,15 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   (`fetch.WithRedirectCheck`); it reuses the same parser and site cache, treats an
   unreachable robots.txt as disallow-all for 30 seconds (RFC 9309), and leaves
   subresources, page-JS requests, the discovery probes and Crawl-delay ungated.
+  Markdown content negotiation is the same shape
+  ([ADR 0021](decisions/0021-markdown-content-negotiation.md),
+  `internal/browser/markdownneg.go`): a `text/markdown` response is always passed
+  through (`page.KindMarkdown`), while *asking* for one is `read`'s per-call
+  `prefer_markdown`, with `--prefer-markdown` setting what an absent argument
+  means (`browser.DefaultPreferMarkdown`, provisionally off). Only a `read` navigation's
+  document request carries the Markdown `Accept` (`fetch.WithAccept`, on the
+  request context), and the URL cache keys the negotiated representation
+  separately.
 - **Phase 7 — Generic DOM interaction + true sessions.** ✅ An `interact` tool
   dispatches a real DOM event (`click`/`input`/`change`/`keydown`/`submit`) at a
   CSS-selector-addressed element and runs the page's JavaScript so handlers fire and
@@ -369,6 +394,100 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
     (`js.DispatchResult.Errors`, captured on-loop around the settle window). The
     article→full readability fallback is reported (`article_fallback:true`, mode says
     `full`) via `page.Article.Source` instead of mislabeling the mode.
+  - **Article mode checks its own extraction (the partial-article rule).**
+    Readability always returns its best-scoring block, so on a hub, listing or
+    index page `mode=article` used to return one card or the footer blurb as
+    though it were the page (the real-page corpus, ADR 0022: 0.000 recall on a
+    news front page whose `mode=full` scored 0.90). `reduce.Article` now measures
+    the extraction against the page's *content region* — the main landmark, or
+    the body, minus navigation/complementary/banner/contentinfo/search chrome
+    (`dom.MeasureContent`) — and treats it as partial when it holds under half of
+    that text, or under two thirds while what it left out is at least half link
+    text (the rest of a story river). At least 1000 bytes must be left out for
+    the rule to act, so small pages never flip. An extraction larger than the
+    whole content region came from chrome (a footer blurb, a sidebar) and is
+    compared with all of the page's text instead. A partial extraction falls
+    back to the main landmark (`Source: "main"`, mode `main`) or, with no usable
+    landmark, to `Full`; `page.Article.Fallback` carries the reason
+    (`no_article` | `partial_article`) to `read`'s `article_fallback_reason`.
+    Chrome is excluded from the denominator so a real article is never
+    penalised for the site's menus, sidebar or footer.
+  - **Render-collapse guard (ADR 0023).** A one-shot render that leaves under a
+    tenth of a substantial server-rendered page's content text is discarded and
+    the server's document restored (`internal/browser/collapse.go`); the result
+    reports `render_discarded`. Live session runtimes are never swapped.
+  - **Touching inline elements are separate text (`dom.SeparateInlineSiblings`).**
+    `<span>Jan</span><span>Mar</span>` is laid out apart by CSS (flex/grid items,
+    margins), so a browser shows — and its `innerText` separates — what a
+    tag-only serializer concatenates (`JanMar`, `00Introduction`). With no layout
+    the rule is structural: two inline-level elements with no text node between
+    them, not even whitespace, get one space. A word styled in parts always has
+    text on one side of an element (`un<b>believ</b>able`) and is never matched.
+    Left alone: `pre`/`code`/`kbd`/`samp`/`var`, ruby, SVG, MathML and subtrees
+    classed as highlighted code or typeset maths; CJK/Thai boundaries;
+    digit-to-digit and number-punctuation boundaries; closing and opening
+    punctuation; and anything after a lone letter (drop caps, letter-by-letter
+    animation). A class-gated variant (only inside `flex`/`grid` containers) was
+    measured and rejected: it fixed fewer joins and cannot run after readability,
+    which strips classes. Runs on the reduce clone in `Full`, the main-region
+    fallback and the extracted article.
+  - **Page text is literal in Markdown, by backslash (`internal/emit/escape.go`).**
+    The converter wrote a text `<`/`>` as `&lt;`/`&gt;`, so link text
+    `<svelte:window>` reached the agent as `&lt;svelte:window&gt;`, and a literal
+    `&lt;` in page text was indistinguishable from a real `<`. A text `<` is now
+    `\<`, a `>` is bare except where it would open a block quote (`\>`), and an
+    `&` is escaped (`\&`) only when it begins a character reference. The
+    property that matters is unchanged and tested: no `<` that came from page
+    text is ever unescaped, in the body or the title, so a host that renders the
+    Markdown builds no element or autolink from it. Code spans and blocks stay
+    verbatim.
+  - **Tables are Markdown tables.** `emit` enables the converter's GFM table
+    plugin (minimal padding, empty rows dropped): a data table is a header row
+    and a line per row, where it used to be one run of cell text
+    (`AttributeDescription hx-getIssues a GET…`). A table the plugin declines —
+    `role="presentation"` (the sanitizer now keeps that one attribute value on
+    `<table>`) or a cell holding several lines — falls back to its rows as
+    paragraphs, with touching cells kept apart by `dom.SeparateInlineSiblings`.
+    Undeclared layout tables with single-line cells do come out as grids (Hacker
+    News); that reads no worse than before and keeps each row's cells together.
+  - **A closed `<details>` is kept and marked (`dom.MarkCollapsedDetails`).** Its
+    summary gets a leading `▸ `, and its content follows as before. This is
+    deliberately different from the hidden rules (`dom.IsHidden`: `hidden`,
+    `aria-hidden`, inline `display:none`, a closed `<dialog>`), whose subtrees are
+    dropped: those are not part of what the page shows, while a `<details>` is
+    in-flow content one click away and is where FAQ answers and member lists
+    live. Dropping the content was measured on the real-page corpus and rejected
+    — mean recall −0.008, one page 0.99 → 0.30, since pages open `<details>` from
+    CSS and script without the attribute — for a precision gain of 0.004. Article
+    mode and full mode behave the same.
+  - **An inline SVG contributes its words, as labels (`dom.FlattenSVGText`).**
+    Sibling `<text>` elements are placed by coordinates, so stripping tags ran
+    them together (`EmberReactAngular 1Angular 2Elm1000…`). Each top-level
+    `<svg>` is replaced by its `<text>` contents joined with ` · ` (`<tspan>`s of
+    one `<text>` are one label), plus any `<title>`/`<desc>` that does not merely
+    repeat a label; `<style>`, `<defs>` and the drawing itself contribute
+    nothing. A chart becomes a paragraph. An icon — an SVG with only a `<title>` —
+    contributes that title only when it is the sole name of the link or button it
+    sits in (`[GitHub](…)` where there was `[](…)`); beside visible text it adds
+    nothing, as in a browser. A wordless drawing is removed.
+  - **A paginated read fills its first page and says what is left.**
+    `tokens.Paginate` flushed the running chunk before any block larger than the
+    budget, so a page whose body is one long list or table opened with a first
+    chunk holding only what preceded it — the site menu (698 of 6,000 tokens on a
+    jQuery API page, recall 0.004). An oversized block is now packed line by line
+    into the running chunk like any other content. The result carries
+    `total_tokens` (the whole document's estimate) when it has more than one
+    page, and the trailing note says so, with the two ways on: the cursor, or
+    `find`/`browse` to go to one part.
+  - **An accepted article that left part of the page out reports it.** The
+    partial-article rule tolerates an extraction holding half to two thirds of the
+    content region when the rest is prose, and anything above. When such an
+    extraction holds under 85% and at least 1000 bytes were left out,
+    `page.Article.Coverage` → `read`'s `article_coverage` carries the share and a
+    note points at `mode=full`. Nothing about what is returned changes; on the
+    real-page corpus three pages get the note (a package reference missing its
+    index, a news front missing its briefs, a landing page missing a section) and
+    no page where article mode is simply right.
   - **Bounded outputs everywhere.** `read` `max_tokens` is capped (`MaxReadTokens`
     24k); cursors fingerprint the *whole* content (fnv64a) and a stale/malformed
     cursor errors (`cursor_expired`/`bad_input`) instead of silently restarting at
@@ -870,12 +989,33 @@ Dependency direction: `page` → capability packages (`fetch`/`ratelimit`/`dom`/
   semantics: each resolved URL is fetched, transformed and evaluated once. After v0.24.0, import
   maps are parsed and resolved per the HTML Standard (`internal/js/importmap.go`): `"imports"`
   and `"scopes"`, exact and trailing-slash prefix keys, most specific scope first, through one
-  resolver (`bridge.moduleResolve`) shared by static module bundling, the registry's static
-  dependencies, and dynamic `import()`. A registry module's nested `import()` is resolved
-  against that module's own URL. Limits: a classic script's `import()` and a non-literal
-  `import()` in a bundled module use the document base as referrer, because the calling
-  script's URL is not known there; only the first `<script type="importmap">` is read; and the
-  import map `"integrity"` key is not handled.
+  resolver (`bridge.moduleResolve`) shared by `<script type=module>` entries, the registry's
+  static dependencies, and dynamic `import()`. A registry module's nested `import()` is resolved
+  against that module's own URL. Limits: a classic script's `import()` uses the document base as
+  referrer, because the calling script's URL is not known there; only the first
+  `<script type="importmap">` is read; and the import map `"integrity"` key is not handled.
+
+- **Static modules moved onto the registry (2026-11-27, security).** ✅ `runModules` no longer
+  runs `esbuild.Build`. Every `<script type=module>` — external or inline — and its static graph
+  now loads through the module registry (ADR 0018, 2026-11-27 amendment): per-module
+  `esbuild.Transform` to CommonJS, one instance per URL shared with dynamic `import()`. The
+  reason is a file-disclosure bug: esbuild's bundler expands a non-literal relative import
+  (``import(`./${x}.json`)``, `import("./"+x)`, also `../` and `require("./"+x)`) as a glob over
+  the **real filesystem** — the process working directory for a fetched module, `/` for an
+  inline one — without consulting the plugin resolver, so untrusted page JS could read local
+  files and send them out (and an inline module could stall the render walking `/`).
+  `Transform` has no filesystem access. Two behaviour fixes come with it: a literal `import()`
+  the page never calls is no longer fetched at load (the bundler inlined every lazy chunk and
+  its static graph — 410 extra script fetches on one real page), and a module that fails to
+  load now fails only the importers that need it, not the whole entry. `import.meta.url` and
+  `import.meta.resolve()` are real, an integrity-checked module entry runs the exact bytes that
+  were hashed, and a module's own non-literal `import()` resolves against that module's URL.
+  No async primitive is added: the load still blocks the loop goroutine before
+  `DOMContentLoaded`, as the bundle build did (ADR 0004). Cost: a wide module graph pays one
+  transform and one CommonJS wrapper per module instead of one bundle
+  (`BenchmarkRenderModuleGraph*`). Unchanged limits: top-level `await` in a module is still a
+  transform error (it was a bundle error), and CSP/SRI still gate the module *entry*, with
+  static dependencies inheriting the decision.
 
 - **DOM and XHR fidelity after v0.24.0.** ✅ Four changes that replace a stub or a wrong default
   with the standard's behaviour, none adding an async primitive (ADR 0004). **Passive listeners**
@@ -909,7 +1049,20 @@ return zeros/empty so framework probes don't crash; no pixels are ever computed.
 The **viewport environment**, by contrast, is now a truthful constant (Phase 21):
 `window.innerWidth`/`screen`/`devicePixelRatio` report a fixed 1280×720@1x desktop
 and `matchMedia` genuinely evaluates queries against it, so responsive code takes
-its real branch instead of the always-false fallback. Shadow DOM is **encapsulated
+its real branch instead of the always-false fallback. The same constant is what the
+**viewport root** reports: the live document's `<html>` and `<body>` answer
+`getBoundingClientRect()` with the 0,0–1280×720 rect and `client*`/`offset*`/
+`scroll*` width and height with 1280/720, and `document.scrollingElement` is
+`<html>` (`isViewportRoot`, `internal/js/proto.go`). That is still not layout — no
+other element has a size, and a detached `<html>`/`<body>` (DOMParser,
+`createHTMLDocument`) stays zero — but it makes the root agree with
+`innerWidth`/`innerHeight`, and it gives code that climbs ancestors looking for a box
+with height (a scroll-spy, a sticky header) somewhere to stop: with every rect zero
+such a walk ran off the top of the tree into `document`, which has no
+`getBoundingClientRect`, and the thrown error took a hydrated page down to its error
+boundary. Scrolling is a no-op everywhere (`scrollTo`/`scroll`/`scrollBy`/
+`scrollIntoView` exist on elements and the window; `scrollTop`/`scrollLeft` accept a
+write and stay 0). Shadow DOM is **encapsulated
 and composed** (Phase 23, ADR 0005): each shadow root is a detached subtree — page-JS
 `document.querySelector` respects the boundary — and a compose pass flattens it,
 resolving `<slot>` distribution, into the light tree so extraction still sees
@@ -920,6 +1073,216 @@ the boundary correctly (composed path + `target` retargeting + `composedPath()`,
 scoping (`:host`/`::slotted`/`::part`) and slot reprojection stay out of scope.
 `IntersectionObserver`/`ResizeObserver` report one synthetic "visible / zero-size"
 entry so lazy content renders.
+
+**Event handlers** (`internal/js/eventhandlers.go`): the `on<type>` IDL
+properties and content attributes are the HTML Standard's event handlers, not
+expando properties. The first time a target gets a handler for a type, one entry
+joins that target's ordinary listener list and stays at that position; assigning
+again swaps the value, and `null` leaves a dead entry. Dispatch therefore needs no
+second pass and the ordering against `addEventListener` listeners is the
+standard's. A content attribute costs nothing until an event of its type reaches
+the element or its property is read: it is then compiled as a function body whose
+scope chain is the element, its form owner and the document, after the CSP
+inline-handler check (`script-src-attr` → `script-src` → `default-src`; allowed by
+`'unsafe-inline'` when no nonce/hash/`'strict-dynamic'` neutralises it, or by
+`'unsafe-hashes'` plus a matching hash — never by a nonce). `<body>`/`<frameset>`
+forward the window-reflecting names (`onload`, `onerror`, `onhashchange`, …) to the
+window. An exception that escapes a script, a listener or a timer callback is
+*reported*: an `ErrorEvent` at the window (`window.onerror` in its five-argument
+form), guarded against a handler that throws, and — unless a handler cancels it —
+recorded in the render diagnostics, which are read when the render settles rather
+than after the first script pass.
+
+**Interface objects for what the engine builds** (`internal/js/ifaceobjects.go`,
+"host interface objects" in `prelude_api.go`). Page code asks what an object *is*
+more often than it constructs one, so every object the engine hands out sits on
+the prototype of the interface a browser reports, and that interface is a global:
+
+- *Host singletons.* `window` is a `Window` (an `EventTarget`), and `location`,
+  `history`, `navigator`, `screen`, `visualViewport`, `performance`,
+  `localStorage`/`sessionStorage`, `crypto`/`crypto.subtle`, `customElements` and
+  each `matchMedia()` result are instances of `Location`, `History`, `Navigator`,
+  `Screen`, `VisualViewport`, `Performance`, `Storage`, `Crypto`/`SubtleCrypto`,
+  `CustomElementRegistry` and `MediaQueryList`. The constructors throw, as in a
+  browser. This is load-bearing: Ember decides whether it is in a browser with
+  `self.constructor === Window`, and failing it boots non-interactive with a
+  `none` location — Discourse rendered nothing. `String(location)` is its URL.
+- *Events.* The classes form the standard hierarchy (`Event` ← `UIEvent` ←
+  `MouseEvent` ← `PointerEvent`/`WheelEvent`/`DragEvent`; `KeyboardEvent`,
+  `FocusEvent`, `InputEvent`, `CompositionEvent` under `UIEvent`; the rest under
+  `Event`), a subclass constructor runs its ancestors' initialisers, and the
+  dictionary defaults (`button` 0, `key` `''`, modifier keys false) are prototype
+  defaults. An engine-built event is put on the interface a browser dispatches
+  that type as (`eventInterface`: `click` is a `PointerEvent`, `keydown` a
+  `KeyboardEvent`, …), so `e instanceof Event` holds for every event and a bare
+  `element.click()` answers `e.button === 0`.
+- *Collections.* `querySelectorAll`/`childNodes` return a `NodeList`;
+  `children`, `getElementsBy*`, `document.forms`/`scripts`/`images`/`links` and
+  `form.elements` an `HTMLCollection` with `item()`/`namedItem()`. Both prototypes
+  inherit `Array.prototype` — the lists are still arrays and static snapshots, so
+  `Array.isArray(list)` is true where a browser says false (a known deviation).
+- `Node.baseURI`, `window.origin` and `window.length` (0: no child contexts).
+
+Interfaces the engine does not implement stay undefined (`TouchEvent`,
+`ServiceWorker`, `Navigation`, `trustedTypes`, canvas), so feature detection
+keeps telling the truth.
+
+**Syntax goja cannot parse, in classic scripts** (`classicProgram`,
+`internal/js/scripts.go`). A classic script is compiled as written. Only if that
+fails is it re-emitted through `esbuild.Transform` with exactly the unsupported
+features switched off, in two steps: dynamic `import()` (`lowerDynamicImport`),
+then also async generators and `for await` (`lowerAsyncIteration`). A bundle that
+merely contains an async generator is otherwise a parse error that skips the
+whole file. The helpers esbuild emits for these are Promise and Symbol code;
+nothing is routed through goja's `WeakMap`, which is why downlevelling is kept
+this narrow. Module scripts already go through the ES2017 transform.
+
+**No layout, answered consistently** (`internal/js/domgaps.go`). Hit testing
+(`document.elementFromPoint`/`elementsFromPoint`) answers from the same model as
+`getBoundingClientRect`: only the root and the body have a box (the constant
+viewport), so a point inside the viewport hits the body and a point outside hits
+nothing. Text-control selection (`setSelectionRange`, `selectionStart`, …) is
+real state with no caret to draw. URL-bearing members (`href`, `src`, the anchor
+URL components, `relList`) live on the interfaces that have them; on
+`HTMLElement.prototype` the read-only ones made `this.search = …` throw in any
+component class.
+
+**Stopping a page that will not stop** (`interruptUntil`, `internal/js/engine.go`).
+goja's `Interrupt` is one-shot: it unwinds the call that is running, or the next
+one to start, and is cleared as that call returns to Go. A page with *two*
+callbacks that never return — or one `setInterval` whose body spins — survives a
+single interrupt: the loop starts the next callback with nothing pending. So
+every place that must get the loop back keeps interrupting, every 10 ms, until
+the event it is waiting for has happened: the render watchdog and context
+cancellation until the settle closes, and `Render`/`Context.Close` until
+`loop.Terminate()` has joined (Terminate can only stop a loop between jobs).
+`TestRenderReturnsWhenASecondRunawayTaskIsQueued` and
+`TestLiveContextSurvivesRunawayCallbacks` hold it.
+
+**A live session between operations** (`Context.watch`, `internal/js/context.go`).
+An operation has its own wall-clock guard, but between tool calls a live runtime
+keeps serving the page's timers and network callbacks with nobody waiting on it,
+and a session can sit idle for a long time. An idle watchdog bounds that: every
+250 ms it queues a no-op job on the loop, and a job not run within the task budget
+(2 s, `js.DefaultLiveTaskBudget`) means the loop has been inside one page task
+that long. The task is interrupted — unless an operation owns the loop, in which
+case the operation's guard applies and a legitimately long `Dispatch` is left
+alone; a mutex orders the watchdog's interrupt against the operation's start, so
+the interrupt can never land on the operation that follows a runaway task. An
+interrupt unwinds one task and the page can schedule another, so over-budget
+tasks are counted: three without a full task budget of quiet between them and
+the runtime is shut down. Every later operation returns `js.ErrRunaway`; the
+browser drops the handle, `interact` answers `live_js_stopped` (retryable — the
+next interact reloads the page's scripts, in-page state lost), and a `read` of the
+session returns the last captured page with a `js_errors` line saying its
+JavaScript is no longer running. A single long task costs that task, not the
+runtime. An operation queued behind a context that closes (eviction, or this stop)
+now returns instead of waiting on a job the terminated loop will never run.
+
+**Timer clamp, bounded after its deadline.** A one-shot timer whose delay would
+outlast the render budget is pulled in to fire 600 ms before the budget ends, so
+content behind a splash delay or deferred hydration still lands. That deadline is
+a one-time gate, not a mode: a timer scheduled *after* it is pulled in only if it
+would outlast what is left of the budget, and only 32 times per render. Without
+the bound, "pull it in" meant "run it now", and any timer that re-arms itself with
+a long delay (a poll loop, a retry backoff) became a busy loop against the page's
+origin for the rest of the budget. `TestTimerClampDoesNotSpinSelfRearmingTimer`
+holds it.
+
+**Timer fast-forward** (`settlePoll`, `internal/js/context.go`; the timer wrapper
+in `internal/js/globals.go`). Holding the settle open until a pulled-in timer
+fired meant every page with one long timer — a version poll, an idle animation,
+a 5-second "element not ready" guard — took the whole budget to read: 14 of 74
+corpus pages sat at 4.4 s, and the wait was 83% of all read time. The settle now
+runs pulled-in timers as soon as nothing else is going on (no request in flight,
+no DOM change, no queued task): at once when no other timer is live, otherwise
+after the 60 ms quiet window; in the order they were due, one task each. What
+bounds it is the pull-in itself, which is for content behind a timer and nothing
+else: a delay over 30 s is never pulled in; a callback is not pulled in again
+from inside its own pulled-in run, nor more than three times in all; a chain is
+followed four deep; and after four fast-forward rounds nothing more is pulled in.
+A timer that is not pulled in keeps its real delay — it does not fire in the
+render and does not hold the settle. `internal/js/timerff_test.go` holds each
+rule. No new async primitive: the fast-forward runs inside the settle's own tick.
+
+**Lazy prelude sections** (`lazyGlobals`, top of `internal/js/prelude_api.go`).
+Measured per section, a few parts of the API prelude that most pages never touch
+were a fifth of its allocations: the ElementInternals ARIA accessors (about
+2,300 per runtime), `DOMMatrix`, the IndexedDB stub, `crypto.subtle` and `Intl`.
+Each is now built on first use. The global is a configurable accessor until
+then: `'Intl' in window` is true without building it; `typeof Intl`, a read, or
+`attachInternals()` builds the section, whose own assignments land on the
+accessor's setter and turn it into the ordinary data property it always was; a
+page that assigns its own value first wins the same way. A lazy section must not
+read page state while it is being defined (it runs at an arbitrary later point)
+and must not patch a prototype — `Number.prototype.toLocaleString` stays eager
+and reaches `Intl` when called. `internal/js/lazyglobals_test.go` holds these.
+
+**Intl dates and time zones** (`internal/js/datetime.go`, the Intl section of
+the API prelude). goja has no Intl and its `Date` locale methods ignore their
+arguments. `Intl.DateTimeFormat` and the three `Date` methods are implemented
+for en-US from the CLDR English patterns; every other locale formats as en-US.
+The default time zone is the process zone, because that is the zone goja's
+`Date` getters read (`time.Local`) and the two must agree; it is reported by
+IANA name (`$TZ`, else the `/etc/localtime` link). An explicit `timeZone` is
+resolved in Go against the system zone database — the page-supplied name is
+length-bounded and never reaches a path with a separator the database lookup
+would follow. No CLDR zone names are carried, so `timeZoneName: "long"` prints
+the abbreviation. `internal/js/intl_datetime_test.go` names a zone in every
+case and is meant to pass under any `TZ`.
+
+**Template contents** (`internal/js/templates.go`): the x/net/html tree keeps a
+`<template>`'s contents under the element; a browser keeps them in the content
+`DocumentFragment`, where no child accessor, selector query or tree walk on the
+document reaches them. `sealTemplates` makes that true before any script runs
+(at bind) and for every tree parsed afterwards, moving the children into the
+fragment `templateContent` hands out; `cloneTree` copies that fragment on a
+deep clone and `withTemplateContents` puts it back for the duration of an
+`innerHTML`/`outerHTML` serialization. `<template shadowrootmode>` is left in
+place for the extraction-side composer. New code that parses markup into nodes
+page JS can reach must call `sealTemplates` on the result.
+
+**Named access** (`internal/js/formnamed.go`): `form.fieldname`, `form[0]`,
+`form.elements.fieldname` (`HTMLFormControlsCollection`; `RadioNodeList` with a
+working `.value` when several controls share a name) and
+`document.formname`/`document.imagename`. The lookup is not an own property as
+in a browser: the API prelude splices a Proxy between `HTMLFormElement.prototype`
+(and `Document.prototype`) and its parent, whose `get` trap asks the engine for
+whatever the real chain does not define. So a built-in always wins (no
+`[LegacyOverrideBuiltIns]`: `<input name="submit">` does not shadow
+`form.submit`), `'fieldname' in form` is false (a `has` trap is not told the
+receiver), and a miss on a document costs one walk of its named elements. Inline
+event handlers get scope objects for the document and the form owner that do
+answer `has`, so `onclick="q.value = ''"` resolves. Window named access (a global
+per element id) is deliberately absent — it would sit behind every unresolved
+global name and let an element id answer `typeof module`.
+
+**Reflected attributes** (`internal/js/reflect.go`): a reflected IDL attribute
+and its content attribute are one piece of state — the attribute on the node —
+because the node tree is the only thing extraction reads. `reflectTable` is the
+HTML Standard's reflection rules per interface in a compact form (string,
+boolean, URL, long/unsigned long with defaults, enumerated with missing/invalid
+defaults, nullable, token list, and a handful of named special cases such as
+`hidden`, `tabIndex`, `option.selected`); per runtime each distinct rule becomes one
+native function that is both getter and setter, shared by every interface that
+uses the rule. Presence is per interface, as in a browser (`'disabled' in input`
+is true, `'disabled' in div` is false): Preact and Vue choose between a property
+and an attribute with exactly that test. `ARIAMixin` (`ariaLabel`, `role`, …)
+reflects on `Element`. `nonce` is deliberately not reflected: nonces are hidden
+from page JS (ADR 0014).
+
+**Inline style** (`internal/js/cssstyle.go`): `el.style` is a
+`CSSStyleDeclaration` over the `style` attribute — per-property get/set/remove,
+`setProperty`/`removeProperty`/`getPropertyValue`/`getPropertyPriority`, `cssText`,
+`length`/`item`, camelCase ↔ dashed names. It is still not a CSSOM: values are not
+validated, shorthands are not expanded, nothing is computed and `getComputedStyle`
+stays an empty-string stub. Its purpose is that an inline-style write reaches the
+tree, where `innerText` and extraction's hidden-element check
+(`display:none`/`visibility:hidden`) already look. A style write is delivered to
+MutationObservers and makes a live session's snapshot stale, but it is **not
+settle activity**: a page animating from `requestAnimationFrame` writes inline
+styles every frame, and counting those would hold the render's quiet window open
+until the budget ran out.
 
 **Programmatic form submission** (`internal/js/forms.go`): `document.forms`,
 `form.elements`, `.namedItem`, and `form.submit()`/`requestSubmit()` are modelled.

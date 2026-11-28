@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/christopherdavenport/unblink/internal/browser"
@@ -444,6 +445,30 @@ func (f fakeSearch) Search(_ context.Context, _ string, o search.Options) ([]sea
 	return f.results, nil
 }
 
+// negotiatingHost serves one page in two representations, chosen by the
+// request's Accept header the way an edge "Markdown for Agents" feature does:
+// Markdown when text/markdown is preferred, HTML otherwise (ADR 0021).
+func negotiatingHost() Host {
+	return func() (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/robots.txt", "/llms.txt", "/llms-full.txt":
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Vary", "Accept")
+			if strings.HasPrefix(r.Header.Get("Accept"), "text/markdown") {
+				w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+				_, _ = io.WriteString(w, "# Negotiated Guide\r\n\r\nNEGOTIATED-MARKDOWN-OK: the origin's own Markdown.\r\n\r\n- first point\r\n- second point\r\n")
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, `<html><head><title>Negotiated Guide</title></head><body><nav>NAV-JUNK</nav>`+
+				`<main><h1>Negotiated Guide</h1><p>NEGOTIATED-HTML-OK: the browser-facing page, with enough prose to survive reduction intact.</p></main></body></html>`)
+		}), nil
+	}
+}
+
 // contentHost serves a single fixture with an explicit Content-Type (raw bytes,
 // so binary fixtures stay byte-exact) on every non-metadata path, 404ing the
 // origin-root metadata files exactly like htmlHost. Used for the non-HTML corpus.
@@ -564,6 +589,8 @@ const (
 	fxArticle    = "../testdata/article.input.html"
 	fxStructured = "../testdata/structured.input.html"
 	fxJSRender   = "../testdata/js_render.input.html"
+	fxHub        = "../testdata/hub.input.html"
+	fxCollapse   = "../testdata/render_collapse.input.html"
 	fxLongread   = "corpus/longread.input.html"
 	fxJunky      = "corpus/junky.input.html"
 	fxJSON       = "corpus/data.input.json"
@@ -680,6 +707,24 @@ func cases() []Case {
 				Recall(0, "Edmund Hale", "Saltmarsh Point", "logged the tide"),
 			},
 			Floor:    0.9,
+			MustPass: true,
+		},
+		{
+			// mode=article (the default) on a section front. Readability's best
+			// block is the footer's "about" paragraph; the page's content is the
+			// story river. The read must return the main region and say that it did.
+			Name: "read-article-hub-fallback",
+			Host: htmlHost(fxHub),
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"render": false}},
+			},
+			Scorers: []Scorer{
+				Recall(0, "Hub story 00", "Hub story 19", "Hub story 39", "the harvest supper"),
+				NoJunk(0, "Courier sport section", "set by hand and carried round on a bicycle"),
+				ReadMode(0, "main", "partial_article"),
+				TokenBudget(0, 1500),
+			},
+			Floor:    0.95,
 			MustPass: true,
 		},
 		{
@@ -902,6 +947,25 @@ func cases() []Case {
 			},
 			Floor:    0.9,
 			MustPass: true, // the JS engine is a headline capability; regressions gate
+		},
+		{
+			// A server-rendered page whose client app crashes on load and replaces
+			// the content with an apology (ADR 0023). The render is worse than the
+			// HTML it started from, so the read must return the server's page and
+			// report that the render was discarded.
+			Name:    "render-collapse-guard",
+			Host:    htmlHost(fxCollapse),
+			Browser: []browser.Option{browser.WithJS(2 * time.Second)},
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"mode": "full", "render": true}},
+			},
+			Scorers: []Scorer{
+				Recall(0, "Keeping the tide log", "Tide station step 01", "Tide station step 30"),
+				NotRecall(0, "Something went wrong", "viewer crashed"),
+				RenderDiscarded(0, true),
+			},
+			Floor:    0.95,
+			MustPass: true,
 		},
 		{
 			Name:    "preact-render",
@@ -1137,6 +1201,28 @@ func cases() []Case {
 			Scorers: []Scorer{
 				Recall(0, "TEXT-SENTINEL-OK"),
 				KindIs(0, "text"),
+			},
+			Floor:    0.95,
+			MustPass: true,
+		},
+		{
+			// Markdown negotiation (ADR 0021), chosen per call so the case holds
+			// whatever the operator default is: prefer_markdown=true returns the
+			// origin's Markdown as-is (unfenced, LF endings); prefer_markdown=false
+			// re-reads the same URL as the HTML page — the two never share a cache entry.
+			Name: "read-markdown-negotiated",
+			Host: negotiatingHost(),
+			Steps: []Step{
+				{Tool: "read", Path: "/", Args: map[string]any{"prefer_markdown": true}},
+				{Tool: "read", Path: "/", Args: map[string]any{"prefer_markdown": false}},
+			},
+			Scorers: []Scorer{
+				Recall(0, "# Negotiated Guide\n\nNEGOTIATED-MARKDOWN-OK", "- first point\n- second point"),
+				NoJunk(0, "NEGOTIATED-HTML-OK", "```", "\r"),
+				KindIs(0, "markdown"),
+				Recall(1, "NEGOTIATED-HTML-OK"),
+				NoJunk(1, "NEGOTIATED-MARKDOWN-OK"),
+				KindIs(1, "html"),
 			},
 			Floor:    0.95,
 			MustPass: true,

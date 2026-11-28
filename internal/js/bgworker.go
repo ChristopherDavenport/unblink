@@ -93,6 +93,8 @@ func (w *bgWorker) start(memGuard *memGuard) {
 		b.install()
 		_, _ = vm.RunProgram(preludeProgram)
 		_, _ = vm.RunProgram(preludeAPIProgram)
+		b.takePreludeHelpers()
+		b.finishBind()
 		// The background has no real IndexedDB/Cache API — the in-memory stubs are
 		// incomplete for the complex transactional use a real extension makes (uBlock
 		// Origin's cacheStorage hangs on them). Removing them makes such code fall back to
@@ -111,7 +113,7 @@ func (w *bgWorker) start(memGuard *memGuard) {
 // (MV2, used by uBlock Origin / Privacy Badger) is an HTML file whose scripts are run in
 // order (classics first, then modules, matching how those pages are authored). Classic
 // scripts (MV2 background.scripts, or a non-module service_worker) run directly; a module
-// service worker is bundled through the esbuild module path.
+// service worker is loaded through the module registry (runModules).
 func (w *bgWorker) runBackgroundScripts(b *bridge) {
 	bg := w.bundle.Manifest.Background
 	if bg.Page != "" {
@@ -139,9 +141,10 @@ func (w *bgWorker) runBackgroundScripts(b *bridge) {
 	}
 }
 
-// runBackgroundPage runs an MV2 background HTML page's scripts: classic scripts first
-// (they set up the globals the module entry expects), then module scripts (bundled via
-// esbuild, their imports fetched from the extension through the bundle transport).
+// runBackgroundPage runs an MV2 background HTML page's scripts in document order as a
+// page's are (runDocumentScripts): classic scripts, then deferred scripts and
+// modules (loaded via the module registry, their imports fetched from the extension
+// through the bundle transport).
 func (w *bgWorker) runBackgroundPage(b *bridge, page string) {
 	data, err := w.bundle.ReadResource(page)
 	if err != nil {
@@ -156,8 +159,9 @@ func (w *bgWorker) runBackgroundPage(b *bridge, page string) {
 	// The map lives in the background page, not in the bridge's own document, so it
 	// is registered here rather than lazily when module loading begins.
 	b.acquireImportMap(pageDoc)
-	b.runScripts(collectScripts(pageDoc))
-	b.runModules(collectModuleScripts(pageDoc))
+	// Same order as a page: immediate classic scripts, then deferred classic
+	// scripts and modules interleaved by document position.
+	b.runDocumentScripts(collectScripts(pageDoc), collectModuleScripts(pageDoc))
 }
 
 // deliver dispatches one message to the background's onMessage listeners on the

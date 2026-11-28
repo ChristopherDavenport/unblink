@@ -37,13 +37,12 @@ func preOrderNext(n, root *html.Node) *html.Node {
 	return nil
 }
 
-// createTreeWalker builds a TreeWalker rooted at root. whatToShow is a NodeFilter
-// bitmask (0 / -1 mean "show all").
-func (b *bridge) createTreeWalker(root *html.Node, whatToShow int64, filter goja.Value) *goja.Object {
+// nodeFilterAccepts builds the acceptance test shared by TreeWalker and
+// NodeIterator from a whatToShow bitmask (0 / -1 mean "show all") and an optional
+// NodeFilter (a function, or an object with acceptNode). Only FILTER_ACCEPT
+// passes; for these flat walks FILTER_REJECT and FILTER_SKIP are equivalent.
+func (b *bridge) nodeFilterAccepts(whatToShow int64, filter goja.Value) func(*html.Node) bool {
 	vm := b.vm
-	tw := vm.NewObject()
-	current := root
-
 	showAll := whatToShow == 0 || whatToShow == -1 || whatToShow == 0xFFFFFFFF
 	var filterFn goja.Callable
 	if filter != nil && !goja.IsUndefined(filter) && !goja.IsNull(filter) {
@@ -55,7 +54,7 @@ func (b *bridge) createTreeWalker(root *html.Node, whatToShow int64, filter goja
 			}
 		}
 	}
-	accepts := func(n *html.Node) bool {
+	return func(n *html.Node) bool {
 		if !showAll && whatToShow&int64(nodeFilterBit(n)) == 0 {
 			return false
 		}
@@ -67,6 +66,77 @@ func (b *bridge) createTreeWalker(root *html.Node, whatToShow int64, filter goja
 		}
 		return true
 	}
+}
+
+// createNodeIterator builds a NodeIterator over root's subtree (root included),
+// in document order. The iterator's position is a reference node plus a
+// before/after flag, as in the DOM Standard, so nextNode() then previousNode()
+// returns the same node. Angular's hydration walks the SSR DOM for its comment
+// markers with one.
+func (b *bridge) createNodeIterator(root *html.Node, whatToShow int64, filter goja.Value) *goja.Object {
+	vm := b.vm
+	it := vm.NewObject()
+	accepts := b.nodeFilterAccepts(whatToShow, filter)
+	ref, before := root, true
+
+	// following/preceding within root's inclusive subtree.
+	following := func(n *html.Node) *html.Node { return preOrderNext(n, root) }
+	preceding := func(n *html.Node) *html.Node {
+		if n == root {
+			return nil
+		}
+		if n.PrevSibling != nil {
+			p := n.PrevSibling
+			for p.LastChild != nil {
+				p = p.LastChild
+			}
+			return p
+		}
+		return n.Parent
+	}
+	step := func(forward bool) goja.Value {
+		node, beforeNode := ref, before
+		for {
+			if forward {
+				if !beforeNode {
+					if node = following(node); node == nil {
+						return goja.Null()
+					}
+				}
+				beforeNode = false
+			} else {
+				if beforeNode {
+					if node = preceding(node); node == nil {
+						return goja.Null()
+					}
+				}
+				beforeNode = true
+			}
+			if accepts(node) {
+				ref, before = node, beforeNode
+				return b.wrap(node)
+			}
+		}
+	}
+	_ = it.Set("root", b.wrap(root))
+	_ = it.Set("whatToShow", whatToShow)
+	_ = it.Set("filter", filter)
+	b.defineGetter(it, "referenceNode", func() goja.Value { return b.wrap(ref) })
+	b.defineGetter(it, "pointerBeforeReferenceNode", func() goja.Value { return vm.ToValue(before) })
+	_ = it.Set("nextNode", func(goja.FunctionCall) goja.Value { return step(true) })
+	_ = it.Set("previousNode", func(goja.FunctionCall) goja.Value { return step(false) })
+	_ = it.Set("detach", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	return it
+}
+
+// createTreeWalker builds a TreeWalker rooted at root. whatToShow is a NodeFilter
+// bitmask (0 / -1 mean "show all").
+func (b *bridge) createTreeWalker(root *html.Node, whatToShow int64, filter goja.Value) *goja.Object {
+	vm := b.vm
+	tw := vm.NewObject()
+	current := root
+
+	accepts := b.nodeFilterAccepts(whatToShow, filter)
 
 	advance := func(forward bool) goja.Value {
 		n := current

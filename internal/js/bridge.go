@@ -31,12 +31,16 @@ type bridge struct {
 	// explicitBase is the resolved <base href> element, or nil when the page has
 	// none (then relative URLs resolve against the current document URL).
 	explicitBase *url.URL
-	transport    Transport // nil when JS networking is disabled
-	cookies      CookieJar // nil when document.cookie is unavailable
-	storage      Storage   // backs window.localStorage; nil → per-render prelude fallback
-	sessStorage  Storage   // backs window.sessionStorage; nil → per-render prelude fallback
-	ctx          context.Context
-	reqTimeout   time.Duration
+	// bound is set once bind() has attached a page; preludesRan once prepare() has
+	// run the preludes on this runtime (so bind knows what to patch up).
+	bound       bool
+	preludesRan bool
+	transport   Transport // nil when JS networking is disabled
+	cookies     CookieJar // nil when document.cookie is unavailable
+	storage     Storage   // backs window.localStorage; nil → per-render prelude fallback
+	sessStorage Storage   // backs window.sessionStorage; nil → per-render prelude fallback
+	ctx         context.Context
+	reqTimeout  time.Duration
 
 	// allowCrossOrigin disables the same-origin/CORS enforcement applied to
 	// page-JS fetch/XHR (escape hatch; default false = enforce). The extension
@@ -69,12 +73,42 @@ type bridge struct {
 	protoText             *goja.Object
 	protoComment          *goja.Object
 	protoDocumentFragment *goja.Object
+	protoShadowRoot       *goja.Object
+	protoDocumentType     *goja.Object
+	textSelections        map[*html.Node]*textSelection // input/textarea selection state (installTextSelection)
+	animatedStrings       map[*goja.Object]*html.Node   // SVGAnimatedString → its element
+	animatedStringOf      map[*html.Node]*goja.Object
+	scriptOrdinal         map[*html.Node]int // classic script → its document position (runDocumentScripts)
+	protoNodeList         *goja.Object       // see installCollections
+	protoHTMLCollection   *goja.Object
+	protoRadioNodeList    *goja.Object // see installFormNamedAccess
+	protoFormControls     *goja.Object
+	namedScopeFn          goja.Callable           // prelude helper behind namedScope
+	objectProto           *goja.Object            // Object.prototype, cached for adoptEventInterface
+	eventProtos           map[string]*goja.Object // interface name → prototype (adoptEventInterface)
+	protoXPathResult      *goja.Object
+	protoXPathExpression  *goja.Object
+	protoSVGElement       *goja.Object
+	svgTagBuild           map[string]func() *goja.Object // SVG tag → builds (once) its interface prototype (interfaces.go)
+	protoUnknownElement   *goja.Object
+	ifaceProtos           map[string]*goja.Object // interface name → prototype
+	tagProtos             map[string]*goja.Object // HTML tag → interface prototype
 	protoDocument         *goja.Object
 
 	// Per-node companion objects, cached for identity (el.classList === el.classList).
-	classListCache map[*html.Node]*goja.Object
+	tokenListCache map[tokenListKey]*goja.Object // classList / relList, keyed by (node, attribute)
 	styleCache     map[*html.Node]*goja.Object
-	datasetCache   map[*html.Node]*goja.Object
+	dialogReturns  map[*html.Node]string // HTMLDialogElement.returnValue (dialog.go)
+	// Reflected IDL attributes (reflect.go): the shared accessor per rule, and the
+	// interface prototypes whose attributes are not installed yet.
+	reflectAccessors map[string]goja.Value
+	reflectPending   map[*goja.Object]string
+	styleOf          map[*goja.Object]*cssStyle // style object → its declaration block (cssstyle.go)
+	styleMethods     map[string]goja.Value      // shared CSSStyleDeclaration methods
+	// styleVersion counts inline-style writes made through el.style. They make a
+	// live snapshot stale but are not settle activity (see setStyleAttr).
+	styleVersion uint64
+	datasetCache map[*html.Node]*goja.Object
 
 	// domVersion bumps on every DOM mutation made through the bridge. The live
 	// Context polls it for a "DOM quiet" settle signal; MutationObserver flushing
@@ -87,6 +121,12 @@ type bridge struct {
 
 	documentObj *goja.Object
 	windowObj   *goja.Object
+
+	// handlerSlots holds the on<type> event handlers (eventhandlers.go), one slot
+	// per (target, type); reportingError guards "report an exception" against an
+	// error handler that itself throws.
+	handlerSlots   map[handlerKey]*handlerSlot
+	reportingError bool
 
 	// activeEl is the currently focused element (nil ⇒ <body>), tracked by
 	// focus()/blur() and the interact press gesture so focus-driven reveals work.
@@ -130,7 +170,15 @@ type bridge struct {
 	shadowRoots          map[*html.Node]*goja.Object // host → ShadowRoot object (whose backing node is a detached DocumentNode)
 	shadowHostOf         map[*html.Node]*html.Node   // shadow-root backing node → host (reverse, for connectivity/retargeting)
 	templateContentCache map[*html.Node]*goja.Object
-	upgradingStack       []*html.Node
+	// readyState is document.readyState: "loading" while the parser-inserted
+	// classic scripts run, "interactive" from then until DOMContentLoaded has been
+	// dispatched, "complete" before load. Empty (a bridge that hosts no page
+	// load: an extension background) reads as "complete". See setReadyState.
+	readyState     string
+	attrMapCache   map[*html.Node]*goja.Object            // el.attributes (live NamedNodeMap)
+	attrNodeCache  map[*html.Node]map[string]*goja.Object // stable Attr objects
+	indexedIterFn  goja.Value                             // shared @@iterator for index/length collections
+	upgradingStack []*html.Node
 	// Form-associated custom elements (forminternals.go): the definitions that
 	// declared `static formAssociated` / disabled internals, and per-element state.
 	formAssoc         map[string]bool
@@ -152,6 +200,10 @@ type bridge struct {
 	// diagErrors collects uncaught script/upgrade exceptions for render diagnostics.
 	diagErrors []string
 	rejections map[*goja.Promise]struct{} // promises rejected without a handler (yet)
+	// rejectQueue holds promises rejected since the last unhandledrejection pass;
+	// rejectCheck is set while that pass is scheduled (see queueUnhandledRejection).
+	rejectQueue []*goja.Promise
+	rejectCheck bool
 	// consoleLog captures page console.* output for the console tool (capped);
 	// consoleDropped counts messages past the cap. Written on the loop goroutine.
 	consoleLog     []ConsoleMsg
@@ -169,6 +221,9 @@ type bridge struct {
 	// one-shot timers still scheduled (read on the settle-close tick for
 	// timers_pending) and all live wrapped timers (the provable-idle signal).
 	timerAudit goja.Callable
+	// timerFastForward runs the earliest-due clamped timer now and reports
+	// whether there was one. Registered alongside timerAudit.
+	timerFastForward goja.Callable
 
 	// pending counts in-flight off-loop network requests (brackets the keepalive
 	// window). A persistent live Context polls it to detect "network idle" since a
@@ -185,7 +240,7 @@ type bridge struct {
 	// workers and read via prefetched(), which blocks on the entry's done.
 	prefetch map[string]*prefetchEntry
 
-	// assets is the Engine's shared cross-render script/module/bundle cache (nil
+	// assets is the Engine's shared cross-render script/module/transform cache (nil
 	// when disabled). Set by the engine right after newBridge. Asset-cache hits
 	// bypass the transport, so they never count toward NetRequests or the budget.
 	assets *assetCache
@@ -212,9 +267,9 @@ type bridge struct {
 	tabID           int        // synthetic tab id for this page render/session (0 = none)
 	inert           goja.Value // cached self-propagating inert stub for unimplemented chrome.* APIs
 
-	// dynSem bounds how many runtime dynamic import() chunks fetch+bundle off-loop
-	// at once, so a page firing hundreds of concurrent import()s can't spawn an
-	// unbounded number of esbuild builds. Buffered to dynImportConcurrency.
+	// dynSem bounds how many modules fetch+transform off-loop at once, so a page
+	// with a wide module graph or hundreds of concurrent import()s can't spawn an
+	// unbounded number of esbuild transforms. Buffered to dynImportConcurrency.
 	dynSem chan struct{}
 
 	// reg is the per-render module-instance registry backing dynamic import(): it
@@ -240,46 +295,32 @@ func (b *bridge) resetTransportBudget() {
 }
 
 func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration, extHost *ExtensionHost) *bridge {
+	b := newBridgeShell(vm, loop, extHost)
+	b.bind(doc, base, transport, cookies, storage, sessStorage, ctx, reqTimeout)
+	return b
+}
+
+// newBridgeShell returns a bridge that is not yet bound to a document. Everything
+// install() and the preludes build — prototypes, interface objects, the window
+// and document objects — closes over the bridge and reads the document, base URL,
+// transport and stores only when called, so that whole setup can run on a shell
+// ahead of time (the pre-warm pool, see Engine.prepare) and be bound to a page by
+// bind() when a render takes it.
+func newBridgeShell(vm *goja.Runtime, loop *eventloop.EventLoop, extHost *ExtensionHost) *bridge {
 	tabID := 0
 	if extHost != nil {
 		tabID = extHost.nextTabID()
 	}
-	var nc *countingTransport
-	if transport != nil {
-		if extHost != nil {
-			// declarativeNetRequest gates every subrequest (blockingTransport); a
-			// chrome-extension:// URL is served from the bundle before the gate
-			// (extResourceTransport) so extension resources aren't DNR-blocked. Both sit
-			// inside the counting transport so they still show in the requests diagnostics.
-			transport = &blockingTransport{inner: transport, host: extHost, initiator: initiatorHost(base), pageURL: baseURLString(base), tabID: tabID}
-			transport = &extResourceTransport{inner: transport, host: extHost, page: base}
-		}
-		// Attach truthful Sec-Fetch-* to every subrequest, just inside the counting
-		// transport so the request log is unaffected. See secfetch.go / ADR 0014.
-		transport = &secFetchTransport{inner: transport, base: base}
-		nc = &countingTransport{inner: transport}
-		transport = nc
-	}
 	return &bridge{
 		vm:                   vm,
 		loop:                 loop,
-		doc:                  doc,
-		base:                 base,
-		explicitBase:         findExplicitBase(doc, base),
-		transport:            transport,
-		netCount:             nc,
 		extHost:              extHost,
 		tabID:                tabID,
-		cookies:              cookies,
-		storage:              storage,
-		sessStorage:          sessStorage,
-		ctx:                  ctx,
-		reqTimeout:           reqTimeout,
 		dynSem:               make(chan struct{}, dynImportConcurrency),
 		reg:                  newModuleRegistry(),
 		cache:                make(map[*html.Node]*goja.Object),
 		objNode:              make(map[*goja.Object]*html.Node),
-		classListCache:       make(map[*html.Node]*goja.Object),
+		tokenListCache:       make(map[tokenListKey]*goja.Object),
 		styleCache:           make(map[*html.Node]*goja.Object),
 		datasetCache:         make(map[*html.Node]*goja.Object),
 		customElements:       make(map[string]*goja.Object),
@@ -290,6 +331,8 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		shadowRoots:          make(map[*html.Node]*goja.Object),
 		shadowHostOf:         make(map[*html.Node]*html.Node),
 		templateContentCache: make(map[*html.Node]*goja.Object),
+		attrMapCache:         make(map[*html.Node]*goja.Object),
+		attrNodeCache:        make(map[*html.Node]map[string]*goja.Object),
 		formAssoc:            make(map[string]bool),
 		internalsDisabled:    make(map[string]bool),
 		faces:                make(map[*html.Node]*faceState),
@@ -300,6 +343,94 @@ func newBridge(vm *goja.Runtime, loop *eventloop.EventLoop, doc *html.Node, base
 		webdriver:            true,
 	}
 }
+
+// bind attaches the bridge to one page: its document, base URL, network
+// transport, cookie jar and storage areas. Called once, either before install()
+// (the background worker) or after install() and the preludes have run on a shell
+// (renders and live contexts) — in which case it also completes the two pieces of
+// the installed world that are per page: the document object's identity with the
+// document node, and the storage globals.
+func (b *bridge) bind(doc *html.Node, base *url.URL, transport Transport, cookies CookieJar, storage, sessStorage Storage, ctx context.Context, reqTimeout time.Duration) {
+	var nc *countingTransport
+	if transport != nil {
+		if b.extHost != nil {
+			// declarativeNetRequest gates every subrequest (blockingTransport); a
+			// chrome-extension:// URL is served from the bundle before the gate
+			// (extResourceTransport) so extension resources aren't DNR-blocked. Both sit
+			// inside the counting transport so they still show in the requests diagnostics.
+			transport = &blockingTransport{inner: transport, host: b.extHost, initiator: initiatorHost(base), pageURL: baseURLString(base), tabID: b.tabID}
+			transport = &extResourceTransport{inner: transport, host: b.extHost, page: base}
+		}
+		// Attach truthful Sec-Fetch-* to every subrequest, just inside the counting
+		// transport so the request log is unaffected. See secfetch.go / ADR 0014.
+		transport = &secFetchTransport{inner: transport, base: base}
+		nc = &countingTransport{inner: transport}
+		transport = nc
+	}
+	b.doc = doc
+	b.base = base
+	b.explicitBase = findExplicitBase(doc, base)
+	b.transport = transport
+	b.netCount = nc
+	b.cookies = cookies
+	b.storage = storage
+	b.sessStorage = sessStorage
+	b.ctx = ctx
+	b.reqTimeout = reqTimeout
+	b.bound = true
+	if b.documentObj != nil {
+		b.bindInstalled()
+	}
+}
+
+// bindInstalled finishes install() for a bridge whose document arrived afterwards.
+func (b *bridge) bindInstalled() {
+	// Register the document node so wrap(b.doc) (e.g. html.parentNode) returns the
+	// document object.
+	b.cache[b.doc] = b.documentObj
+	b.objNode[b.documentObj] = b.doc
+	b.sealTemplates(b.doc) // template contents are inert before any script runs
+	b.installStorage()
+	if b.locationObj != nil {
+		b.currentURL = b.base
+		b.updateLocation(b.base)
+	}
+	if b.base != nil && len(b.historyStack) == 0 {
+		b.historyStack = []historyEntry{{url: b.base}}
+	}
+	if b.transport == nil && b.preludesRan {
+		// The preludes built fetch/XHR over __unblinkFetch before the page was known;
+		// without a transport they are the rejecting stubs instead.
+		_ = b.vm.GlobalObject().Delete("__unblinkFetch")
+		_, _ = b.vm.RunProgram(noNetProgram)
+	}
+}
+
+// finishBind runs the preludes' bind hooks (see preludeJS): the page-dependent
+// state they could not read while the runtime was being prepared — the page URL,
+// the navigation start, the timer deadline, the isolation flags, the stores. It
+// must run once the bridge is bound, the preludes have run, and every per-render
+// field the hooks read (respHeaders, the timer-deadline globals) is set; the hook
+// entry points are then removed so page code never sees them.
+func (b *bridge) finishBind() {
+	b.installIsolationGlobals()
+	g := b.vm.GlobalObject()
+	if fn, ok := goja.AssertFunction(g.Get("__unblinkBind")); ok {
+		_, _ = fn(goja.Undefined())
+	}
+	_ = g.Delete("__unblinkBind")
+	_ = g.Delete("__unblinkOnBind")
+}
+
+// noNetProgram is what the API prelude installs for fetch/XHR when the runtime has
+// no transport. A prepared shell ran that prelude before its page was bound, so
+// bind() applies this afterwards; it must stay identical to the prelude's branch.
+var noNetProgram = goja.MustCompile("nonet.js", noNetJS, false)
+
+const noNetJS = `(function () {
+  var window = globalThis;
+` + noNetStubsJS + `
+})();`
 
 // maxCallStackDepth bounds JS call-stack depth. goja's default is math.MaxInt32
 // (effectively unbounded, relying on Go stack exhaustion), so a runaway recursion in
@@ -325,21 +456,32 @@ func (b *bridge) install() {
 
 	_ = vm.Set("window", win)
 	_ = vm.Set("self", win)
+	// The event loop's runtime comes with a Node-style `require` global (neutered:
+	// see rejectRequire). A browser has none, and page code tests for it —
+	// `typeof require` is how a bundle decides it is running under CommonJS. The
+	// engine's own modules are wired from Go, so the binding is simply removed
+	// from the page world; a page (an AMD loader) may then define its own.
+	_ = vm.GlobalObject().Delete("require")
 
 	b.installPrototypes()
+	b.installZoneInfo()
 
 	doc := b.documentObject()
 	b.documentObj = doc
-	// Register the document node so wrap(b.doc) (e.g. html.parentNode) returns this
-	// same object, and give it the Document prototype for instanceof.
-	b.cache[b.doc] = doc
-	b.objNode[doc] = b.doc
+	// Give it the Document prototype for instanceof. Its identity with the document
+	// node, and the storage globals, are per page: done here when the bridge is
+	// already bound, otherwise by bind().
 	_ = doc.SetPrototype(b.protoDocument)
 	_ = vm.Set("document", doc)
-	b.installStorage()
+	if b.doc != nil {
+		b.bindInstalled()
+	}
 	_ = win.Set("document", doc)
 
 	b.installGlobals(win)
+	b.installEventHandlers()
+	b.installReflection()
+	b.installDialog()
 	b.installNodeFilter()
 	b.installMutationObserver()
 	b.installCustomElements(win)
@@ -368,6 +510,7 @@ func (b *bridge) installParsers() {
 			if err != nil {
 				docNode = &html.Node{Type: html.DocumentNode}
 			}
+			b.sealTemplates(docNode)
 			return b.documentFacade(docNode)
 		})
 		return nil
@@ -383,6 +526,7 @@ func (b *bridge) trackRejections() {
 		switch op {
 		case goja.PromiseRejectionReject:
 			b.rejections[p] = struct{}{}
+			b.queueUnhandledRejection(p)
 		case goja.PromiseRejectionHandle:
 			delete(b.rejections, p)
 		}
@@ -454,7 +598,9 @@ func (b *bridge) documentObject() *goja.Object {
 		return b.wrap(findTag(b.doc, "body"))
 	})
 	b.defineGetter(d, "defaultView", func() goja.Value { return b.windowObj })
-	b.defineGetter(d, "readyState", func() goja.Value { return vm.ToValue("complete") })
+	// The viewport scrolls the root element (standards mode).
+	b.defineGetter(d, "scrollingElement", func() goja.Value { return b.wrap(findTag(b.doc, "html")) })
+	b.defineGetter(d, "readyState", func() goja.Value { return vm.ToValue(b.docReadyState()) })
 	b.defineGetter(d, "hidden", func() goja.Value { return vm.ToValue(false) })
 	b.defineGetter(d, "visibilityState", func() goja.Value { return vm.ToValue("visible") })
 	// The one document is always the focused, visible one (visibilityState above),
@@ -500,6 +646,19 @@ func (b *bridge) documentObject() *goja.Object {
 		func() goja.Value { return b.locationObjValue() },
 		func(v goja.Value) { b.navigate(v.String()) })
 	b.defineGetter(d, "referrer", func() goja.Value { return vm.ToValue("") })
+	// document.domain reads the document's host. Assigning it is the deprecated
+	// same-site origin relaxation: the write is accepted and ignored, so no
+	// origin is ever relaxed (ADR 0015 — there is no second document to relax
+	// towards). The getter matters on its own: cookie helpers derive the cookie
+	// Domain from it and throw when it is missing.
+	b.defineProp(d, "domain",
+		func() goja.Value {
+			if b.currentURL != nil {
+				return vm.ToValue(b.currentURL.Hostname())
+			}
+			return vm.ToValue("")
+		},
+		func(goja.Value) {})
 	b.defineGetter(d, "characterSet", func() goja.Value { return vm.ToValue("UTF-8") })
 	b.defineGetter(d, "charset", func() goja.Value { return vm.ToValue("UTF-8") })
 	b.defineGetter(d, "inputEncoding", func() goja.Value { return vm.ToValue("UTF-8") })
@@ -534,12 +693,18 @@ func (b *bridge) documentObject() *goja.Object {
 		return b.nodeList(b.pageQueryAll(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("getElementsByTagName", func(call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(b.doc, call.Argument(0).String()))
+		return b.htmlCollection(queryAll(b.doc, call.Argument(0).String()))
 	})
 	_ = d.Set("getElementsByClassName", func(call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(b.doc, "."+call.Argument(0).String()))
+		return b.htmlCollection(queryAll(b.doc, "."+call.Argument(0).String()))
 	})
-	b.defineGetter(d, "forms", func() goja.Value { return b.htmlCollection(queryAll(b.doc, "form")) })
+	b.defineGetter(d, "forms", func() goja.Value { return b.namedCollection(queryAll(b.doc, "form")) })
+	// The other document-wide element collections. scripts is how a loader finds
+	// its own tag (and its src-relative base) when document.currentScript is null.
+	b.defineGetter(d, "scripts", func() goja.Value { return b.namedCollection(queryAll(b.doc, "script")) })
+	b.defineGetter(d, "images", func() goja.Value { return b.namedCollection(queryAll(b.doc, "img")) })
+	b.defineGetter(d, "links", func() goja.Value { return b.namedCollection(queryAll(b.doc, "a[href], area[href]")) })
+	b.defineGetter(d, "embeds", func() goja.Value { return b.namedCollection(queryAll(b.doc, "embed")) })
 	_ = d.Set("createElement", func(call goja.FunctionCall) goja.Value {
 		tag := strings.ToLower(call.Argument(0).String())
 		return b.wrap(b.newElement(tag, ""))
@@ -560,7 +725,7 @@ func (b *bridge) documentObject() *goja.Object {
 		if src == nil {
 			return goja.Null()
 		}
-		return b.wrap(cloneNode(src, call.Argument(1).ToBoolean()))
+		return b.wrap(b.cloneTree(src, call.Argument(1).ToBoolean()))
 	})
 	_ = d.Set("adoptNode", func(call goja.FunctionCall) goja.Value { return call.Argument(0) })
 	_ = d.Set("createDocumentFragment", func(goja.FunctionCall) goja.Value {
@@ -576,6 +741,17 @@ func (b *bridge) documentObject() *goja.Object {
 			whatToShow = w.ToInteger()
 		}
 		return b.createTreeWalker(root, whatToShow, call.Argument(2))
+	})
+	_ = d.Set("createNodeIterator", func(call goja.FunctionCall) goja.Value {
+		root := b.unwrap(call.Argument(0))
+		if root == nil {
+			root = b.doc
+		}
+		whatToShow := int64(0)
+		if w := call.Argument(1); w != nil && !goja.IsUndefined(w) {
+			whatToShow = w.ToInteger()
+		}
+		return b.createNodeIterator(root, whatToShow, call.Argument(2))
 	})
 	_ = d.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
 		b.addListener(b.docListeners, call, true)
@@ -612,6 +788,16 @@ func (b *bridge) documentObject() *goja.Object {
 		return b.detachedHTMLDocument(title)
 	})
 	_ = impl.Set("hasFeature", func(goja.FunctionCall) goja.Value { return vm.ToValue(true) })
+	_ = impl.Set("createDocumentType", func(call goja.FunctionCall) goja.Value {
+		dt := &html.Node{Type: html.DoctypeNode, Data: call.Argument(0).String()}
+		if v := call.Argument(1).String(); v != "" && !goja.IsUndefined(call.Argument(1)) {
+			dt.Attr = append(dt.Attr, html.Attribute{Key: "public", Val: v})
+		}
+		if v := call.Argument(2).String(); v != "" && !goja.IsUndefined(call.Argument(2)) {
+			dt.Attr = append(dt.Attr, html.Attribute{Key: "system", Val: v})
+		}
+		return b.wrap(dt)
+	})
 	b.defineGetter(d, "implementation", func() goja.Value { return impl })
 
 	return d
@@ -653,6 +839,12 @@ func (b *bridge) documentFacade(docNode *html.Node) goja.Value {
 
 	d := vm.NewObject()
 	_ = d.SetPrototype(b.protoDocument) // so `doc instanceof Document/Node` holds; own methods below shadow the node-backed ones
+	// Register the facade as docNode's wrapper: the node-backed Node/ParentNode
+	// members on Document.prototype (childNodes, firstChild, children, append,
+	// getElementsByTagName, contains…) then work on it, and html.parentNode is
+	// this same object.
+	b.cache[docNode] = d
+	b.objNode[d] = docNode
 	b.defineGetter(d, "URL", func() goja.Value { return vm.ToValue("about:blank") })
 	b.defineGetter(d, "documentURI", func() goja.Value { return vm.ToValue("about:blank") })
 	b.defineGetter(d, "characterSet", func() goja.Value { return vm.ToValue("UTF-8") })
@@ -661,6 +853,7 @@ func (b *bridge) documentFacade(docNode *html.Node) goja.Value {
 	b.defineGetter(d, "contentType", func() goja.Value { return vm.ToValue("text/html") })
 	b.defineGetter(d, "compatMode", func() goja.Value { return vm.ToValue("CSS1Compat") })
 	b.defineGetter(d, "location", func() goja.Value { return goja.Null() })
+	b.defineGetter(d, "readyState", func() goja.Value { return vm.ToValue("complete") }) // parsed in one step, never loading
 	b.defineGetter(d, "documentElement", func() goja.Value { return b.wrap(findTag(docNode, "html")) })
 	b.defineGetter(d, "body", func() goja.Value { return b.wrap(findTag(docNode, "body")) })
 	b.defineGetter(d, "head", func() goja.Value { return b.wrap(findTag(docNode, "head")) })
@@ -713,21 +906,52 @@ func (b *bridge) nodeList(nodes []*html.Node) goja.Value {
 	for i, n := range nodes {
 		arr[i] = b.wrap(n)
 	}
-	return b.vm.ToValue(arr)
+	o := b.vm.NewArray(arr...) // a real array, so page code can hang properties on it
+	if b.protoNodeList != nil {
+		_ = o.SetPrototype(b.protoNodeList)
+	}
+	return o
 }
 
-// classListFor returns the cached DOMTokenList for n, backing its class attribute
-// with add/remove/toggle/contains. Cached so el.classList === el.classList.
+// classListFor returns the cached DOMTokenList for n.classList.
 func (b *bridge) classListFor(n *html.Node) *goja.Object {
-	if o, ok := b.classListCache[n]; ok {
+	return b.tokenListFor(n, "class", nil)
+}
+
+// relSupported are the link-relation keywords this engine acts on, which is
+// what relList.supports() answers: the preload family is fetched ahead of use
+// (startModulePreload). Nothing else — no stylesheet is loaded, no prefetch or
+// preconnect is made — so those report false and feature-detecting code (Vite's
+// and Qwik's preload helpers) takes the branch that matches what will happen.
+var relSupported = map[string]bool{"modulepreload": true, "preload": true}
+
+// tokenListFor returns the cached, live DOMTokenList reflecting n's `attr`
+// attribute (classList, relList, …): tokens are read from the attribute on every
+// access. supported is the set supports() answers from; nil means the attribute
+// defines no supported tokens, where supports() throws a TypeError as specified.
+func (b *bridge) tokenListFor(n *html.Node, attr string, supported map[string]bool) *goja.Object {
+	key := tokenListKey{n: n, attr: attr}
+	if o, ok := b.tokenListCache[key]; ok {
 		return o
 	}
 	vm := b.vm
 	cl := vm.NewObject()
 	// Brand it so Object.prototype.toString.call(classList) is "[object DOMTokenList]".
 	_ = cl.SetSymbol(goja.SymToStringTag, vm.ToValue("DOMTokenList"))
-	tokens := func() []string { return strings.Fields(getAttr(n, "class")) }
-	write := func(ts []string) { b.setAttrMut(n, "class", strings.Join(ts, " ")) }
+	// The token set: ASCII-whitespace separated, duplicates dropped, order kept.
+	tokens := func() []string {
+		fields := strings.Fields(getAttr(n, attr))
+		out := fields[:0]
+		seen := make(map[string]bool, len(fields))
+		for _, f := range fields {
+			if !seen[f] {
+				seen[f] = true
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	write := func(ts []string) { b.setAttrMut(n, attr, strings.Join(ts, " ")) }
 	has := func(c string) bool {
 		for _, t := range tokens() {
 			if t == c {
@@ -736,12 +960,36 @@ func (b *bridge) classListFor(n *html.Node) *goja.Object {
 		}
 		return false
 	}
+	// check validates a token argument: empty is a SyntaxError, white space an
+	// InvalidCharacterError.
+	check := func(c string) {
+		if c == "" {
+			b.throwDOMException("SyntaxError", "The token provided must not be empty.")
+		}
+		if strings.ContainsAny(c, " \t\n\r\f") {
+			b.throwDOMException("InvalidCharacterError", "The token provided ('"+c+"') contains HTML space characters, which are not valid in tokens.")
+		}
+	}
 	_ = cl.Set("contains", func(call goja.FunctionCall) goja.Value { return vm.ToValue(has(call.Argument(0).String())) })
+	_ = cl.Set("item", func(call goja.FunctionCall) goja.Value {
+		ts := tokens()
+		if i := call.Argument(0).ToInteger(); i >= 0 && i < int64(len(ts)) {
+			return vm.ToValue(ts[i])
+		}
+		return goja.Null()
+	})
 	_ = cl.Set("add", func(call goja.FunctionCall) goja.Value {
 		ts := tokens()
 		for _, a := range call.Arguments {
+			check(a.String())
+		}
+		for _, a := range call.Arguments {
 			c := a.String()
-			if c != "" && !has(c) {
+			dup := false
+			for _, t := range ts {
+				dup = dup || t == c
+			}
+			if !dup {
 				ts = append(ts, c)
 			}
 		}
@@ -751,6 +999,7 @@ func (b *bridge) classListFor(n *html.Node) *goja.Object {
 	_ = cl.Set("remove", func(call goja.FunctionCall) goja.Value {
 		drop := map[string]bool{}
 		for _, a := range call.Arguments {
+			check(a.String())
 			drop[a.String()] = true
 		}
 		var ts []string
@@ -759,12 +1008,20 @@ func (b *bridge) classListFor(n *html.Node) *goja.Object {
 				ts = append(ts, t)
 			}
 		}
-		write(ts)
+		if hasAttr(n, attr) || len(ts) > 0 {
+			write(ts)
+		}
 		return goja.Undefined()
 	})
 	_ = cl.Set("toggle", func(call goja.FunctionCall) goja.Value {
 		c := call.Argument(0).String()
+		check(c)
+		forced := len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1))
+		force := forced && call.Argument(1).ToBoolean()
 		if has(c) {
+			if forced && force {
+				return vm.ToValue(true)
+			}
 			var ts []string
 			for _, t := range tokens() {
 				if t != c {
@@ -774,26 +1031,113 @@ func (b *bridge) classListFor(n *html.Node) *goja.Object {
 			write(ts)
 			return vm.ToValue(false)
 		}
+		if forced && !force {
+			return vm.ToValue(false)
+		}
 		write(append(tokens(), c))
 		return vm.ToValue(true)
 	})
-	b.classListCache[n] = cl
-	return cl
+	_ = cl.Set("replace", func(call goja.FunctionCall) goja.Value {
+		oldTok, newTok := call.Argument(0).String(), call.Argument(1).String()
+		check(oldTok)
+		check(newTok)
+		ts := tokens()
+		found := false
+		var out []string
+		for _, t := range ts {
+			switch {
+			case t == oldTok && !found:
+				found = true
+				if !has(newTok) || newTok == oldTok {
+					out = append(out, newTok)
+				}
+			case t == newTok && found:
+				// already emitted in oldTok's place
+			default:
+				out = append(out, t)
+			}
+		}
+		if !found {
+			return vm.ToValue(false)
+		}
+		write(out)
+		return vm.ToValue(true)
+	})
+	_ = cl.Set("supports", func(call goja.FunctionCall) goja.Value {
+		if supported == nil {
+			panic(vm.NewTypeError("DOMTokenList has no supported tokens."))
+		}
+		return vm.ToValue(supported[strings.ToLower(call.Argument(0).String())])
+	})
+	_ = cl.Set("toString", func(goja.FunctionCall) goja.Value { return vm.ToValue(getAttr(n, attr)) })
+	_ = cl.Set("forEach", func(call goja.FunctionCall) goja.Value {
+		fn, ok := goja.AssertFunction(call.Argument(0))
+		if !ok {
+			panic(vm.NewTypeError("forEach callback is not a function"))
+		}
+		for i, t := range tokens() {
+			if _, err := fn(call.Argument(1), vm.ToValue(t), vm.ToValue(i), call.This); err != nil {
+				panic(err)
+			}
+		}
+		return goja.Undefined()
+	})
+	if it := b.indexedIter(); it != nil {
+		_ = cl.SetSymbol(goja.SymIterator, it)
+		_ = cl.Set("values", it)
+	}
+	handler := &goja.ProxyTrapConfig{
+		GetIdx: func(_ *goja.Object, idx int, _ goja.Value) goja.Value {
+			if ts := tokens(); idx >= 0 && idx < len(ts) {
+				return vm.ToValue(ts[idx])
+			}
+			return goja.Undefined()
+		},
+		Get: func(t *goja.Object, key string, _ goja.Value) goja.Value {
+			switch key {
+			case "length":
+				return vm.ToValue(len(tokens()))
+			case "value":
+				return vm.ToValue(getAttr(n, attr))
+			}
+			return t.Get(key)
+		},
+		Set: func(t *goja.Object, key string, value goja.Value, _ goja.Value) bool {
+			if key == "value" {
+				b.setAttrMut(n, attr, value.String())
+				return true
+			}
+			return t.Set(key, value) == nil
+		},
+		HasIdx: func(_ *goja.Object, idx int) bool { return idx >= 0 && idx < len(tokens()) },
+		Has: func(t *goja.Object, key string) bool {
+			if key == "length" || key == "value" {
+				return true
+			}
+			v := t.Get(key)
+			return v != nil && !goja.IsUndefined(v)
+		},
+	}
+	o := vm.ToValue(vm.NewProxy(cl, handler)).ToObject(vm)
+	b.tokenListCache[key] = o
+	return o
 }
 
-// styleFor returns the cached, writable style object for n. There is no CSSOM:
-// it is a plain property bag (so `el.style.display = 'none'` doesn't throw), not
-// reflected back to the class/serialized output. Cached for identity.
-func (b *bridge) styleFor(n *html.Node) *goja.Object {
-	if o, ok := b.styleCache[n]; ok {
-		return o
+// tokenListKey identifies one reflected DOMTokenList.
+type tokenListKey struct {
+	n    *html.Node
+	attr string
+}
+
+// indexedIter returns the shared @@iterator for index/length collections
+// (NamedNodeMap, DOMTokenList): it walks this[0..length).
+func (b *bridge) indexedIter() goja.Value {
+	if b.indexedIterFn == nil {
+		if v, err := b.vm.RunString(`(function(){var i=0,s=this;var it={next:function(){return i<s.length?{value:s[i++],done:false}:{value:undefined,done:true};}};it[Symbol.iterator]=function(){return it;};return it;})`); err == nil {
+			b.indexedIterFn = v
+		}
 	}
-	o := b.vm.NewObject()
-	_ = o.Set("setProperty", noop)
-	_ = o.Set("removeProperty", func(goja.FunctionCall) goja.Value { return b.vm.ToValue("") })
-	_ = o.Set("getPropertyValue", func(goja.FunctionCall) goja.Value { return b.vm.ToValue("") })
-	b.styleCache[n] = o
-	return o
+	return b.indexedIterFn
 }
 
 func noop(goja.FunctionCall) goja.Value { return goja.Undefined() }
@@ -995,13 +1339,85 @@ func innerHTML(n *html.Node) string {
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		_ = html.Render(&buf, c)
 	}
-	return buf.String()
+	return htmlVoidStyle(buf.String())
 }
 
 func outerHTML(n *html.Node) string {
 	var buf bytes.Buffer
 	_ = html.Render(&buf, n)
-	return buf.String()
+	return htmlVoidStyle(buf.String())
+}
+
+// rawTextTags are the elements whose text children x/net/html writes verbatim.
+var rawTextTags = map[string]bool{
+	"iframe": true, "noembed": true, "noframes": true, "noscript": true,
+	"plaintext": true, "script": true, "style": true, "xmp": true,
+}
+
+// htmlVoidStyle rewrites x/net/html's XML-style void elements (<br/>, <img …/>)
+// to the HTML serialization a browser's innerHTML/outerHTML produces (<br>,
+// <img …>). Page code compares and re-parses these strings, and "<br/>" is not
+// what the fragment serialization algorithm emits.
+//
+// The renderer escapes < and > in text and attribute values, so outside
+// comments and raw-text elements every "<" opens a tag and the next ">" closes
+// it; those two regions are copied through untouched.
+func htmlVoidStyle(s string) string {
+	if !strings.Contains(s, "/>") {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); {
+		lt := strings.IndexByte(s[i:], '<')
+		if lt < 0 {
+			sb.WriteString(s[i:])
+			break
+		}
+		lt += i
+		sb.WriteString(s[i:lt])
+		if strings.HasPrefix(s[lt:], "<!--") {
+			end := strings.Index(s[lt+4:], "-->")
+			if end < 0 {
+				sb.WriteString(s[lt:])
+				break
+			}
+			end += lt + 4 + 3
+			sb.WriteString(s[lt:end])
+			i = end
+			continue
+		}
+		gt := strings.IndexByte(s[lt:], '>')
+		if gt < 0 {
+			sb.WriteString(s[lt:])
+			break
+		}
+		gt += lt
+		tag := s[lt : gt+1]
+		i = gt + 1
+		if strings.HasSuffix(tag, "/>") {
+			sb.WriteString(tag[:len(tag)-2])
+			sb.WriteByte('>')
+			continue
+		}
+		sb.WriteString(tag)
+		if len(tag) > 2 && tag[1] != '/' {
+			name := tag[1 : len(tag)-1]
+			if sp := strings.IndexAny(name, " \t\n"); sp >= 0 {
+				name = name[:sp]
+			}
+			if rawTextTags[name] {
+				end := strings.Index(s[i:], "</"+name+">")
+				if end < 0 {
+					sb.WriteString(s[i:])
+					break
+				}
+				sb.WriteString(s[i : i+end])
+				i += end
+			}
+		}
+	}
+	return sb.String()
 }
 
 func setInnerHTML(n *html.Node, markup string) {

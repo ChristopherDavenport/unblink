@@ -1,0 +1,8 @@
+{
+  "name": "unblink-fixture-vite-vue",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "vite build" },
+  "dependencies": { "vue": "3.5.46", "vue-router": "5.5.3" },
+  "devDependencies": { "vite": "8.4.0", "@vitejs/plugin-vue": "6.0.11" }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "unblink-fixture-webpack-esm-concat",
+  "private": true,
+  "scripts": {
+    "build": "webpack --config webpack.config.js && cp ../webpack/html/esm.html ../../built/webpack-esm-concat/index.html"
+  },
+  "devDependencies": {
+    "webpack": "5.88.2",
+    "webpack-cli": "5.1.4"
+  }
+}

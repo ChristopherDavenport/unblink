@@ -31,6 +31,13 @@ type Env struct {
 	AllowCrossOrigin bool
 	DisableSRI       bool
 	DisableCSP       bool
+	// ClockStart pins the page-visible clock: Date.now(), new Date() and the
+	// performance time origin read as if the render began at this instant, and
+	// advance in real time from there. Timers, the settle and the render budget
+	// stay on the real clock. Zero means the real time. It is for harnesses that
+	// replay a recorded page ("3 hours ago" must be computed against the moment
+	// of the recording); nothing in the server sets it.
+	ClockStart time.Time
 }
 
 // CookieJar exposes the page's cookies to JavaScript (document.cookie), backed by

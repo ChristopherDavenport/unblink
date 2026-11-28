@@ -43,7 +43,8 @@ func TestStatelessRevalidate(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b, err := New(WithAllowPrivate(true))
+	// HTML cache entry under test: pin negotiation off, whatever the default.
+	b, err := New(WithAllowPrivate(true), WithPreferMarkdown(false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,8 @@ func TestStatelessRevalidateWithoutValidators(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b, err := New(WithAllowPrivate(true))
+	// HTML cache entry under test: pin negotiation off, whatever the default.
+	b, err := New(WithAllowPrivate(true), WithPreferMarkdown(false))
 	if err != nil {
 		t.Fatal(err)
 	}

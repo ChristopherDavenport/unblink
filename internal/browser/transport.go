@@ -66,6 +66,23 @@ func (g *guardedTransport) Do(ctx context.Context, method, url string, headers m
 	return &js.Response{Status: res.Status, StatusText: res.StatusText, Headers: hdr, Body: res.Body, Raw: res.Raw, FinalURL: res.FinalURL}, nil
 }
 
+// ChargeBytes charges n bytes that page JavaScript loaded without a network
+// request — a data: URL script, decoded in place — to the same download budget,
+// so inline payloads cannot be used to run more script than --js-max-bytes
+// allows. Like Do, it refuses once the budget is already spent and lets the
+// load that crosses it complete.
+func (g *guardedTransport) ChargeBytes(n int64) error {
+	if g.maxBytes <= 0 {
+		return nil
+	}
+	if g.bytes.Load() >= g.maxBytes {
+		g.denied.Add(1)
+		return fmt.Errorf("unblink: JavaScript download budget exceeded (max %d bytes)", g.maxBytes)
+	}
+	g.bytes.Add(n)
+	return nil
+}
+
 // Denied reports how many requests the budget caps rejected, for render
 // diagnostics ("the page wanted more network than the per-render budget allows").
 func (g *guardedTransport) Denied() int {

@@ -27,6 +27,8 @@ func nodeType(n *html.Node) int {
 		return 8
 	case html.DocumentNode:
 		return 11
+	case html.DoctypeNode:
+		return 10
 	default:
 		return 0
 	}
@@ -40,7 +42,12 @@ func nodeName(n *html.Node) string {
 		return "#comment"
 	case html.DocumentNode:
 		return "#document-fragment"
+	case html.DoctypeNode:
+		return n.Data // a doctype's nodeName is its name, as written
 	default:
+		if n.Namespace != "" {
+			return n.Data // SVG/MathML names keep their case
+		}
 		return strings.ToUpper(n.Data)
 	}
 }
@@ -140,6 +147,9 @@ func namespaceURIFor(label string) string {
 func (b *bridge) setAttrMut(n *html.Node, key, val string) {
 	old := getAttr(n, key)
 	setAttr(n, key, val)
+	if len(key) > 2 && key[0] == 'o' && key[1] == 'n' {
+		b.handlerAttrSet(n, key[2:])
+	}
 	b.onMutate(mutationRecord{typ: "attributes", target: n, attr: key, oldValue: old})
 	b.afterAttr(n, key, old, val)
 }
@@ -190,6 +200,7 @@ func (b *bridge) insertAdjacentHTML(n *html.Node, position, markup string) {
 		return
 	}
 	for _, c := range frag {
+		b.sealTemplates(c)
 		b.insertAdjacentNode(n, position, c)
 	}
 }
@@ -212,36 +223,141 @@ func (b *bridge) insertAdjacentNode(n *html.Node, position string, el *html.Node
 	}
 }
 
-// namedNodeMap returns a snapshot NamedNodeMap-like for an element's attributes.
+// namedNodeMap returns the cached, LIVE NamedNodeMap for n.attributes: length,
+// indices and names are read from the element on every access. Liveness is
+// load-bearing — React clears a singleton element (<html>, <head>, <body>) with
+// `for (var a = el.attributes; a.length;) el.removeAttributeNode(a[0])`, which
+// never terminates (or throws on the second pass) over a snapshot.
 func (b *bridge) namedNodeMap(n *html.Node) goja.Value {
-	vm := b.vm
-	m := vm.NewObject()
-	items := make([]*goja.Object, len(n.Attr))
-	for i, a := range n.Attr {
-		it := vm.NewObject()
-		_ = it.Set("name", a.Key)
-		_ = it.Set("value", a.Val)
-		items[i] = it
-		_ = m.Set(strconv.Itoa(i), it)
+	if o, ok := b.attrMapCache[n]; ok {
+		return o
 	}
-	_ = m.Set("length", len(n.Attr))
-	_ = m.Set("item", func(call goja.FunctionCall) goja.Value {
-		idx := int(call.Argument(0).ToInteger())
-		if idx < 0 || idx >= len(items) {
-			return goja.Null()
+	vm := b.vm
+	target := vm.NewObject()
+	at := func(i int) goja.Value {
+		if i < 0 || i >= len(n.Attr) {
+			return nil
 		}
-		return items[idx]
-	})
-	_ = m.Set("getNamedItem", func(call goja.FunctionCall) goja.Value {
-		name := call.Argument(0).String()
-		for i, a := range n.Attr {
-			if a.Key == name {
-				return items[i]
-			}
+		return b.attrNodeCached(n, n.Attr[i].Key)
+	}
+	named := func(name string) goja.Value {
+		if !hasAttr(n, name) {
+			return nil
+		}
+		return b.attrNodeCached(n, name)
+	}
+	_ = target.Set("item", func(call goja.FunctionCall) goja.Value {
+		if v := at(int(call.Argument(0).ToInteger())); v != nil {
+			return v
 		}
 		return goja.Null()
 	})
-	return m
+	getNamed := func(call goja.FunctionCall) goja.Value {
+		if v := named(call.Argument(len(call.Arguments) - 1).String()); v != nil {
+			return v
+		}
+		return goja.Null()
+	}
+	_ = target.Set("getNamedItem", getNamed)
+	_ = target.Set("getNamedItemNS", getNamed)
+	setNamed := func(call goja.FunctionCall) goja.Value {
+		a := call.Argument(0)
+		if a == nil || goja.IsUndefined(a) || goja.IsNull(a) {
+			return goja.Null()
+		}
+		ao := a.ToObject(vm)
+		name, val := ao.Get("name"), ao.Get("value")
+		if name == nil || goja.IsUndefined(name) {
+			return goja.Null()
+		}
+		v := ""
+		if val != nil && !goja.IsUndefined(val) {
+			v = val.String()
+		}
+		b.setAttrMut(n, name.String(), v)
+		return goja.Null()
+	}
+	_ = target.Set("setNamedItem", setNamed)
+	_ = target.Set("setNamedItemNS", setNamed)
+	removeNamed := func(call goja.FunctionCall) goja.Value {
+		name := call.Argument(len(call.Arguments) - 1).String()
+		if !hasAttr(n, name) {
+			b.throwDOMException("NotFoundError", "No item with name '"+name+"' was found.")
+			return goja.Undefined()
+		}
+		node := b.attrNodeCached(n, name)
+		old := getAttr(n, name)
+		removeAttr(n, name)
+		b.onMutate(mutationRecord{typ: "attributes", target: n, attr: name, oldValue: old})
+		return node
+	}
+	_ = target.Set("removeNamedItem", removeNamed)
+	_ = target.Set("removeNamedItemNS", removeNamed)
+	if it := b.indexedIter(); it != nil {
+		_ = target.SetSymbol(goja.SymIterator, it)
+	}
+	handler := &goja.ProxyTrapConfig{
+		GetIdx: func(_ *goja.Object, idx int, _ goja.Value) goja.Value {
+			if v := at(idx); v != nil {
+				return v
+			}
+			return goja.Undefined()
+		},
+		Get: func(t *goja.Object, key string, _ goja.Value) goja.Value {
+			if key == "length" {
+				return vm.ToValue(len(n.Attr))
+			}
+			if v := t.Get(key); v != nil && !goja.IsUndefined(v) {
+				return v
+			}
+			if v := named(key); v != nil { // attributes.id, attributes['data-x']
+				return v
+			}
+			return goja.Undefined()
+		},
+		HasIdx: func(_ *goja.Object, idx int) bool { return idx >= 0 && idx < len(n.Attr) },
+		Has: func(t *goja.Object, key string) bool {
+			if key == "length" || hasAttr(n, key) {
+				return true
+			}
+			v := t.Get(key)
+			return v != nil && !goja.IsUndefined(v)
+		},
+		OwnKeys: func(_ *goja.Object) *goja.Object {
+			keys := make([]interface{}, len(n.Attr))
+			for i := range n.Attr {
+				keys[i] = strconv.Itoa(i)
+			}
+			return vm.NewArray(keys...)
+		},
+		GetOwnPropertyDescriptorIdx: func(_ *goja.Object, idx int) goja.PropertyDescriptor {
+			v := at(idx)
+			if v == nil {
+				return goja.PropertyDescriptor{}
+			}
+			return goja.PropertyDescriptor{Value: v, Writable: goja.FLAG_FALSE, Enumerable: goja.FLAG_TRUE, Configurable: goja.FLAG_TRUE}
+		},
+	}
+	o := vm.ToValue(vm.NewProxy(target, handler)).ToObject(vm)
+	b.attrMapCache[n] = o
+	return o
+}
+
+// attrNodeCached returns the stable Attr object for (n, name), so
+// `el.attributes[0] === el.attributes[0]` and an Attr taken from the map can be
+// handed back to removeAttributeNode.
+func (b *bridge) attrNodeCached(n *html.Node, name string) *goja.Object {
+	m := b.attrNodeCache[n]
+	if m == nil {
+		m = make(map[string]*goja.Object)
+		b.attrNodeCache[n] = m
+	}
+	if o, ok := m[name]; ok {
+		return o
+	}
+	o := b.attrNode(n, name)
+	m[name] = o
+	return o
 }
 
 // datasetFor returns the cached DOMStringMap proxy for n.dataset, mapping camelCase

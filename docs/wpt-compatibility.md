@@ -172,7 +172,8 @@ The post-fix 0.979 has no such conflict.
 | **P4** | HTML tree-construction — **maintain only** | already strong | html/syntax **0.944** |
 | **P5** | Custom-element / Shadow-DOM lifecycle — triage (ElementInternals) | mostly done: `ElementInternals` form participation, `form="id"`, `:state()` and ARIA defaults shipped ([ADR 0019](decisions/0019-form-associated-element-reflection.md)); `adoptedCallback` open | custom-elements PASS 44 → 269 (see *Re-measurement*) |
 | **secondary** | Security-posture edges — audit-driven | ✅ closed | 6 gaps found + fixed/locked (WPT can't measure; see *Secondary*) |
-| *not ranked* | IDL reflection breadth, streams backpressure, legacy encodings, asymmetric crypto | excluded | by-design or low content-value |
+| *not ranked* | streams backpressure, legacy encodings, asymmetric crypto | excluded | by-design or low content-value |
+| *added 2026-11-27* | IDL attribute reflection (common HTML interfaces, `ARIAMixin`, `el.style` ↔ `style`) | ✅ done | property writes were invisible to extraction; see *Deliberately out of scope* for what remains |
 
 Detail for each below. The **Evidence** paragraphs for P1–P3 are the 2026-07-05
 baseline findings that motivated the work, kept as written: the gaps they list in the
@@ -335,10 +336,20 @@ by tests.
 Chasing these would contradict the product — unblink does *semantic reduction, not
 rendering*, with no layout engine ([ADR 0007](decisions/0007-semantic-structured-representation.md)):
 
-- **Exhaustive IDL reflection breadth** — html/dom's 54k `reflection-*` assertions
-  and custom-elements' `AriaMixin` reflection are real gaps but *low content-value*:
-  extraction reads a handful of attributes (`href`, `src`, `alt`, control state), not
-  every element's full typed IDL surface. Not prioritized.
+- ~~**Exhaustive IDL reflection breadth**~~ — **moved in scope, 2026-11-27.** This
+  entry held that reflection was *low content-value* because extraction reads a
+  handful of attributes, not every element's typed IDL surface. The real-page corpus
+  showed the premise was backwards: extraction reads only the node tree, and a page
+  that sets `input.name`, `a.title`, `img.alt`, `el.hidden = true` or
+  `el.style.display = 'none'` through a *property* left nothing in the tree to read.
+  Only `id`, `className`, `href`, `src`, `value`, `checked` and `slot` reflected. The
+  common reflected attributes of every HTML interface, `ARIAMixin` on `Element`, and
+  `el.style` ↔ the `style` attribute are now implemented from one table
+  (`internal/js/reflect.go`, `internal/js/cssstyle.go`). What stays out of scope is
+  the *exhaustive* tail: the 54k `reflection-*` assertions also cover obsolete
+  elements, numeric edge-case parsing and every enumerated keyword, and the two large
+  files that hold them sit on the per-test time budget, so their PASS count is not a
+  clean measure — compare the smaller reflection files instead.
 - **Rendering conformance** — reftests, visual tests, wdspec; `css/`, `2dcontext/`,
   `webgl/`; `getComputedStyle`/geometry/CSSOM (constant stubs).
 - **Threads & persistence** — Workers, Service Workers, real WebSocket, persistent

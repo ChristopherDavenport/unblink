@@ -1,7 +1,6 @@
 package js
 
 import (
-	"net/url"
 	"strings"
 	"unicode/utf16"
 
@@ -92,11 +91,32 @@ func (b *bridge) installPrototypes() {
 	b.protoDocumentFragment = vm.CreateObject(b.protoNode)
 	b.protoDocument = vm.CreateObject(b.protoNode)
 
+	// ShadowRoot is a DocumentFragment (DOM Standard), not an Element.
+	b.protoShadowRoot = vm.CreateObject(b.protoDocumentFragment)
+
+	b.installCollections()
 	b.installNodeProto()
 	b.installElementProto()
 	b.installHTMLElementProto()
 	b.installCharacterDataProto()
 	b.installGeometry()
+
+	// Mixins, each installed on every interface the standard includes it in.
+	b.installParentNode(b.protoElement, false)
+	b.installParentNode(b.protoDocumentFragment, true) // ShadowRoot inherits it
+	b.installParentNode(b.protoDocument, true)
+	b.installChildNode(b.protoElement)
+	b.installChildNode(b.protoCharacterData)
+	b.installAttrNodes(b.protoElement)
+	b.installInnerText(b.protoHTMLElement)
+	b.installInnerHTML(b.protoShadowRoot)
+	// Document also has the tag/class collections (Element defines its own).
+	b.protoMethod(b.protoDocument, "getElementsByTagName", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		return b.htmlCollection(queryAll(n, call.Argument(0).String()))
+	})
+	b.protoMethod(b.protoDocument, "getElementsByClassName", func(n *html.Node, call goja.FunctionCall) goja.Value {
+		return b.htmlCollection(queryAll(n, "."+call.Argument(0).String()))
+	})
 
 	// Global constructors. The .prototype/.constructor link is what `instanceof`
 	// and `class X extends HTMLElement` consume; concrete construction behaviour
@@ -118,9 +138,18 @@ func (b *bridge) installPrototypes() {
 		_ = b.protoNode.Set(name, val)
 	}
 	b.defineCtor("CharacterData", b.protoCharacterData)
-	b.defineCtor("Text", b.protoText)
-	b.defineCtor("Comment", b.protoComment)
-	b.defineCtor("DocumentFragment", b.protoDocumentFragment)
+	// new Text(data) / new Comment(data) / new DocumentFragment() construct real
+	// nodes (lit-html and Solid build markers this way).
+	b.defineNodeCtor("Text", b.protoText, func(call goja.ConstructorCall) *html.Node {
+		return &html.Node{Type: html.TextNode, Data: ctorStringArg(call)}
+	})
+	b.defineNodeCtor("Comment", b.protoComment, func(call goja.ConstructorCall) *html.Node {
+		return &html.Node{Type: html.CommentNode, Data: ctorStringArg(call)}
+	})
+	b.defineNodeCtor("DocumentFragment", b.protoDocumentFragment, func(goja.ConstructorCall) *html.Node {
+		return &html.Node{Type: html.DocumentNode}
+	})
+	b.defineCtor("ShadowRoot", b.protoShadowRoot)
 	b.defineCtor("Document", b.protoDocument)
 	// HTMLDocument is the (legacy) subclass every HTML document is an instance of;
 	// share the Document prototype so `document instanceof HTMLDocument` holds and code
@@ -129,41 +158,23 @@ func (b *bridge) installPrototypes() {
 	b.defineCtor("Element", b.protoElement)
 	b.defineHTMLElementCtor()
 
-	// Specific HTML*Element / SVGElement interface constructors. Frameworks probe
-	// these via `node instanceof HTMLInputElement` etc. (React's focus/selection and
-	// form code). We don't have per-tag prototypes, so each gets a fresh prototype
-	// chaining to HTMLElement: instanceof returns false for our generic wrappers
-	// (safe) instead of throwing on `instanceof undefined`.
-	for _, name := range htmlInterfaceNames {
-		b.defineCtor(name, vm.CreateObject(b.protoHTMLElement))
-	}
-	// HTMLAudioElement/HTMLVideoElement chain through HTMLMediaElement as in a
-	// real DOM; zone.js dereferences HTMLMediaElement.prototype unguarded.
-	mediaProto := vm.CreateObject(b.protoHTMLElement)
-	b.defineCtor("HTMLMediaElement", mediaProto)
-	b.defineCtor("HTMLAudioElement", vm.CreateObject(mediaProto))
-	b.defineCtor("HTMLVideoElement", vm.CreateObject(mediaProto))
-	b.defineCtor("SVGElement", vm.CreateObject(b.protoElement))
-}
+	// Per-tag interfaces (HTMLDivElement, HTMLScriptElement, …) and SVGElement.
+	b.installElementInterfaces()
+	b.installXPath()
+	b.installURLMembers()
+	b.installSelect()
+	b.installFormNamedAccess()
+	b.installDOMGaps()
 
-var htmlInterfaceNames = []string{
-	"HTMLUnknownElement", "HTMLIFrameElement", "HTMLInputElement", "HTMLTextAreaElement",
-	"HTMLSelectElement", "HTMLOptionElement", "HTMLButtonElement", "HTMLAnchorElement",
-	"HTMLImageElement", "HTMLFormElement", "HTMLLabelElement", "HTMLDivElement",
-	"HTMLSpanElement", "HTMLParagraphElement", "HTMLUListElement", "HTMLOListElement",
-	"HTMLLIElement", "HTMLTableElement", "HTMLTemplateElement", "HTMLStyleElement",
-	"HTMLScriptElement", "HTMLLinkElement", "HTMLSlotElement", "HTMLCanvasElement",
-	"HTMLPreElement", "HTMLHeadingElement", "HTMLBRElement", "HTMLHRElement",
-	// zone.js's property-descriptor patch dereferences these unguarded.
-	"HTMLBodyElement", "HTMLHtmlElement", "HTMLHeadElement", "HTMLFrameElement",
-	"HTMLFrameSetElement", "HTMLMarqueeElement", "HTMLEmbedElement", "HTMLObjectElement",
-	"HTMLSourceElement", "HTMLTrackElement", "HTMLAreaElement", "HTMLBaseElement",
-	"HTMLMapElement", "HTMLMetaElement", "HTMLTitleElement", "HTMLTableRowElement",
-	"HTMLTableCellElement", "HTMLTableSectionElement", "HTMLTableCaptionElement",
-	"HTMLTableColElement", "HTMLDataListElement", "HTMLFieldSetElement", "HTMLLegendElement",
-	"HTMLOptGroupElement", "HTMLOutputElement", "HTMLProgressElement", "HTMLMeterElement",
-	"HTMLDetailsElement", "HTMLDialogElement", "HTMLTimeElement", "HTMLPictureElement",
-	"HTMLDListElement", "HTMLQuoteElement", "HTMLModElement", "HTMLDataElement",
+	for name, proto := range map[string]*goja.Object{
+		"EventTarget": b.protoEventTarget, "Node": b.protoNode, "Element": b.protoElement,
+		"HTMLElement": b.protoHTMLElement, "CharacterData": b.protoCharacterData,
+		"Text": b.protoText, "Comment": b.protoComment,
+		"DocumentFragment": b.protoDocumentFragment, "ShadowRoot": b.protoShadowRoot,
+		"HTMLDocument": b.protoDocument,
+	} {
+		b.setToStringTag(proto, name)
+	}
 }
 
 // connect runs the custom-element upgrade hook for a newly-inserted node. It is a
@@ -179,10 +190,37 @@ func (b *bridge) connect(n *html.Node) {
 // present so instanceof and subclassing resolve).
 func (b *bridge) defineCtor(name string, proto *goja.Object) *goja.Object {
 	ctor := b.vm.ToValue(func(call goja.ConstructorCall) *goja.Object { return nil }).(*goja.Object)
-	_ = ctor.Set("prototype", proto)
-	_ = proto.Set("constructor", ctor)
-	_ = b.vm.Set(name, ctor)
+	b.finishCtor(name, ctor, proto)
 	return ctor
+}
+
+// finishCtor links ctor and proto and publishes ctor as the global `name`. The
+// function's own `name` is set to the interface name: a native Go function
+// otherwise reports its Go symbol, which page code reads through
+// `el.constructor.name`.
+func (b *bridge) finishCtor(name string, ctor, proto *goja.Object) {
+	// (writable, configurable, enumerable)
+	_ = ctor.DefineDataProperty("name", b.vm.ToValue(name), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+	_ = ctor.Set("prototype", proto)
+	_ = proto.DefineDataProperty("constructor", ctor, goja.FLAG_TRUE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+	_ = b.vm.Set(name, ctor)
+}
+
+// defineNodeCtor registers a constructor that builds a real, detached node.
+func (b *bridge) defineNodeCtor(name string, proto *goja.Object, mk func(goja.ConstructorCall) *html.Node) {
+	ctor := b.vm.ToValue(func(call goja.ConstructorCall) *goja.Object {
+		o, _ := b.wrap(mk(call)).(*goja.Object)
+		return o
+	}).(*goja.Object)
+	b.finishCtor(name, ctor, proto)
+}
+
+// ctorStringArg is the optional DOMString argument of new Text()/new Comment().
+func ctorStringArg(call goja.ConstructorCall) string {
+	if a := call.Argument(0); a != nil && !goja.IsUndefined(a) {
+		return a.String()
+	}
+	return ""
 }
 
 // protoFor selects the prototype for a node by type/role. The real document node
@@ -195,8 +233,12 @@ func (b *bridge) protoFor(n *html.Node) *goja.Object {
 		return b.protoComment
 	case html.DocumentNode:
 		return b.protoDocumentFragment // a synthetic fragment sentinel
+	case html.DoctypeNode:
+		return b.protoDocumentType
 	case html.ElementNode:
-		return b.protoHTMLElement
+		p := b.elementProto(n)
+		b.reflectOnWrap(p)
+		return p
 	default:
 		return b.protoNode
 	}
@@ -223,10 +265,38 @@ func (b *bridge) installNodeProto() {
 				b.onMutate(mutationRecord{typ: "characterData", target: n})
 			}
 		})
+	// textContent depends on the node kind (DOM Standard): a Text or Comment
+	// reads and writes its own data; a Document is null and ignores writes;
+	// everything else concatenates its descendant text and, on write, replaces
+	// its children with one Text node. Angular's hydration looks for its SSR
+	// marker with `comment.textContent`, and a text node updated through
+	// textContent must change the text, not grow a child.
 	b.protoProp(p, "textContent",
-		func(n *html.Node) goja.Value { return vm.ToValue(textContent(n)) },
+		func(n *html.Node) goja.Value {
+			switch {
+			case n.Type == html.TextNode || n.Type == html.CommentNode:
+				return vm.ToValue(n.Data)
+			case n.Type == html.DoctypeNode || n == b.doc:
+				return goja.Null()
+			}
+			return vm.ToValue(textContent(n))
+		},
 		func(n *html.Node, v goja.Value) {
-			setTextContent(n, v.String())
+			switch {
+			case n.Type == html.TextNode || n.Type == html.CommentNode:
+				n.Data = nullToEmptyString(v)
+				b.onMutate(mutationRecord{typ: "characterData", target: n})
+				return
+			case n.Type == html.DoctypeNode || n == b.doc:
+				return
+			}
+			if text := nullToEmptyString(v); text == "" {
+				for n.FirstChild != nil { // the empty string leaves no Text node behind
+					n.RemoveChild(n.FirstChild)
+				}
+			} else {
+				setTextContent(n, text)
+			}
 			b.onMutate(mutationRecord{typ: "childList", target: n})
 		})
 
@@ -244,6 +314,14 @@ func (b *bridge) installNodeProto() {
 		return b.documentObj
 	})
 	b.protoGetter(p, "isConnected", func(n *html.Node) goja.Value { return vm.ToValue(b.isConnected(n)) })
+	// baseURI is the document base URL (the <base href> when there is one), the
+	// same for every node of this single-document engine.
+	b.protoGetter(p, "baseURI", func(*html.Node) goja.Value {
+		if u := b.docBaseNow(); u != nil {
+			return vm.ToValue(u.String())
+		}
+		return vm.ToValue("about:blank")
+	})
 	b.protoMethod(p, "getRootNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		composed := false
 		if opts := call.Argument(0); opts != nil && !goja.IsUndefined(opts) && !goja.IsNull(opts) {
@@ -321,7 +399,7 @@ func (b *bridge) installNodeProto() {
 	})
 	b.protoMethod(p, "cloneNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		deep := call.Argument(0).ToBoolean()
-		return b.wrap(cloneNode(n, deep))
+		return b.wrap(b.cloneTree(n, deep))
 	})
 	b.protoMethod(p, "contains", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		other := b.unwrap(call.Argument(0))
@@ -370,13 +448,70 @@ func (b *bridge) installNodeProto() {
 	})
 }
 
+// contentHolder is the node whose children are n's markup: n itself, except for
+// a <template> whose content fragment has been handed out (templateContent moves
+// the children there), where it is that fragment.
+func (b *bridge) contentHolder(n *html.Node) *html.Node {
+	if n.Type == html.ElementNode && n.Data == "template" {
+		if o, ok := b.templateContentCache[n]; ok {
+			if frag := b.unwrap(o); frag != nil {
+				return frag
+			}
+		}
+	}
+	return n
+}
+
+// installInnerHTML adds the innerHTML accessor (Element and ShadowRoot).
+func (b *bridge) installInnerHTML(p *goja.Object) {
+	vm := b.vm
+	b.protoProp(p, "innerHTML",
+		func(n *html.Node) goja.Value { return vm.ToValue(b.innerHTMLOf(b.contentHolder(n))) },
+		func(n *html.Node, v goja.Value) {
+			if holder := b.contentHolder(n); holder != n {
+				// A <template>'s markup lives in its content fragment once that
+				// has been handed out; parse as the template's own children would
+				// be, then move the result there.
+				setInnerHTML(n, v.String())
+				for holder.FirstChild != nil {
+					holder.RemoveChild(holder.FirstChild)
+				}
+				for n.FirstChild != nil {
+					c := n.FirstChild
+					n.RemoveChild(c)
+					holder.AppendChild(c)
+				}
+				b.sealTemplates(holder)
+				b.onMutate(mutationRecord{typ: "childList", target: n})
+				return
+			}
+			setInnerHTML(n, v.String())
+			b.sealTemplates(n)
+			// Parsed-in custom elements upgrade like inserted ones — when the
+			// markup lands in a connected tree (a shadow root's included); a
+			// detached parent's or a <template>'s stays inert until inserted.
+			if n.Data != "template" && b.isConnected(n) {
+				for _, c := range childNodes(n) { // a constructor may edit the list
+					b.upgradeTree(c)
+				}
+			}
+			b.onMutate(mutationRecord{typ: "childList", target: n})
+		})
+}
+
 // --- Element.prototype: element-only members ---
 
 func (b *bridge) installElementProto() {
 	vm := b.vm
 	p := b.protoElement
 
-	b.protoGetter(p, "tagName", func(n *html.Node) goja.Value { return vm.ToValue(strings.ToUpper(n.Data)) })
+	// tagName is uppercased for HTML elements only; SVG/MathML names keep their case.
+	b.protoGetter(p, "tagName", func(n *html.Node) goja.Value {
+		if n.Namespace != "" {
+			return vm.ToValue(n.Data)
+		}
+		return vm.ToValue(strings.ToUpper(n.Data))
+	})
 	b.protoGetter(p, "localName", func(n *html.Node) goja.Value { return vm.ToValue(n.Data) })
 	// namespaceURI is the reverse of namespaceFor (label -> URI); default HTML.
 	// prefix is always null — unblink parses no namespace-prefixed foreign markup.
@@ -390,23 +525,10 @@ func (b *bridge) installElementProto() {
 		func(n *html.Node) goja.Value { return vm.ToValue(getAttr(n, "class")) },
 		func(n *html.Node, v goja.Value) { b.setAttrMut(n, "class", v.String()) })
 
-	b.protoProp(p, "innerHTML",
-		func(n *html.Node) goja.Value { return vm.ToValue(innerHTML(n)) },
-		func(n *html.Node, v goja.Value) {
-			setInnerHTML(n, v.String())
-			// Parsed-in custom elements upgrade like inserted ones — when the
-			// markup lands in a connected tree (a shadow root's included); a
-			// detached parent's or a <template>'s stays inert until inserted.
-			if n.Data != "template" && b.isConnected(n) {
-				for _, c := range childNodes(n) { // a constructor may edit the list
-					b.upgradeTree(c)
-				}
-			}
-			b.onMutate(mutationRecord{typ: "childList", target: n})
-		})
-	b.protoGetter(p, "outerHTML", func(n *html.Node) goja.Value { return vm.ToValue(outerHTML(n)) })
+	b.installInnerHTML(p)
+	b.protoGetter(p, "outerHTML", func(n *html.Node) goja.Value { return vm.ToValue(b.outerHTMLOf(n)) })
 
-	b.protoGetter(p, "children", func(n *html.Node) goja.Value { return b.nodeList(childElements(n)) })
+	b.protoGetter(p, "children", func(n *html.Node) goja.Value { return b.htmlCollection(childElements(n)) })
 	b.protoGetter(p, "firstElementChild", func(n *html.Node) goja.Value {
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			if c.Type == html.ElementNode {
@@ -441,6 +563,9 @@ func (b *bridge) installElementProto() {
 		key := call.Argument(0).String()
 		had := hasAttr(n, key)
 		removeAttr(n, key)
+		if had && len(key) > 2 && key[0] == 'o' && key[1] == 'n' {
+			b.handlerAttrRemoved(n, key[2:])
+		}
 		if had {
 			b.onMutate(mutationRecord{typ: "attributes", target: n, attr: key})
 		}
@@ -474,17 +599,6 @@ func (b *bridge) installElementProto() {
 		return vm.ToValue(on)
 	})
 	b.protoGetter(p, "attributes", func(n *html.Node) goja.Value { return b.namedNodeMap(n) })
-	b.protoMethod(p, "getAttributeNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		name := call.Argument(0).String()
-		if !hasAttr(n, name) {
-			return goja.Null()
-		}
-		it := vm.NewObject()
-		_ = it.Set("name", name)
-		_ = it.Set("value", getAttr(n, name))
-		return it
-	})
-
 	b.protoMethod(p, "querySelector", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		return b.wrap(b.pageQuery(n, call.Argument(0).String()))
 	})
@@ -492,10 +606,10 @@ func (b *bridge) installElementProto() {
 		return b.nodeList(b.pageQueryAll(n, call.Argument(0).String()))
 	})
 	b.protoMethod(p, "getElementsByTagName", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(n, call.Argument(0).String()))
+		return b.htmlCollection(queryAll(n, call.Argument(0).String()))
 	})
 	b.protoMethod(p, "getElementsByClassName", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		return b.nodeList(queryAll(n, "."+call.Argument(0).String()))
+		return b.htmlCollection(queryAll(n, "."+call.Argument(0).String()))
 	})
 	b.protoMethod(p, "matches", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		return vm.ToValue(b.pageClosest(n, call.Argument(0).String(), true) != nil)
@@ -588,7 +702,7 @@ func (b *bridge) installHTMLElementProto() {
 		if n.Data != "form" {
 			return goja.Undefined()
 		}
-		return b.htmlCollection(b.formControls(n))
+		return b.formControlsCollection(n)
 	})
 	b.protoMethod(p, "submit", func(n *html.Node, _ goja.FunctionCall) goja.Value {
 		b.submitForm(n, false)
@@ -625,64 +739,14 @@ func (b *bridge) installHTMLElementProto() {
 			}
 		})
 
-	// href/src reflect their attributes (the getter resolves to an absolute URL,
-	// as real browsers do), so `a.href = "/x"` on a created element produces a
-	// link that extraction sees — not a wrapper-only property.
-	for _, attrName := range []string{"href", "src"} {
-		name := attrName
-		b.protoProp(p, name,
-			func(n *html.Node) goja.Value {
-				v := getAttr(n, name)
-				if v == "" {
-					return vm.ToValue("")
-				}
-				if u := b.resolveNav(v); u != nil {
-					return vm.ToValue(u.String())
-				}
-				return vm.ToValue(v)
-			},
-			func(n *html.Node, v goja.Value) { b.setAttrMut(n, name, v.String()) })
-	}
-
-	// The anchor-as-URL-parser trick (createElement('a'); a.href = u; read back
-	// a.pathname) is load-bearing in Angular's getBaseHref and many libraries.
-	// Mirror HTMLHyperlinkElementUtils on <a>/<area>: each component resolves the
-	// href attribute against the current location; undefined on other tags.
-	for name, comp := range map[string]func(*url.URL) string{
-		"protocol": func(u *url.URL) string { return u.Scheme + ":" },
-		"host":     func(u *url.URL) string { return u.Host },
-		"hostname": func(u *url.URL) string { return u.Hostname() },
-		"port":     func(u *url.URL) string { return u.Port() },
-		"pathname": func(u *url.URL) string {
-			if u.Path == "" && (u.Scheme == "http" || u.Scheme == "https") {
-				return "/"
-			}
-			return u.Path
-		},
-		"search": func(u *url.URL) string { return rawQuery(u.RawQuery) },
-		"hash":   func(u *url.URL) string { return rawFragment(u.Fragment) },
-		"origin": func(u *url.URL) string { return u.Scheme + "://" + u.Host },
-	} {
-		comp := comp
-		b.protoGetter(p, name, func(n *html.Node) goja.Value {
-			if n.Data != "a" && n.Data != "area" {
-				return goja.Undefined()
-			}
-			if !hasAttr(n, "href") {
-				return vm.ToValue("")
-			}
-			if u := b.resolveNav(getAttr(n, "href")); u != nil {
-				return vm.ToValue(comp(u))
-			}
-			return vm.ToValue("")
-		})
-	}
-
 	b.protoGetter(p, "dataset", func(n *html.Node) goja.Value { return b.datasetFor(n) })
 	b.protoGetter(p, "style", func(n *html.Node) goja.Value { return b.styleFor(n) })
 
 	b.protoMethod(p, "click", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		b.dispatchOnNode(n, b.newEvent("click", true, true, call.This))
+		if controlDisabled(n) && isFormControlTag(n) {
+			return goja.Undefined() // click() on a disabled control does nothing
+		}
+		b.clickActivate(n, func() bool { return b.dispatchOnNode(n, b.newEvent("click", true, true, call.This)) })
 		return goja.Undefined()
 	})
 	b.protoMethod(p, "focus", func(n *html.Node, _ goja.FunctionCall) goja.Value { b.focusNode(n); return goja.Undefined() })
@@ -723,14 +787,6 @@ func (b *bridge) installHTMLElementProto() {
 	b.protoMethod(p, "assignedElements", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		return b.slotAssigned(n, call.Argument(0), true)
 	})
-	b.protoMethod(p, "remove", func(n *html.Node, _ goja.FunctionCall) goja.Value {
-		if n.Parent != nil {
-			parent := n.Parent
-			parent.RemoveChild(n)
-			b.onMutate(mutationRecord{typ: "childList", target: parent, removed: []*html.Node{n}})
-		}
-		return goja.Undefined()
-	})
 }
 
 // --- Lenient geometry (Phase B): honest constant stubs, never computes layout ---
@@ -746,23 +802,89 @@ func (b *bridge) zeroRect() goja.Value {
 	return o
 }
 
+// Viewport is the one truthful geometry constant (Phase 21): a 1280x720 desktop
+// viewport, the same values the prelude installs as innerWidth/innerHeight.
+const (
+	viewportWidth  = 1280
+	viewportHeight = 720
+)
+
+// isViewportRoot reports whether n is the live document's <html> or <body>: the
+// two elements whose box IS the viewport in a browser. They take the constant
+// viewport rect instead of zeros so the root agrees with innerWidth/innerHeight
+// and matchMedia. This is not layout: no other element has a size. Code that
+// climbs ancestors until it finds a box with height (a scroll-spy, a sticky
+// header) terminates at the root as it does in a browser instead of walking off
+// the top of the tree into `document`.
+func (b *bridge) isViewportRoot(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || (n.Data != "html" && n.Data != "body") {
+		return false
+	}
+	if n.Data == "html" {
+		return n.Parent == b.doc
+	}
+	return n.Parent != nil && n.Parent.Data == "html" && n.Parent.Parent == b.doc
+}
+
+// viewportRect returns the DOMRect of the constant viewport.
+func (b *bridge) viewportRect() goja.Value {
+	o := b.vm.NewObject()
+	for _, k := range []string{"x", "y", "top", "left"} {
+		_ = o.Set(k, 0)
+	}
+	_ = o.Set("right", viewportWidth)
+	_ = o.Set("width", viewportWidth)
+	_ = o.Set("bottom", viewportHeight)
+	_ = o.Set("height", viewportHeight)
+	_ = o.Set("toJSON", func(goja.FunctionCall) goja.Value { return o })
+	return o
+}
+
 // installGeometry adds the read-only geometry surface to Element/HTMLElement.
-// Every value is a constant (zeros / null) — documented as fake.
+// Every value is a constant (zeros / null) — documented as fake — except on the
+// viewport root (<html>/<body>, see isViewportRoot), which reports the constant
+// 1280x720 viewport.
 func (b *bridge) installGeometry() {
 	vm := b.vm
 	el := b.protoElement
 	he := b.protoHTMLElement
 
-	b.protoMethod(el, "getBoundingClientRect", func(_ *html.Node, _ goja.FunctionCall) goja.Value { return b.zeroRect() })
-	b.protoMethod(el, "getClientRects", func(_ *html.Node, _ goja.FunctionCall) goja.Value { return vm.NewArray() })
-	b.protoMethod(el, "scrollIntoView", func(_ *html.Node, _ goja.FunctionCall) goja.Value { return goja.Undefined() })
+	b.protoMethod(el, "getBoundingClientRect", func(n *html.Node, _ goja.FunctionCall) goja.Value {
+		if b.isViewportRoot(n) {
+			return b.viewportRect()
+		}
+		return b.zeroRect()
+	})
+	b.protoMethod(el, "getClientRects", func(n *html.Node, _ goja.FunctionCall) goja.Value {
+		if b.isViewportRoot(n) {
+			return vm.NewArray(b.viewportRect())
+		}
+		return vm.NewArray()
+	})
+	// Scrolling is a no-op: there is nothing to scroll (scrollTop stays 0).
+	for _, name := range []string{"scrollIntoView", "scrollIntoViewIfNeeded", "scrollTo", "scroll", "scrollBy"} {
+		b.protoMethod(el, name, func(_ *html.Node, _ goja.FunctionCall) goja.Value { return goja.Undefined() })
+	}
 
-	for _, name := range []string{
-		"offsetWidth", "offsetHeight", "offsetTop", "offsetLeft",
-		"clientWidth", "clientHeight", "clientTop", "clientLeft",
-		"scrollWidth", "scrollHeight", "scrollTop", "scrollLeft",
+	for name, dim := range map[string]int{
+		"offsetWidth": viewportWidth, "offsetHeight": viewportHeight,
+		"clientWidth": viewportWidth, "clientHeight": viewportHeight,
+		"scrollWidth": viewportWidth, "scrollHeight": viewportHeight,
+		"offsetTop": 0, "offsetLeft": 0, "clientTop": 0, "clientLeft": 0,
 	} {
-		b.protoGetter(he, name, func(_ *html.Node) goja.Value { return vm.ToValue(0) })
+		dim := dim
+		b.protoGetter(he, name, func(n *html.Node) goja.Value {
+			if dim != 0 && b.isViewportRoot(n) {
+				return vm.ToValue(dim)
+			}
+			return vm.ToValue(0)
+		})
+	}
+	// scrollTop/scrollLeft are writable in a browser; the value is clamped to the
+	// scrollable range, which with no layout is always [0, 0]. A getter-only
+	// accessor would make `el.scrollTop = 0` throw in strict-mode code.
+	for _, name := range []string{"scrollTop", "scrollLeft"} {
+		b.protoProp(he, name, func(*html.Node) goja.Value { return vm.ToValue(0) }, func(*html.Node, goja.Value) {})
 	}
 	b.protoGetter(he, "offsetParent", func(_ *html.Node) goja.Value { return goja.Null() })
 }

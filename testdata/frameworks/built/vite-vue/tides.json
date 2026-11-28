@@ -1,0 +1,7 @@
+{
+  "station": "Fetched Station Wrenmouth",
+  "tides": [
+    { "at": "Dawn springtide", "height": "4.2 metres" },
+    { "at": "Dusk neaptide", "height": "1.7 metres" }
+  ]
+}

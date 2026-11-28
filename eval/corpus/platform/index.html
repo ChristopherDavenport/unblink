@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Platform Behaviours Fixture</title>
+<script>
+  // Script ordering: each script records when it ran.
+  window.__order = ['inline-head'];
+</script>
+<script defer src="/platform/deferred.js"></script>
+<script type="module">
+  window.__order.push('module');
+</script>
+<script type="module" src="data:text/javascript,window.__dataModule='data module ran'"></script>
+</head>
+<body>
+<main>
+<article>
+<h1>Platform Behaviours Workbench</h1>
+<p>A hand-written page with no framework: each line below is written by a small script exercising one browser behaviour that real sites depend on.</p>
+
+<h2>Script results</h2>
+<ul id="results"></ul>
+
+<h2>Template rows</h2>
+<template id="row"><li class="cloned">Template row <span></span></li></template>
+<ul id="rows"></ul>
+
+<h2>Reflection</h2>
+<p id="hide-prop">Removed by the hidden property</p>
+<p id="hide-style">Removed by a style display write</p>
+<p id="keep">Kept paragraph beside the removed ones</p>
+<div id="it"><span>inner shown</span><span style="display:none">inner concealed</span></div>
+<p id="it-set"></p>
+
+<h2>Handlers</h2>
+<button id="attr-btn" onclick="document.getElementById('attr-out').textContent = 'attribute handler ran on ' + this.id + ' for ' + event.type">Attribute handler</button>
+<p id="attr-out">attribute handler idle</p>
+<button id="prop-btn">Property handler</button>
+<p id="prop-out">property handler idle</p>
+
+<h2>Order form</h2>
+<form id="order" name="order" onsubmit="return false">
+  <label>Size
+    <select name="size" id="size">
+      <option value="small" selected>Small sack</option>
+      <option value="large">Large sack</option>
+    </select>
+  </label>
+  <label><input type="radio" name="roast" id="roast-light" value="light" checked> Light</label>
+  <label><input type="radio" name="roast" id="roast-dark" value="dark"> Dark</label>
+  <label><input type="checkbox" name="rush" id="rush"> Rush delivery</label>
+  <button type="button" id="summarize" onclick="summarizeOrder()">Summarize order</button>
+</form>
+<p id="order-out">order summary idle</p>
+
+<h2>Static structures</h2>
+<details><summary>Collapsed granary ledger</summary><p>Ledger line inside the collapsed details element.</p></details>
+<table>
+  <thead><tr><th>Grain</th><th>Bushels</th></tr></thead>
+  <tbody><tr><td>Barley</td><td>412</td></tr><tr><td>Spelt</td><td>97</td></tr></tbody>
+</table>
+<svg width="200" height="40" role="img"><text x="0" y="20">Northfield</text><text x="100" y="20">Southfield</text></svg>
+</article>
+</main>
+<script>
+  window.__order.push('inline-tail');
+
+  function report(key, fn) {
+    var li = document.createElement('li');
+    var value;
+    try { value = fn(); } catch (e) { value = 'threw ' + (e && e.message ? e.message : e); }
+    li.textContent = key + ': ' + value;
+    document.getElementById('results').appendChild(li);
+  }
+
+  function summarizeOrder() {
+    var form = document.getElementById('order');
+    document.getElementById('order-out').textContent =
+      'Order summary: ' + form.size.value + ' sack, ' + form.roast.value + ' roast, ' +
+      form.elements.length + ' controls, option ' + form.size.selectedIndex +
+      ', rush ' + document.getElementById('rush').checked;
+  }
+
+  document.getElementById('prop-btn').onclick = function (event) {
+    document.getElementById('prop-out').textContent =
+      'property handler ran on ' + this.id + ' for ' + event.type;
+  };
+
+  // Everything that needs the whole document and every deferred script.
+  document.addEventListener('DOMContentLoaded', function () {
+    report('script-order', function () { return window.__order.join(' > '); });
+    report('data-module', function () { return window.__dataModule; });
+
+    // <template>: contents are inert until cloned.
+    var tpl = document.getElementById('row');
+    ['alpha', 'beta'].forEach(function (name) {
+      var clone = tpl.content.cloneNode(true);
+      clone.querySelector('span').textContent = name;
+      document.getElementById('rows').appendChild(clone);
+    });
+    report('template-inert', function () {
+      return document.querySelectorAll('#rows li').length + ' rows live, ' +
+        tpl.children.length + ' template children, ' +
+        tpl.content.querySelectorAll('li').length + ' in content';
+    });
+
+    // Property writes that must reach extraction.
+    document.getElementById('hide-prop').hidden = true;
+    document.getElementById('hide-style').style.display = 'none';
+    report('reflect-hidden', function () {
+      return document.getElementById('hide-prop').hasAttribute('hidden') + ' / ' +
+        document.getElementById('hide-style').getAttribute('style');
+    });
+    report('reflect-props', function () {
+      var a = document.createElement('a');
+      a.title = 'reflected title'; a.href = '/somewhere'; a.rel = 'noopener';
+      var input = document.createElement('input');
+      input.name = 'reflected'; input.type = 'email'; input.required = true; input.placeholder = 'you@example';
+      return a.getAttribute('title') + ' | ' + a.getAttribute('rel') + ' | ' +
+        input.getAttribute('name') + ' | ' + input.getAttribute('type') + ' | ' +
+        input.hasAttribute('required') + ' | ' + input.getAttribute('placeholder');
+    });
+
+    // innerText: reading skips concealed text, writing turns newlines into <br>.
+    report('innertext-get', function () { return JSON.stringify(document.getElementById('it').innerText); });
+    report('innertext-set', function () {
+      var el = document.getElementById('it-set');
+      el.innerText = 'first written line\nsecond written line';
+      return el.querySelectorAll('br').length + ' br, ' + el.childNodes.length + ' nodes';
+    });
+
+    // Interfaces and geometry.
+    report('interfaces', function () {
+      return [
+        document.createElement('script') instanceof HTMLScriptElement,
+        document.body instanceof HTMLBodyElement,
+        document.getElementById('size') instanceof HTMLSelectElement,
+        document.createElement('div') instanceof HTMLScriptElement,
+        Object.prototype.toString.call(document.createElement('table')),
+      ].join(' ');
+    });
+    report('viewport-root', function () {
+      var r = document.documentElement.getBoundingClientRect();
+      return r.width + 'x' + r.height + ' client ' +
+        document.documentElement.clientWidth + 'x' + document.documentElement.clientHeight +
+        ' inner ' + innerWidth + 'x' + innerHeight;
+    });
+
+    // XPath.
+    report('xpath', function () {
+      var count = document.evaluate('count(//li[@class="cloned"])', document, null, XPathResult.NUMBER_TYPE, null).numberValue;
+      var first = document.evaluate('//table//td[1]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+      var snap = document.evaluate('//*[starts-with(@id, "roast-")]', document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      return count + ' cloned, first cell ' + first.textContent + ', ' + snap.snapshotLength + ' roast inputs';
+    });
+
+    // Select and radio state as page code sees it.
+    report('document-forms', function () {
+      var form = document.getElementById('order');
+      return document.forms.length + ' form, by name ' + (document.forms.order === form) +
+        ', by index ' + (document.forms[0] === form) + ', on document ' + (document.order === form);
+    });
+    report('form-state', function () {
+      var form = document.getElementById('order');
+      return form.size.value + ' ' + form.size.selectedIndex + ' ' + form.size.options.length + ' ' +
+        form.roast.value + ' ' + form.elements.roast.length;
+    });
+
+    // Intl, en-US, fixed instants in UTC so the output does not depend on the host clock or zone.
+    var when = new Date(Date.UTC(2024, 2, 5, 13, 37, 9));
+    report('intl-date-long', function () { return new Intl.DateTimeFormat('en-US', { dateStyle: 'long', timeZone: 'UTC' }).format(when); });
+    report('intl-date-parts', function () { return new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(when); });
+    report('intl-time', function () { return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }).format(when); });
+    report('locale-time', function () { return when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }); });
+    report('locale-date', function () { return when.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }); });
+    report('intl-time-zone', function () { return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York', timeZoneName: 'short' }).format(when); });
+    report('intl-number', function () { return new Intl.NumberFormat('en-US').format(1234567.891); });
+    report('intl-currency', function () { return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(1234.5); });
+    report('intl-compact', function () { return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(61110); });
+    report('intl-percent', function () { return new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 1 }).format(0.256); });
+    report('intl-unit', function () { return new Intl.NumberFormat('en-US', { style: 'unit', unit: 'kilometer-per-hour' }).format(88); });
+    report('number-locale', function () { return (9876543.21).toLocaleString('en-US'); });
+    report('intl-relative', function () {
+      var rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+      return rtf.format(-1, 'day') + ' / ' + rtf.format(3, 'hour') + ' / ' + rtf.format(-2, 'week');
+    });
+    report('intl-plural', function () {
+      var pr = new Intl.PluralRules('en-US', { type: 'ordinal' });
+      return [1, 2, 3, 4, 11, 22].map(function (n) { return pr.select(n); }).join(' ');
+    });
+    report('intl-list', function () { return new Intl.ListFormat('en', { style: 'long', type: 'conjunction' }).format(['oats', 'rye', 'millet']); });
+    report('intl-collator', function () { return ['b', 'a', 'C', 'ä'].sort(new Intl.Collator('en').compare).join(''); });
+  });
+</script>
+</body>
+</html>

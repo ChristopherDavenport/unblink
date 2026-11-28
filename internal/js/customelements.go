@@ -59,11 +59,20 @@ func (b *bridge) defineHTMLElementCtor() {
 		}
 		n := &html.Node{Type: html.ElementNode, Data: tag, DataAtom: atom.Lookup([]byte(tag))}
 		o, _ := b.wrap(n).(*goja.Object)
+		// `new MyEl()` IS the construction: give the element the class's prototype
+		// now (so `el instanceof MyEl` holds before insertion) and mark it upgraded,
+		// so inserting it later connects it without running the constructor again.
+		if o != nil && tag != "div" && call.NewTarget != nil {
+			if proto := call.NewTarget.Get("prototype"); proto != nil {
+				if po := proto.ToObject(vm); po != nil {
+					_ = o.SetPrototype(po)
+					b.upgraded[n] = true
+				}
+			}
+		}
 		return o
 	}).(*goja.Object)
-	_ = ctor.Set("prototype", b.protoHTMLElement)
-	_ = b.protoHTMLElement.Set("constructor", ctor)
-	_ = vm.Set("HTMLElement", ctor)
+	b.finishCtor("HTMLElement", ctor, b.protoHTMLElement)
 }
 
 func (b *bridge) popUpgrading() *html.Node {
@@ -345,7 +354,7 @@ func (b *bridge) attachShadow(host *html.Node, opts goja.Value) *goja.Object {
 	}
 	vm := b.vm
 	srn := &html.Node{Type: html.DocumentNode}
-	sr := vm.CreateObject(b.protoElement)
+	sr := vm.CreateObject(b.protoShadowRoot)
 	b.cache[srn] = sr
 	b.objNode[sr] = srn
 	b.shadowHostOf[srn] = host

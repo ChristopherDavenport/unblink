@@ -18,6 +18,37 @@ const preludeAPIJS = `
 (function () {
   var noop = function () {};
 
+  // lazyGlobals defers a whole section until page code first touches one of
+  // the globals it defines. Most pages never use IndexedDB, crypto.subtle or
+  // Intl, and building them is thousands of function objects per runtime. Each
+  // name becomes a configurable accessor; the first read (or a typeof, an "in"
+  // never triggers it) runs build() once, which assigns the real values as it
+  // always did — the assignment lands on the accessor's setter, which replaces
+  // it with an ordinary data property. A page assigning its own value first
+  // wins the same way. build() must not need page state at definition time
+  // beyond what any later call would see.
+  var lazyGlobals = function (target, names, build) {
+    var state = 0; // 0 unbuilt, 1 building, 2 built
+    var settle = function (n, v) { Object.defineProperty(target, n, { value: v, writable: true, configurable: true, enumerable: true }); };
+    var pending = {};
+    var run = function () {
+      if (state !== 0) return;
+      state = 1;
+      try { build(); } finally {
+        state = 2;
+        for (var n in pending) { if (pending[n]) settle(n, undefined); }
+      }
+    };
+    names.forEach(function (n) {
+      pending[n] = true;
+      Object.defineProperty(target, n, {
+        configurable: true, enumerable: true,
+        get: function () { run(); return pending[n] ? undefined : target[n]; },
+        set: function (v) { pending[n] = false; settle(n, v); }
+      });
+    });
+  };
+
   // ---- encoding primitives (used by Blob/FormData/fetch below) ----
 
   function utf8Encode(s) {
@@ -152,6 +183,9 @@ const preludeAPIJS = `
   if (typeof window.performance === 'undefined' || typeof window.performance.now !== 'function') {
     var perfT0 = Date.now();
     var perfEntries = [];
+    // The time origin is the page's navigation start, not the instant this
+    // (possibly pooled) runtime was built.
+    __unblinkOnBind(function () { perfT0 = Date.now(); perf.timeOrigin = perfT0; });
     var perf = {
       timeOrigin: perfT0,
       now: function () { return Date.now() - perfT0; },
@@ -184,6 +218,57 @@ const preludeAPIJS = `
     };
     window.performance = perf;
   }
+  // ---- Navigation Timing (Level 1 timing/navigation + the Level 2 entry) ----
+  //
+  // Values are this render's own clock, not a fabricated network profile. The
+  // document was fetched before the engine started, so every phase up to
+  // responseEnd collapses onto the time origin (start = end: nothing is claimed
+  // about durations that were not measured here). The DOM milestones are stamped
+  // as they happen by the bridge (markNavTiming → __unblinkNavMark) and read 0
+  // until then, exactly as a browser reports a milestone not yet reached.
+  (function () {
+    var perf = window.performance;
+    if (!perf || perf.timing) return;
+    var t0 = typeof perf.timeOrigin === 'number' ? perf.timeOrigin : Date.now();
+    var timing = { navigationStart: t0, unloadEventStart: 0, unloadEventEnd: 0, redirectStart: 0, redirectEnd: 0,
+      fetchStart: t0, domainLookupStart: t0, domainLookupEnd: t0, connectStart: t0, connectEnd: t0,
+      secureConnectionStart: 0, requestStart: t0, responseStart: t0, responseEnd: t0, domLoading: t0,
+      domInteractive: 0, domContentLoadedEventStart: 0, domContentLoadedEventEnd: 0, domComplete: 0,
+      loadEventStart: 0, loadEventEnd: 0 };
+    timing.toJSON = function () { var o = {}; for (var k in timing) if (typeof timing[k] === 'number') o[k] = timing[k]; return o; };
+    perf.timing = timing;
+    perf.navigation = { type: 0, redirectCount: 0, TYPE_NAVIGATE: 0, TYPE_RELOAD: 1, TYPE_BACK_FORWARD: 2, TYPE_RESERVED: 255,
+      toJSON: function () { return { type: 0, redirectCount: 0 }; } };
+    __unblinkOnBind(function () {
+      var nt0 = typeof perf.timeOrigin === 'number' ? perf.timeOrigin : Date.now();
+      for (var k in timing) if (timing[k] === t0) timing[k] = nt0;
+      t0 = nt0;
+      nav.name = (window.location && window.location.href) || '';
+    });
+    var nav = { name: (window.location && window.location.href) || '', entryType: 'navigation', startTime: 0, duration: 0,
+      initiatorType: 'navigation', type: 'navigate', redirectCount: 0, nextHopProtocol: '',
+      unloadEventStart: 0, unloadEventEnd: 0, redirectStart: 0, redirectEnd: 0, workerStart: 0,
+      fetchStart: 0, domainLookupStart: 0, domainLookupEnd: 0, connectStart: 0, connectEnd: 0, secureConnectionStart: 0,
+      requestStart: 0, responseStart: 0, responseEnd: 0, transferSize: 0, encodedBodySize: 0, decodedBodySize: 0,
+      domInteractive: 0, domContentLoadedEventStart: 0, domContentLoadedEventEnd: 0, domComplete: 0,
+      loadEventStart: 0, loadEventEnd: 0, serverTiming: [] };
+    nav.toJSON = function () { var o = {}; for (var k in nav) if (typeof nav[k] !== 'function') o[k] = nav[k]; return o; };
+    var getByType = perf.getEntriesByType, getAll = perf.getEntries, getByName = perf.getEntriesByName;
+    perf.getEntriesByType = function (t) { return t === 'navigation' ? [nav] : getByType.call(perf, t); };
+    perf.getEntries = function () { return [nav].concat(getAll.call(perf)); };
+    perf.getEntriesByName = function (n, t) {
+      var rest = getByName.call(perf, n, t);
+      return (n === nav.name && (t === undefined || t === 'navigation')) ? [nav].concat(rest) : rest;
+    };
+    Object.defineProperty(window, '__unblinkNavMark', { enumerable: false, configurable: true, writable: true, value: function (name) {
+      if (!(name in timing) || timing[name] !== 0) return;
+      var now = Date.now();
+      timing[name] = now;
+      nav[name] = now - t0;
+      if (name === 'loadEventEnd') nav.duration = now - t0;
+    } });
+  })();
+
   if (typeof window.PerformanceObserver === 'undefined') {
     window.PerformanceObserver = function () {};
     window.PerformanceObserver.prototype.observe = noop;
@@ -376,6 +461,12 @@ const preludeAPIJS = `
   window.Blob.prototype.text = function () { return Promise.resolve(utf8Decode(this.__bytes)); };
   window.Blob.prototype.arrayBuffer = function () { return Promise.resolve(bytesToArrayBuffer(this.__bytes)); };
   window.Blob.prototype.bytes = function () { return Promise.resolve(this.__bytes.slice()); };
+  // stream(): the blob's bytes as a one-chunk ReadableStream (resolved lazily —
+  // the Streams section below installs the constructor).
+  window.Blob.prototype.stream = function () {
+    var bytes = this.__bytes;
+    return new window.ReadableStream({ pull: function (c) { if (bytes.length > 0) c.enqueue(bytes.slice()); c.close(); } }, { highWaterMark: 0 });
+  };
   window.Blob.prototype.slice = function (start, end, type) {
     var len = this.__bytes.length;
     start = start === undefined ? 0 : (start < 0 ? Math.max(len + start, 0) : Math.min(start, len));
@@ -519,120 +610,356 @@ const preludeAPIJS = `
     window.FileReader = FR;
   }
 
-  // ---- Streams (buffer-backed, eager; no lazy backpressure) ----
+  // ---- Streams (in-memory queue; pull-driven, no byte streams) ----
   //
-  // read() resolves from an in-memory queue via a microtask (Promise), which the
-  // settle poll drains before it can observe idle — no timer/keepalive needed.
-  // A future *lazy* (network-backed) pull would have to route through the wrapped
-  // timer instead, or it would break settle correctness.
+  // A ReadableStream is a queue plus a list of pending reads. read() on an empty
+  // stream that is still open returns a PENDING promise, settled by the next
+  // enqueue()/close()/error() — never a premature {done: true}: a reader that sees
+  // done believes the producer hung up (React's Flight client throws "Connection
+  // closed"). Settle correctness (ADR 0004): a pending read is only a promise, not
+  // an async primitive — it holds nothing open. Whatever will eventually enqueue
+  // (a timer, a fetch callback, a later script) is already tracked by its own
+  // bracket, and a read nobody ever answers simply stays pending when the render
+  // settles. pull() and its continuation run on microtasks, which the settle poll
+  // drains before it can observe idle.
   if (typeof window.ReadableStream === 'undefined') {
-    var RS = function (source) {
+    var rsHWM = function (strategy) {
+      var h = strategy && strategy.highWaterMark;
+      return (typeof h === 'number' && h >= 0) ? h : 1;
+    };
+    var RS = function (source, strategy) {
       var self = this;
-      this.locked = false;
-      this.__q = [];
-      this.__closed = false;
-      this.__err = null;
-      var controller = {
-        enqueue: function (chunk) { if (!self.__closed) self.__q.push(chunk); },
-        close: function () { self.__closed = true; },
-        error: function (e) { self.__err = e; self.__closed = true; },
-        get desiredSize() { return 1; }
-      };
       source = source || {};
+      if (source.type !== undefined && source.type !== 'bytes') throw new RangeError('Invalid type is specified');
+      this.locked = false;
+      this.__q = [];           // buffered chunks
+      this.__waiters = [];     // pending read() requests: [resolve, reject]
+      this.__state = 'readable'; // 'readable' | 'closed' | 'errored'
+      this.__err = undefined;
+      this.__closeRequested = false;
+      this.__started = false;
+      this.__pulling = false;
+      this.__pullAgain = false;
+      this.__hwm = rsHWM(strategy);
       this.__source = source;
-      this.__controller = controller;
-      try { if (typeof source.start === 'function') source.start(controller); } catch (e) { this.__err = e; this.__closed = true; }
-    };
-    RS.prototype.getReader = function () {
-      var self = this;
-      if (self.locked) throw new TypeError('ReadableStream is locked');
-      self.locked = true;
-      var pulled = false;
-      function maybePull() {
-        if (!pulled && self.__q.length === 0 && !self.__closed && typeof self.__source.pull === 'function') {
-          pulled = true;
-          try { self.__source.pull(self.__controller); } catch (e) { self.__err = e; self.__closed = true; }
-        }
-      }
-      return {
-        read: function () {
-          maybePull();
-          if (self.__err) return Promise.reject(self.__err);
-          if (self.__q.length > 0) return Promise.resolve({ value: self.__q.shift(), done: false });
-          return Promise.resolve({ value: undefined, done: true });
+      this.__closedResolve = null; this.__closedReject = null;
+      this.__closedPromise = new Promise(function (res, rej) { self.__closedResolve = res; self.__closedReject = rej; });
+      this.__closedPromise.then(noop, noop); // never an unhandled rejection by itself
+      var controller = {
+        enqueue: function (chunk) {
+          if (self.__state !== 'readable' || self.__closeRequested) throw new TypeError('Cannot enqueue a chunk into a ' + (self.__state === 'readable' ? 'stream that is closing' : self.__state + ' stream'));
+          if (self.__waiters.length > 0) self.__waiters.shift()[0]({ value: chunk, done: false });
+          else self.__q.push(chunk);
+          self.__maybePull();
         },
-        cancel: function () { self.__closed = true; self.__q = []; return Promise.resolve(); },
-        releaseLock: function () { self.locked = false; },
-        closed: Promise.resolve()
+        close: function () {
+          if (self.__state !== 'readable' || self.__closeRequested) throw new TypeError('Cannot close a stream that is already closed, closing or errored');
+          self.__closeRequested = true;
+          if (self.__q.length === 0) self.__finish();
+        },
+        error: function (e) { self.__fail(e); },
+        get desiredSize() {
+          if (self.__state === 'errored') return null;
+          if (self.__state === 'closed') return 0;
+          return self.__hwm - self.__q.length;
+        }
       };
+      this.__controller = controller;
+      var started;
+      try { started = typeof source.start === 'function' ? source.start(controller) : undefined; }
+      catch (e) { this.__fail(e); throw e; }
+      Promise.resolve(started).then(function () { self.__started = true; self.__maybePull(); }, function (e) { self.__fail(e); });
     };
-    RS.prototype.cancel = function () { this.__closed = true; this.__q = []; return Promise.resolve(); };
+    RS.prototype.__finish = function () {
+      if (this.__state !== 'readable') return;
+      this.__state = 'closed';
+      var w = this.__waiters; this.__waiters = [];
+      for (var i = 0; i < w.length; i++) w[i][0]({ value: undefined, done: true });
+      this.__closedResolve(undefined);
+    };
+    RS.prototype.__fail = function (e) {
+      if (this.__state !== 'readable') return;
+      this.__state = 'errored'; this.__err = e; this.__q = [];
+      var w = this.__waiters; this.__waiters = [];
+      for (var i = 0; i < w.length; i++) w[i][1](e);
+      this.__closedReject(e);
+    };
+    RS.prototype.__maybePull = function () {
+      var self = this;
+      if (self.__state !== 'readable' || self.__closeRequested || !self.__started) return;
+      if (typeof self.__source.pull !== 'function') return;
+      if (self.__waiters.length === 0 && self.__q.length >= self.__hwm) return;
+      if (self.__pulling) { self.__pullAgain = true; return; }
+      self.__pulling = true;
+      var p;
+      try { p = self.__source.pull(self.__controller); } catch (e) { self.__fail(e); return; }
+      Promise.resolve(p).then(function () {
+        self.__pulling = false;
+        if (self.__pullAgain) { self.__pullAgain = false; self.__maybePull(); }
+      }, function (e) { self.__fail(e); });
+    };
+    RS.prototype.__read = function () {
+      var self = this;
+      if (self.__q.length > 0) {
+        var chunk = self.__q.shift();
+        if (self.__closeRequested && self.__q.length === 0) self.__finish();
+        else self.__maybePull();
+        return Promise.resolve({ value: chunk, done: false });
+      }
+      if (self.__state === 'closed') return Promise.resolve({ value: undefined, done: true });
+      if (self.__state === 'errored') return Promise.reject(self.__err);
+      var p = new Promise(function (res, rej) { self.__waiters.push([res, rej]); });
+      self.__maybePull();
+      return p;
+    };
+    RS.prototype.__cancel = function (reason) {
+      var self = this;
+      if (self.__state === 'closed') return Promise.resolve(undefined);
+      if (self.__state === 'errored') return Promise.reject(self.__err);
+      self.__q = [];
+      self.__finish();
+      var r;
+      try { r = typeof self.__source.cancel === 'function' ? self.__source.cancel(reason) : undefined; }
+      catch (e) { return Promise.reject(e); }
+      return Promise.resolve(r).then(function () { return undefined; });
+    };
+    var RSReader = function (stream) {
+      if (!(stream instanceof RS)) throw new TypeError('ReadableStreamDefaultReader can only be constructed with a ReadableStream');
+      if (stream.locked) throw new TypeError('ReadableStream is locked');
+      stream.locked = true;
+      this.__s = stream;
+      this.closed = stream.__closedPromise;
+    };
+    RSReader.prototype.read = function () {
+      if (!this.__s) return Promise.reject(new TypeError('This reader has been released'));
+      return this.__s.__read();
+    };
+    RSReader.prototype.cancel = function (reason) {
+      if (!this.__s) return Promise.reject(new TypeError('This reader has been released'));
+      return this.__s.__cancel(reason);
+    };
+    RSReader.prototype.releaseLock = function () {
+      var st = this.__s;
+      if (!st) return;
+      st.locked = false;
+      this.__s = null;
+      // Reads still pending on a released reader reject, as the standard requires.
+      var w = st.__waiters; st.__waiters = [];
+      var err = new TypeError('Reader was released');
+      for (var i = 0; i < w.length; i++) w[i][1](err);
+      var rel = Promise.reject(err); rel.then(noop, noop);
+      this.closed = rel;
+    };
+    RS.prototype.getReader = function (opts) {
+      if (opts && opts.mode !== undefined) throw new TypeError('BYOB readers are not supported');
+      return new RSReader(this);
+    };
+    RS.prototype.cancel = function (reason) {
+      if (this.locked) return Promise.reject(new TypeError('Cannot cancel a locked stream'));
+      return this.__cancel(reason);
+    };
     RS.prototype.tee = function () {
-      var mk = function (arr) { return new window.ReadableStream({ start: function (c) { for (var i = 0; i < arr.length; i++) c.enqueue(arr[i]); c.close(); } }); };
-      return [mk(this.__q.slice()), mk(this.__q.slice())];
-    };
-    RS.prototype.pipeTo = function (dest) {
       var reader = this.getReader();
-      var writer = dest && dest.getWriter ? dest.getWriter() : null;
-      function pump() {
-        return reader.read().then(function (r) {
-          if (r.done) { if (writer) writer.close(); return; }
-          if (writer) writer.write(r.value);
-          return pump();
+      var reading = false, c1, c2, done1 = false, done2 = false;
+      function pull() {
+        if (reading) return;
+        reading = true;
+        reader.read().then(function (r) {
+          reading = false;
+          if (r.done) {
+            if (!done1) { try { c1.close(); } catch (e) {} }
+            if (!done2) { try { c2.close(); } catch (e) {} }
+            return;
+          }
+          if (!done1) { try { c1.enqueue(r.value); } catch (e) {} }
+          if (!done2) { try { c2.enqueue(r.value); } catch (e) {} }
+        }, function (e) {
+          reading = false;
+          try { c1.error(e); } catch (x) {}
+          try { c2.error(e); } catch (x) {}
         });
       }
-      return pump();
+      var b1 = new RS({ start: function (c) { c1 = c; }, pull: pull, cancel: function (r) { done1 = true; if (done2) return reader.cancel(r); } });
+      var b2 = new RS({ start: function (c) { c2 = c; }, pull: pull, cancel: function (r) { done2 = true; if (done1) return reader.cancel(r); } });
+      return [b1, b2];
     };
-    RS.prototype.pipeThrough = function (pair) { this.pipeTo(pair.writable); return pair.readable; };
+    RS.prototype.pipeTo = function (dest, opts) {
+      opts = opts || {};
+      if (this.locked) return Promise.reject(new TypeError('Cannot pipe a locked stream'));
+      if (!dest || typeof dest.getWriter !== 'function') return Promise.reject(new TypeError('pipeTo destination must be a WritableStream'));
+      var reader = this.getReader();
+      var writer;
+      try { writer = dest.getWriter(); } catch (e) { reader.releaseLock(); return Promise.reject(e); }
+      function finish() { try { reader.releaseLock(); } catch (e) {} try { writer.releaseLock(); } catch (e) {} }
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) return opts.preventClose ? undefined : writer.close();
+          return Promise.resolve(writer.write(r.value)).then(pump);
+        });
+      }
+      return pump().then(function () { finish(); }, function (e) {
+        var after = function () { finish(); throw e; };
+        // An error on either side tears down the other (unless prevented).
+        var a = opts.preventAbort ? Promise.resolve() : Promise.resolve().then(function () { return writer.abort(e); });
+        var c = opts.preventCancel ? Promise.resolve() : Promise.resolve().then(function () { return reader.cancel(e); });
+        return Promise.all([a.then(noop, noop), c.then(noop, noop)]).then(after);
+      });
+    };
+    RS.prototype.pipeThrough = function (pair, opts) {
+      if (!pair || !pair.readable || !pair.writable) throw new TypeError('pipeThrough needs a {readable, writable} pair');
+      this.pipeTo(pair.writable, opts).then(noop, noop);
+      return pair.readable;
+    };
+    RS.prototype.values = function (opts) {
+      var reader = this.getReader();
+      var preventCancel = !!(opts && opts.preventCancel);
+      var it = {
+        next: function () {
+          return reader.read().then(function (r) { if (r.done) reader.releaseLock(); return r; });
+        },
+        'return': function (v) {
+          var p = preventCancel ? Promise.resolve() : reader.cancel(v);
+          return Promise.resolve(p).then(function () { reader.releaseLock(); return { value: v, done: true }; });
+        }
+      };
+      if (typeof Symbol === 'function' && Symbol.asyncIterator) it[Symbol.asyncIterator] = function () { return it; };
+      return it;
+    };
     if (typeof Symbol === 'function' && Symbol.asyncIterator) {
-      RS.prototype[Symbol.asyncIterator] = function () { var reader = this.getReader(); return { next: function () { return reader.read(); }, 'return': function () { reader.releaseLock(); return Promise.resolve({ done: true }); } }; };
+      RS.prototype[Symbol.asyncIterator] = RS.prototype.values;
     }
+    // ReadableStream.from(iterable | async iterable): one chunk per pull.
+    RS.from = function (iterable) {
+      var it;
+      if (iterable && typeof Symbol === 'function' && Symbol.asyncIterator && typeof iterable[Symbol.asyncIterator] === 'function') it = iterable[Symbol.asyncIterator]();
+      else if (iterable && typeof Symbol === 'function' && typeof iterable[Symbol.iterator] === 'function') it = iterable[Symbol.iterator]();
+      else throw new TypeError('ReadableStream.from needs an iterable');
+      return new RS({
+        pull: function (c) {
+          return Promise.resolve(it.next()).then(function (r) { if (r.done) c.close(); else c.enqueue(r.value); });
+        },
+        cancel: function (reason) { if (typeof it['return'] === 'function') return Promise.resolve(it['return'](reason)).then(noop); }
+      }, { highWaterMark: 0 });
+    };
     window.ReadableStream = RS;
+    window.ReadableStreamDefaultReader = RSReader;
   }
   if (typeof window.WritableStream === 'undefined') {
     var WSt = function (sink) {
+      var self = this;
       this.locked = false;
       sink = sink || {};
-      var controller = { error: noop };
-      try { if (typeof sink.start === 'function') sink.start(controller); } catch (e) {}
-      this.__sink = sink; this.__controller = controller;
+      this.__sink = sink;
+      this.__state = 'writable'; // 'writable' | 'closed' | 'errored'
+      this.__err = undefined;
+      this.__closedResolve = null; this.__closedReject = null;
+      this.__closedPromise = new Promise(function (res, rej) { self.__closedResolve = res; self.__closedReject = rej; });
+      this.__closedPromise.then(noop, noop);
+      var controller = { error: function (e) { self.__fail(e); } };
+      this.__controller = controller;
+      var started;
+      try { started = typeof sink.start === 'function' ? sink.start(controller) : undefined; }
+      catch (e) { this.__fail(e); throw e; }
+      // Every sink call is chained after the previous one, so writes are applied in
+      // order even when the sink is asynchronous.
+      this.__chain = Promise.resolve(started);
+      this.__chain.then(noop, function (e) { self.__fail(e); });
+    };
+    WSt.prototype.__fail = function (e) {
+      if (this.__state !== 'writable') return;
+      this.__state = 'errored'; this.__err = e;
+      this.__closedReject(e);
+    };
+    WSt.prototype.__write = function (chunk) {
+      var self = this;
+      if (self.__state === 'errored') return Promise.reject(self.__err);
+      if (self.__state === 'closed' || self.__closing) return Promise.reject(new TypeError('Cannot write to a closed stream'));
+      var p = self.__chain.then(function () {
+        if (self.__state === 'errored') throw self.__err;
+        if (typeof self.__sink.write === 'function') return self.__sink.write(chunk, self.__controller);
+      });
+      self.__chain = p.then(noop, function (e) { self.__fail(e); });
+      return p.then(function () { return undefined; });
+    };
+    WSt.prototype.__close = function () {
+      var self = this;
+      if (self.__state === 'errored') return Promise.reject(self.__err);
+      if (self.__state === 'closed' || self.__closing) return Promise.reject(new TypeError('Cannot close an already-closing stream'));
+      self.__closing = true;
+      var p = self.__chain.then(function () {
+        if (self.__state === 'errored') throw self.__err;
+        if (typeof self.__sink.close === 'function') return self.__sink.close(self.__controller);
+      }).then(function () { if (self.__state === 'writable') { self.__state = 'closed'; self.__closedResolve(undefined); } });
+      self.__chain = p.then(noop, function (e) { self.__fail(e); });
+      return p;
+    };
+    WSt.prototype.__abort = function (reason) {
+      var self = this;
+      if (self.__state !== 'writable') return Promise.resolve(undefined);
+      self.__fail(reason);
+      var r;
+      try { r = typeof self.__sink.abort === 'function' ? self.__sink.abort(reason) : undefined; }
+      catch (e) { return Promise.reject(e); }
+      return Promise.resolve(r).then(function () { return undefined; });
     };
     WSt.prototype.getWriter = function () {
       var self = this;
       if (self.locked) throw new TypeError('WritableStream is locked');
       self.locked = true;
+      var released = false;
+      function gone() { return Promise.reject(new TypeError('This writer has been released')); }
       return {
-        write: function (chunk) { try { if (typeof self.__sink.write === 'function') return Promise.resolve(self.__sink.write(chunk, self.__controller)); } catch (e) { return Promise.reject(e); } return Promise.resolve(); },
-        close: function () { try { if (typeof self.__sink.close === 'function') self.__sink.close(); } catch (e) {} return Promise.resolve(); },
-        abort: function () { try { if (typeof self.__sink.abort === 'function') self.__sink.abort(); } catch (e) {} return Promise.resolve(); },
-        releaseLock: function () { self.locked = false; },
-        closed: Promise.resolve(), ready: Promise.resolve(), desiredSize: 1
+        write: function (chunk) { return released ? gone() : self.__write(chunk); },
+        close: function () { return released ? gone() : self.__close(); },
+        abort: function (reason) { return released ? gone() : self.__abort(reason); },
+        releaseLock: function () { released = true; self.locked = false; },
+        closed: self.__closedPromise, ready: Promise.resolve(undefined),
+        get desiredSize() { return self.__state === 'errored' ? null : (self.__state === 'closed' ? 0 : 1); }
       };
     };
-    WSt.prototype.abort = function () { return Promise.resolve(); };
-    WSt.prototype.close = function () { return Promise.resolve(); };
+    WSt.prototype.abort = function (reason) {
+      if (this.locked) return Promise.reject(new TypeError('Cannot abort a locked stream'));
+      return this.__abort(reason);
+    };
+    WSt.prototype.close = function () {
+      if (this.locked) return Promise.reject(new TypeError('Cannot close a locked stream'));
+      return this.__close();
+    };
     window.WritableStream = WSt;
   }
   if (typeof window.TransformStream === 'undefined') {
     var TS = function (transformer) {
       transformer = transformer || {};
-      var readable = new window.ReadableStream({ start: noop });
+      var rc; // the readable side's controller: every output goes through it
+      var readable = new window.ReadableStream({ start: function (c) { rc = c; } });
+      var writable;
       var controller = {
-        enqueue: function (c) { readable.__q.push(c); },
-        terminate: function () { readable.__closed = true; },
-        error: function (e) { readable.__err = e; readable.__closed = true; }
+        enqueue: function (c) { rc.enqueue(c); },
+        terminate: function () { try { rc.close(); } catch (e) {} if (writable) writable.__fail(new TypeError('TransformStream terminated')); },
+        error: function (e) { rc.error(e); if (writable) writable.__fail(e); },
+        get desiredSize() { return rc.desiredSize; }
       };
-      var writable = new window.WritableStream({
+      var started;
+      try { started = typeof transformer.start === 'function' ? transformer.start(controller) : undefined; }
+      catch (e) { throw e; }
+      writable = new window.WritableStream({
+        start: function () { return started; },
         write: function (chunk) {
-          if (typeof transformer.transform === 'function') { try { transformer.transform(chunk, controller); } catch (e) { controller.error(e); } }
-          else readable.__q.push(chunk);
+          var r;
+          try {
+            if (typeof transformer.transform === 'function') r = transformer.transform(chunk, controller);
+            else rc.enqueue(chunk);
+          } catch (e) { rc.error(e); throw e; }
+          return Promise.resolve(r).then(noop, function (e) { rc.error(e); throw e; });
         },
         close: function () {
-          if (typeof transformer.flush === 'function') { try { transformer.flush(controller); } catch (e) {} }
-          readable.__closed = true;
-        }
+          var r;
+          try { r = typeof transformer.flush === 'function' ? transformer.flush(controller) : undefined; }
+          catch (e) { rc.error(e); throw e; }
+          return Promise.resolve(r).then(function () { try { rc.close(); } catch (e) {} }, function (e) { rc.error(e); throw e; });
+        },
+        abort: function (e) { rc.error(e); }
       });
-      try { if (typeof transformer.start === 'function') transformer.start(controller); } catch (e) {}
       this.readable = readable;
       this.writable = writable;
     };
@@ -745,6 +1072,8 @@ const preludeAPIJS = `
       var ser = serializeBody(body);
       this.__bytes = toU8(ser.data);
       if (!this.headers.has('content-type')) this.headers.set('content-type', ser.type);
+    } else if (typeof window.ReadableStream === 'function' && body instanceof window.ReadableStream) {
+      this.__stream = body; // drained on first consumption (resReady)
     } else {
       this.__text = String(body);
     }
@@ -752,18 +1081,65 @@ const preludeAPIJS = `
   var RES = window.Response.prototype;
   function resText(r) { return r.__text !== null ? r.__text : utf8Decode(r.__bytes || new Uint8Array(0)); }
   function resBytes(r) { return r.__bytes !== null ? r.__bytes : utf8Encode(r.__text || ''); }
-  RES.text = function () { this.bodyUsed = true; return Promise.resolve(resText(this)); };
-  RES.json = function () { this.bodyUsed = true; return Promise.resolve(resText(this)).then(JSON.parse); };
-  RES.arrayBuffer = function () { this.bodyUsed = true; return Promise.resolve(bytesToArrayBuffer(resBytes(this))); };
-  RES.bytes = function () { this.bodyUsed = true; return Promise.resolve(resBytes(this).slice()); };
+  // resReady resolves once the body is buffered. A Response built over a
+  // ReadableStream is drained here (chunks are bytes, or strings encoded as UTF-8).
+  function resReady(r) {
+    if (!r.__stream) return Promise.resolve(r);
+    if (r.__draining) return r.__draining;
+    var reader = r.__stream.getReader(), parts = [], total = 0;
+    r.__draining = (function pump() {
+      return reader.read().then(function (x) {
+        if (x.done) {
+          var out = new Uint8Array(total), off = 0;
+          for (var i = 0; i < parts.length; i++) { out.set(parts[i], off); off += parts[i].length; }
+          r.__bytes = out; r.__text = null; r.__stream = null;
+          return r;
+        }
+        var u = typeof x.value === 'string' ? utf8Encode(x.value) : toU8(x.value);
+        parts.push(u); total += u.length;
+        return pump();
+      });
+    })();
+    return r.__draining;
+  }
+  function resConsume(r) {
+    if (r.bodyUsed) return Promise.reject(new TypeError('Body has already been consumed'));
+    r.bodyUsed = true;
+    return resReady(r);
+  }
+  RES.text = function () { return resConsume(this).then(resText); };
+  RES.json = function () { return resConsume(this).then(resText).then(JSON.parse); };
+  RES.arrayBuffer = function () { return resConsume(this).then(function (r) { return bytesToArrayBuffer(resBytes(r)); }); };
+  RES.bytes = function () { return resConsume(this).then(function (r) { return resBytes(r).slice(); }); };
   RES.blob = function () {
-    this.bodyUsed = true;
-    var b = Object.create(window.Blob.prototype);
-    b.__bytes = resBytes(this).slice();
-    b.size = b.__bytes.length;
-    b.type = (this.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    return Promise.resolve(b);
+    var self = this;
+    return resConsume(this).then(function () {
+      var b = Object.create(window.Blob.prototype);
+      b.__bytes = resBytes(self).slice();
+      b.size = b.__bytes.length;
+      b.type = (self.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      return b;
+    });
   };
+  // body: the buffered payload as a one-chunk byte stream (the transport is
+  // request/response, so there is nothing to stream incrementally). A Response
+  // built over a stream hands that stream back. Null for a null-body status.
+  Object.defineProperty(RES, 'body', { configurable: true, enumerable: true, get: function () {
+    var self = this;
+    if (this.__stream) return this.__stream;
+    if (this.__bodyStream) return this.__bodyStream;
+    if (this.status === 204 || this.status === 205 || this.status === 304) return null;
+    if (typeof window.ReadableStream !== 'function') return null;
+    this.__bodyStream = new window.ReadableStream({
+      pull: function (c) {
+        var bytes = resBytes(self);
+        self.bodyUsed = true;
+        if (bytes.length > 0) c.enqueue(bytes.slice());
+        c.close();
+      }
+    }, { highWaterMark: 0 });
+    return this.__bodyStream;
+  } });
   RES.clone = function () {
     var r = Object.create(RES);
     r.status = this.status; r.statusText = this.statusText; r.ok = this.ok;
@@ -771,6 +1147,7 @@ const preludeAPIJS = `
     r.url = this.url; r.redirected = this.redirected; r.type = this.type;
     r.bodyUsed = false;
     r.__text = this.__text; r.__bytes = this.__bytes;
+    if (this.__stream) { var tee = this.__stream.tee(); this.__stream = tee[0]; r.__stream = tee[1]; }
     return r;
   };
   window.Response.json = function (data, init) {
@@ -1084,13 +1461,7 @@ const preludeAPIJS = `
     var XHR_STATES = { UNSENT: 0, OPENED: 1, HEADERS_RECEIVED: 2, LOADING: 3, DONE: 4 };
     for (var xs in XHR_STATES) { window.XMLHttpRequest[xs] = XHR_STATES[xs]; window.XMLHttpRequest.prototype[xs] = XHR_STATES[xs]; }
   } else {
-    window.fetch = function () { return Promise.reject(new Error('unblink: network is disabled in render')); };
-    window.XMLHttpRequest = function () {
-      this.open = function () {}; this.send = function () {}; this.abort = function () {};
-      this.setRequestHeader = function () {}; this.getResponseHeader = function () { return null; };
-      this.addEventListener = function () {}; this.removeEventListener = function () {};
-      this.readyState = 0; this.status = 0; this.responseText = ''; this.response = null;
-    };
+` + noNetStubsJS + `
   }
 
   // ---- dialogs / window shell ----
@@ -1117,8 +1488,12 @@ const preludeAPIJS = `
   // Cross-origin isolation fidelity (window === self === globalThis, so one
   // assignment covers all aliases). Resolved Go-side from the document URL + its
   // COOP/COEP response headers; SharedArrayBuffer stays absent regardless.
-  window.isSecureContext = !!(typeof __unblinkSecureContext !== 'undefined' && __unblinkSecureContext);
-  window.crossOriginIsolated = !!(typeof __unblinkCrossOriginIsolated !== 'undefined' && __unblinkCrossOriginIsolated);
+  var setIsolation = function () {
+    window.isSecureContext = !!(typeof __unblinkSecureContext !== 'undefined' && __unblinkSecureContext);
+    window.crossOriginIsolated = !!(typeof __unblinkCrossOriginIsolated !== 'undefined' && __unblinkCrossOriginIsolated);
+  };
+  setIsolation();
+  __unblinkOnBind(setIsolation);
 
   // ---- navigator device / permission stubs ----
   //
@@ -1129,7 +1504,7 @@ const preludeAPIJS = `
   // hang the render until the settle timeout.
 
   if (typeof navigator !== 'undefined') {
-    var swOrigin = (typeof location !== 'undefined' && location.origin) ? location.origin : '';
+    var swOriginNow = function () { return (typeof location !== 'undefined' && location.origin) ? location.origin : ''; };
     if (!navigator.clipboard) {
       navigator.clipboard = {
         readText: function () { return Promise.resolve(''); },
@@ -1169,8 +1544,9 @@ const preludeAPIJS = `
       };
     }
     if (!navigator.serviceWorker) {
+      __unblinkOnBind(function () { swReg.scope = swOriginNow() + '/'; });
       var swReg = {
-        scope: swOrigin + '/', active: null, installing: null, waiting: null, updateViaCache: 'imports',
+        scope: swOriginNow() + '/', active: null, installing: null, waiting: null, updateViaCache: 'imports',
         update: function () { return Promise.resolve(); },
         unregister: function () { return Promise.resolve(true); },
         // Background Sync / Periodic Sync / Push / Notifications — all inert.
@@ -1228,6 +1604,11 @@ const preludeAPIJS = `
 
   // ---- messaging: postMessage / MessageChannel / BroadcastChannel ----
 
+  // Message delivery is a queued task (see the timer wrapper in the first
+  // prelude): the settle audit must tell it from a delayed timer.
+  var queueTask = window.__unblinkQueueTask || function (fn) { return setTimeout(fn, 0); };
+  delete window.__unblinkQueueTask;
+
   if (typeof window.MessageEvent === 'undefined') {
     window.MessageEvent = function (type, opts) {
       opts = opts || {};
@@ -1248,17 +1629,14 @@ const preludeAPIJS = `
   // synchronously per spec; delivery is async.
   window.postMessage = function (data) {
     var cloned = structuredClone(data);
-    setTimeout(function () {
+    queueTask(function () {
       var ev = new window.MessageEvent('message', {
         data: cloned,
         origin: (typeof location !== 'undefined' && location && location.origin) || '',
         source: window
       });
-      window.dispatchEvent(ev);
-      if (typeof window.onmessage === 'function') {
-        try { window.onmessage(ev); } catch (e) {}
-      }
-    }, 0);
+      window.dispatchEvent(ev); // window.onmessage runs as part of the dispatch
+    });
   };
 
   var MessagePort = function () {
@@ -1278,19 +1656,25 @@ const preludeAPIJS = `
     var a = this.__l.slice();
     for (var i = 0; i < a.length; i++) { try { a[i].call(this, ev); } catch (e) {} }
   };
-  // One async flush drains the whole queue in order — per-message timers are
-  // not ordering-safe (goja's same-deadline timers may fire out of scheduling
-  // order), a single FIFO drain is.
+  // One async flush drains the queue in order — per-message timers are not
+  // ordering-safe (goja's same-deadline timers may fire out of scheduling
+  // order), a single FIFO drain is. It delivers only the messages that were
+  // queued when the task began: a message posted from inside a handler belongs
+  // to a later task. Draining those too turned a scheduler's "post a message to
+  // myself to yield" into one unbroken synchronous run, and an endless
+  // ping-pong into a loop only the render watchdog could stop.
   MessagePort.prototype.__flush = function () {
     var self = this;
     if (!self.__started || self.__flushing) return;
     self.__flushing = true;
-    setTimeout(function () {
+    queueTask(function () {
       self.__flushing = false;
-      while (self.__started && self.__q.length) {
+      var n = self.__q.length;
+      while (self.__started && n-- > 0 && self.__q.length) {
         self.__deliver(new window.MessageEvent('message', { data: self.__q.shift() }));
       }
-    }, 0);
+      if (self.__q.length) self.__flush();
+    });
   };
   MessagePort.prototype.__receive = function (data) { this.__q.push(data); this.__flush(); };
   MessagePort.prototype.start = function () {
@@ -1691,8 +2075,37 @@ const preludeAPIJS = `
   };
   window.CSSStyleSheet.prototype.replaceSync = function (text) { this.__text = String(text); };
   window.CSSStyleSheet.prototype.replace = function (text) { this.__text = String(text); return Promise.resolve(this); };
-  window.CSSStyleSheet.prototype.insertRule = function () { return 0; };
-  window.CSSStyleSheet.prototype.deleteRule = noop;
+  // insertRule/deleteRule keep the rule text in order — a store, not a CSSOM:
+  // nothing is parsed or applied. CSS-in-JS libraries in their production mode
+  // write every rule through insertRule and read it back by index.
+  window.CSSStyleSheet.prototype.insertRule = function (rule, index) {
+    index = index === undefined ? 0 : (index >>> 0);
+    if (index > this.cssRules.length) throw new window.DOMException('The index provided (' + index + ') is larger than the maximum index (' + this.cssRules.length + ').', 'IndexSizeError');
+    var text = String(rule), brace = text.indexOf('{');
+    this.cssRules.splice(index, 0, { cssText: text, selectorText: brace >= 0 ? text.slice(0, brace).trim() : '', style: {}, type: 1, parentStyleSheet: this });
+    return index;
+  };
+  window.CSSStyleSheet.prototype.deleteRule = function (index) {
+    index = index >>> 0;
+    if (index >= this.cssRules.length) throw new window.DOMException('The index provided (' + index + ') is larger than the maximum index (' + (this.cssRules.length - 1) + ').', 'IndexSizeError');
+    this.cssRules.splice(index, 1);
+  };
+  // <style>.sheet: the element's own (empty) rule store while it is in the
+  // document, null otherwise. styled-components and Emotion look their tag's
+  // sheet up here and treat its absence as fatal ("CSSStyleSheet could not be
+  // found on HTMLStyleElement"), which took the whole app down with it.
+  if (window.HTMLStyleElement && !('sheet' in window.HTMLStyleElement.prototype) && typeof WeakMap === 'function') {
+    var styleSheets = new WeakMap();
+    Object.defineProperty(window.HTMLStyleElement.prototype, 'sheet', {
+      get: function () {
+        if (!this.isConnected) return null;
+        var sh = styleSheets.get(this);
+        if (!sh) { sh = new window.CSSStyleSheet(); sh.ownerNode = this; sh.href = null; sh.type = 'text/css'; sh.title = null; sh.parentStyleSheet = null; styleSheets.set(this, sh); }
+        return sh;
+      },
+      enumerable: true, configurable: true
+    });
+  }
   window.CSSStyleSheet.prototype.addRule = function () { return -1; };
   window.CSSStyleSheet.prototype.removeRule = noop;
   // Lit feature-detects adoptedStyleSheets on Document.prototype (and ShadowRoot
@@ -1702,7 +2115,12 @@ const preludeAPIJS = `
     window.Document.prototype.adoptedStyleSheets = [];
   }
   if (typeof document !== 'undefined' && document.styleSheets === undefined) {
-    document.styleSheets = { length: 0, item: function () { return null; } };
+    // An empty StyleSheetList: no CSSOM is built, so there are no sheets — but the
+    // list itself is iterable and indexable, as page code assumes
+    // (for (const sheet of document.styleSheets) …).
+    var sheets = [];
+    sheets.item = function () { return null; };
+    document.styleSheets = sheets;
   }
 
   // ---- CSS namespace ----
@@ -1710,8 +2128,18 @@ const preludeAPIJS = `
   // CSS.escape is a pure function (the WHATWG serialize-an-identifier algorithm),
   // so it is implemented for real — selector and CSS-in-JS libraries call it at
   // import time and would ReferenceError without it. CSS.supports is optimistic
-  // (true for well-formed input): there is no CSSOM to consult, and returning true
-  // keeps feature-gated code on its main path instead of loading a visual polyfill.
+  // for standard CSS (there is no CSSOM to consult, and returning true keeps
+  // feature-gated code on its main path instead of loading a visual polyfill)
+  // and answers like Chrome for vendor-prefixed properties.
+  // -webkit- properties Chrome does not implement (Safari's own). Chrome aliases
+  // most other -webkit- properties, so those stay supported.
+  var notInChrome = {
+    'backdrop-filter': 1, 'touch-callout': 1, 'overflow-scrolling': 1, 'nbsp-mode': 1,
+    'text-decoration-skip': 1, 'initial-letter': 1, 'hyphens': 1, 'line-grid': 1, 'line-snap': 1,
+    'line-align': 1, 'text-zoom': 1, 'cursor-visibility': 1, 'dashboard-region': 1,
+    'marquee': 1, 'marquee-direction': 1, 'marquee-increment': 1, 'marquee-repetition': 1,
+    'marquee-speed': 1, 'marquee-style': 1, 'font-kerning': 1, 'aspect-ratio': 1
+  };
   if (typeof window.CSS === 'undefined') {
     window.CSS = {
       escape: function (value) {
@@ -1739,8 +2167,26 @@ const preludeAPIJS = `
         return out;
       },
       supports: function (prop, value) {
-        // supports(property, value) or supports(conditionText); optimistic.
-        return arguments.length >= 1 && String(prop).length > 0;
+        // supports(property, value) or supports(conditionText). Optimistic for
+        // standard CSS — but not for another engine's vendor properties, which
+        // is how pages tell browsers apart: '-moz-appearance' means Firefox,
+        // '-webkit-touch-callout' iOS, '-webkit-backdrop-filter' Safari. The
+        // engine presents as desktop Chrome, and answering yes to those sent
+        // pages down Safari and Firefox code paths at the same time.
+        if (arguments.length < 1) return false;
+        var text = String(prop);
+        if (!text.length) return false;
+        // A prefixed name starts at the hyphen: "-webkit-x", never the middle of
+        // "grid-template-rows".
+        var names = arguments.length >= 2 ? [text] : (text.match(/(^|[^a-z0-9_-])-[a-z]+-[a-z-]+(?=\s*:)/gi) || []);
+        for (var i = 0; i < names.length; i++) {
+          var m = /^[^a-z0-9_-]*-([a-z]+)-([a-z-]+)\s*$/i.exec(names[i]);
+          if (!m) continue;
+          var vendor = m[1].toLowerCase();
+          if (vendor !== 'webkit') return false; // -moz-, -ms-, -o-, -khtml-, -apple-
+          if (notInChrome[m[2].toLowerCase()]) return false;
+        }
+        return true;
       }
     };
   }
@@ -1756,7 +2202,7 @@ const preludeAPIJS = `
   // still renders. A truthy getContext also satisfies the common
   // !!canvas.getContext feature test. webgl/webgpu stay null (permanent non-goal).
   (function () {
-    var htmlProto = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    var htmlProto = (window.HTMLElement && window.HTMLElement.prototype) || null;
     if (htmlProto && !('getContext' in htmlProto)) {
       var inert2d = function (canvas) {
         return {
@@ -1825,6 +2271,7 @@ const preludeAPIJS = `
     window.DOMPoint = DP;
   }
   if (typeof window.DOMMatrixReadOnly === 'undefined') {
+    lazyGlobals(window, ['DOMMatrixReadOnly', 'DOMMatrix', 'WebKitCSSMatrix'], function () {
     // 2D affine matrix [a c e / b d f / 0 0 1]; 3D is reported as 2D identity extras.
     var matMul = function (m, n) {
       return [m.a * n.a + m.c * n.b, m.b * n.a + m.d * n.b, m.a * n.c + m.c * n.d,
@@ -1888,6 +2335,7 @@ const preludeAPIJS = `
     DM.fromFloat64Array = function (a) { return new DM(a); };
     window.DOMMatrix = DM;
     window.WebKitCSSMatrix = DM;
+    });
   }
   if (typeof window.DOMQuad === 'undefined') {
     window.DOMQuad = function (p1, p2, p3, p4) {
@@ -1977,7 +2425,7 @@ const preludeAPIJS = `
     };
   }
   (function () {
-    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    var ep = (window.HTMLElement && window.HTMLElement.prototype) || null;
     if (ep && typeof ep.animate !== 'function') {
       ep.animate = function (keyframes, options) {
         var anim = new window.Animation(new window.KeyframeEffect(this, keyframes, options), null);
@@ -2106,6 +2554,13 @@ const preludeAPIJS = `
 
     // ARIAMixin: default accessibility semantics. Go keeps the ones extraction
     // reads, under their attribute names (ariaLabel → aria-label), and ignores the rest.
+    // Some sixty accessors, built when the interface is first used (the first
+    // attachInternals() or the first read of the ElementInternals global) —
+    // most pages have no form-associated custom element at all.
+    var ariaFilled = false;
+    function fillAria() {
+    if (ariaFilled) return;
+    ariaFilled = true;
     ['role', 'ariaAtomic', 'ariaAutoComplete', 'ariaBrailleLabel', 'ariaBrailleRoleDescription', 'ariaBusy', 'ariaChecked', 'ariaColCount', 'ariaColIndex', 'ariaColIndexText', 'ariaColSpan', 'ariaCurrent', 'ariaDescription', 'ariaDisabled', 'ariaExpanded', 'ariaHasPopup', 'ariaHidden', 'ariaInvalid', 'ariaKeyShortcuts', 'ariaLabel', 'ariaLevel', 'ariaLive', 'ariaModal', 'ariaMultiLine', 'ariaMultiSelectable', 'ariaOrientation', 'ariaPlaceholder', 'ariaPosInSet', 'ariaPressed', 'ariaReadOnly', 'ariaRelevant', 'ariaRequired', 'ariaRoleDescription', 'ariaRowCount', 'ariaRowIndex', 'ariaRowIndexText', 'ariaRowSpan', 'ariaSelected', 'ariaSetSize', 'ariaSort', 'ariaValueMax', 'ariaValueMin', 'ariaValueNow', 'ariaValueText'].forEach(function (name) {
       accessor(EI, name, function () { var v = state(this).aria[name]; return v === undefined ? null : v; },
         function (v) {
@@ -2122,8 +2577,10 @@ const preludeAPIJS = `
           if (name === 'ariaLabelledByElements') hook.setLabelledBy(s.host, s.aria[name]);
         });
     });
+    }
 
     HP.attachInternals = function () {
+      fillAria();
       var kind = hook.kind(this);
       if (kind === 0) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': Unable to attach ElementInternals to non-custom elements.");
       if (kind < 0) throw notSupported("Failed to execute 'attachInternals' on 'HTMLElement': ElementInternals is disabled by disabledFeatures.");
@@ -2158,7 +2615,7 @@ const preludeAPIJS = `
       });
     });
 
-    window.ElementInternals = ElementInternals;
+    lazyGlobals(window, ['ElementInternals'], function () { fillAria(); window.ElementInternals = ElementInternals; });
     window.CustomStateSet = CustomStateSet;
     if (typeof window.ValidityState === 'undefined') window.ValidityState = ValidityState;
   })();
@@ -2241,6 +2698,7 @@ const preludeAPIJS = `
                addEventListener: noop, removeEventListener: noop };
     };
     var navEntries = [mkEntry((typeof location !== 'undefined' ? location.href : ''), 0)];
+    __unblinkOnBind(function () { navEntries[0].url = (typeof location !== 'undefined' ? location.href : ''); });
     var curIndex = 0;
     var navResult = function () { return { committed: Promise.resolve(navEntries[curIndex]), finished: Promise.resolve(navEntries[curIndex]) }; };
     var nav = {
@@ -2290,7 +2748,7 @@ const preludeAPIJS = `
   // new AudioContext() at boot keeps running (and its surrounding DOM renders)
   // instead of throwing. Nothing is ever decoded or played.
   (function () {
-    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    var ep = (window.HTMLElement && window.HTMLElement.prototype) || null;
     if (ep && typeof ep.play !== 'function') {
       ep.play = function () { return Promise.resolve(); };
       ep.pause = noop;
@@ -2457,7 +2915,7 @@ const preludeAPIJS = `
   // View Transitions run the update callback synchronously (so a router's new
   // view materializes) and resolve.
   (function () {
-    var ep = document.createElement ? Object.getPrototypeOf(document.createElement('span')) : null;
+    var ep = (window.HTMLElement && window.HTMLElement.prototype) || null;
     if (ep && typeof ep.showPopover !== 'function') {
       ep.showPopover = noop; ep.hidePopover = noop;
       ep.togglePopover = function (force) { return force !== undefined ? !!force : true; };
@@ -2511,6 +2969,7 @@ const preludeAPIJS = `
     };
   }
   if (window.crypto && !window.crypto.subtle && typeof __unblinkDigest === 'function') {
+    lazyGlobals(window.crypto, ['subtle'], function () {
     var algoName = function (a) { return (typeof a === 'string') ? a.toUpperCase() : (a && a.name ? String(a.name).toUpperCase() : ''); };
     var normHash = function (a) { var h = (a && typeof a === 'object' && a.hash) ? a.hash : a; return algoName(h); };
     var ab = function (data) { return bytesToArrayBuffer(toU8(data)); };
@@ -2609,6 +3068,7 @@ const preludeAPIJS = `
       wrapKey: function () { return Promise.reject(new Error('NotSupportedError: crypto.subtle.wrapKey')); },
       unwrapKey: function () { return Promise.reject(new Error('NotSupportedError: crypto.subtle.unwrapKey')); }
     };
+    });
   }
 
   // ---- indexedDB: in-memory, non-persistent stub ----
@@ -2620,6 +3080,7 @@ const preludeAPIJS = `
   // through the WRAPPED setTimeout so it registers in the live-timer audit; a
   // native timer would let the render close early and truncate content.
   if (typeof window.indexedDB === 'undefined') {
+    lazyGlobals(window, ['indexedDB', 'IDBKeyRange', 'IDBRequest', 'IDBOpenDBRequest', 'IDBDatabase', 'IDBTransaction', 'IDBObjectStore', 'IDBIndex', 'IDBFactory', 'IDBCursor', 'IDBCursorWithValue'], function () {
     var idbDBs = {}; // name -> { version, stores: { storeName -> rec } }
 
     var idbKey = function (k) {
@@ -2638,7 +3099,25 @@ const preludeAPIJS = `
       for (var i = 0; i < arr.length; i++) list[i] = arr[i];
       return list;
     };
-    var idbMakeReq = function (source) {
+    // The interface objects: page code and the "idb" wrapper library test
+    // (x instanceof IDBRequest) and read IDBCursor.prototype members, so the stub's
+    // objects are instances of these. None is constructible, as in a browser.
+    var idbIface = function (name, parent) {
+      var C = function () { throw new TypeError('Illegal constructor'); };
+      Object.defineProperty(C, 'name', { value: name, configurable: true });
+      C.prototype = Object.create(parent ? parent.prototype : Object.prototype, { constructor: { value: C, writable: true, configurable: true } });
+      if (typeof Symbol === 'function' && Symbol.toStringTag) Object.defineProperty(C.prototype, Symbol.toStringTag, { value: name, configurable: true });
+      window[name] = C;
+      return C;
+    };
+    var IDBRequestI = idbIface('IDBRequest'), IDBOpenDBRequestI = idbIface('IDBOpenDBRequest', IDBRequestI);
+    var IDBDatabaseI = idbIface('IDBDatabase'), IDBTransactionI = idbIface('IDBTransaction');
+    var IDBObjectStoreI = idbIface('IDBObjectStore'), IDBIndexI = idbIface('IDBIndex'), IDBFactoryI = idbIface('IDBFactory');
+    var IDBCursorI = idbIface('IDBCursor'); idbIface('IDBCursorWithValue', IDBCursorI);
+    ['advance', 'continue', 'continuePrimaryKey', 'update', 'delete'].forEach(function (m) { IDBCursorI.prototype[m] = function () { throw new Error('InvalidStateError: no cursor'); }; });
+    var idbAs = function (o, I) { Object.setPrototypeOf(o, I.prototype); return o; };
+    var idbMakeReq = function (source) { return idbAs(idbMakeReq0(source), IDBRequestI); };
+    var idbMakeReq0 = function (source) {
       return { result: undefined, error: null, readyState: 'pending', source: source || null, transaction: null,
                onsuccess: null, onerror: null, __l: {},
                addEventListener: function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); },
@@ -2685,9 +3164,10 @@ const preludeAPIJS = `
         deleteIndex: function (name) { delete rec.indexes[name]; store.indexNames = idbStringList(Object.keys(rec.indexes)); },
         index: function (name) { return idbMakeIndex(rec, name, store); }
       };
-      return store;
+      return idbAs(store, IDBObjectStoreI);
     };
-    var idbMakeIndex = function (rec, name, store) {
+    var idbMakeIndex = function (rec, name, store) { return idbAs(idbMakeIndex0(rec, name, store), IDBIndexI); };
+    var idbMakeIndex0 = function (rec, name, store) {
       return { name: name, objectStore: store, keyPath: null, multiEntry: false, unique: false,
         get: function (key) { return idbSettle(idbMakeReq(store), function () { var e = rec.map.get(idbKey(key)); return e ? e.value : undefined; }); },
         getAll: function () { return idbSettle(idbMakeReq(store), function () { var out = []; rec.map.forEach(function (e) { out.push(e.value); }); return out; }); },
@@ -2717,17 +3197,17 @@ const preludeAPIJS = `
             abort: noop, commit: noop
           };
           setTimeout(function () { idbFire(tx, 'complete'); }, 0);
-          return tx;
+          return idbAs(tx, IDBTransactionI);
         },
         close: noop
       };
-      return db;
+      return idbAs(db, IDBDatabaseI);
     };
 
     window.indexedDB = {
       open: function (name, version) {
         name = String(name);
-        var req = idbMakeReq(null);
+        var req = idbAs(idbMakeReq0(null), IDBOpenDBRequestI);
         req.onupgradeneeded = null; req.onblocked = null;
         var isNew = !idbDBs[name];
         var oldVersion = isNew ? 0 : idbDBs[name].version;
@@ -2770,6 +3250,7 @@ const preludeAPIJS = `
       lowerBound: function (l, o) { return { lower: l, lowerOpen: !!o }; },
       upperBound: function (u, o) { return { upper: u, upperOpen: !!o }; }
     };
+    });
   }
 
   // ---- Intl (crash-avoidance shim; goja has no native Intl) ----
@@ -2779,52 +3260,228 @@ const preludeAPIJS = `
   // produce readable text, not locale fidelity.
 
   if (typeof Intl === 'undefined') {
+    // The zone lookup is taken now: the section below runs later, on first use.
+    var zoneInfo = window.__unblinkZoneInfo;
+    try { delete window.__unblinkZoneInfo; } catch (e) {}
+    // priv is what the eager Date/Number methods below reach the section
+    // through; intl() builds it once, whether or not the page ever reads (or
+    // has replaced) window.Intl — those methods use the intrinsic formatters.
+    var priv = {}, intlObj = null;
+    var intl = function () { if (!intlObj) intlObj = buildIntl(); return intlObj; };
+    lazyGlobals(window, ['Intl'], function () { window.Intl = intl(); });
+    var buildIntl = function () {
     var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     var DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-    var DateTimeFormat = function (locales, opts) { this.__o = opts || {}; };
-    DateTimeFormat.prototype.format = function (d) {
-      d = d === undefined ? new Date() : new Date(d);
-      if (isNaN(d.getTime())) return 'Invalid Date';
-      var o = this.__o;
-      var wantsDate = o.year !== undefined || o.month !== undefined || o.day !== undefined || o.weekday !== undefined || o.dateStyle !== undefined;
-      var wantsTime = o.hour !== undefined || o.minute !== undefined || o.second !== undefined || o.timeStyle !== undefined;
-      if (!wantsDate && !wantsTime) wantsDate = true;
-      var parts = [];
-      if (wantsDate) {
-        var long = o.dateStyle === 'full' || o.dateStyle === 'long' || o.month === 'long';
-        var med = o.dateStyle === 'medium' || o.month === 'short';
-        var ds;
-        if (long) ds = MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
-        else if (med) ds = MONTHS[d.getMonth()].slice(0, 3) + ' ' + d.getDate() + ', ' + d.getFullYear();
-        else ds = (d.getMonth() + 1) + '/' + d.getDate() + '/' + d.getFullYear();
-        if (o.weekday !== undefined || o.dateStyle === 'full') {
-          var wd = DAYS[d.getDay()];
-          if (o.weekday === 'short') wd = wd.slice(0, 3);
-          ds = wd + ', ' + ds;
-        }
-        parts.push(ds);
+    // ---- Intl.DateTimeFormat, en-US ----
+    // Patterns are CLDR's English ones (common/main/en.xml: dateFormats,
+    // timeFormats, dateTimeFormats and the availableFormats skeletons): numeric
+    // dates "M/d/y", text months "MMM d, y", times "h:mm:ss a", date and time
+    // joined with ", " — or " at " when the month is spelled out in full. The
+    // space before AM/PM is U+0020, as shipping browsers print it. Other
+    // locales format as en-US. Time zones come from the system zone database
+    // through zoneInfo; the default zone is the process's, the one Date's own
+    // getters use.
+    var pad2 = function (n) { return n < 10 ? '0' + n : String(n); };
+    var zoneOf = function (ms, tz) {
+      var r = zoneInfo ? zoneInfo(ms, tz === undefined ? null : tz) : null;
+      if (!r) {
+        if (tz !== undefined) throw new RangeError('Invalid time zone specified: ' + tz);
+        return { off: -new Date(ms).getTimezoneOffset(), abbr: 'UTC', name: 'UTC', so: 'GMT', lo: 'GMT' };
       }
-      if (wantsTime) {
-        var h = d.getHours(), ampm = h < 12 ? 'AM' : 'PM';
-        var h12 = h % 12 === 0 ? 12 : h % 12;
-        var pad = function (n) { return n < 10 ? '0' + n : String(n); };
-        var ts = h12 + ':' + pad(d.getMinutes());
-        if (o.second !== undefined || o.timeStyle === 'medium' || o.timeStyle === 'long' || o.timeStyle === 'full') ts += ':' + pad(d.getSeconds());
-        parts.push(ts + ' ' + ampm);
-      }
-      return parts.join(', ');
+      return { off: r[0], abbr: r[1], name: r[2], so: r[3], lo: r[4] };
     };
-    DateTimeFormat.prototype.formatToParts = function (d) { return [{ type: 'literal', value: this.format(d) }]; };
-    DateTimeFormat.prototype.resolvedOptions = function () {
-      var out = { locale: 'en-US', calendar: 'gregory', numberingSystem: 'latn', timeZone: 'UTC' };
-      for (var k in this.__o) if (Object.prototype.hasOwnProperty.call(this.__o, k)) out[k] = this.__o[k];
+    var DTF_FIELDS = ['weekday', 'era', 'year', 'month', 'day', 'dayPeriod', 'hour', 'minute', 'second', 'fractionalSecondDigits', 'timeZoneName'];
+    var DTF_DATE = ['weekday', 'year', 'month', 'day'], DTF_TIME = ['dayPeriod', 'hour', 'minute', 'second', 'fractionalSecondDigits'];
+    var DTF_VALUES = {
+      weekday: ['narrow', 'short', 'long'], era: ['narrow', 'short', 'long'], year: ['2-digit', 'numeric'],
+      month: ['2-digit', 'numeric', 'narrow', 'short', 'long'], day: ['2-digit', 'numeric'], dayPeriod: ['narrow', 'short', 'long'],
+      hour: ['2-digit', 'numeric'], minute: ['2-digit', 'numeric'], second: ['2-digit', 'numeric'],
+      timeZoneName: ['short', 'long', 'shortOffset', 'longOffset', 'shortGeneric', 'longGeneric']
+    };
+    var STYLE_DATE = {
+      full: { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }, long: { month: 'long', day: 'numeric', year: 'numeric' },
+      medium: { month: 'short', day: 'numeric', year: 'numeric' }, short: { month: 'numeric', day: 'numeric', year: '2-digit' }
+    };
+    var STYLE_TIME = {
+      full: { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'long' }, long: { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' },
+      medium: { hour: 'numeric', minute: '2-digit', second: '2-digit' }, short: { hour: 'numeric', minute: '2-digit' }
+    };
+    var anyOf = function (o, keys) { for (var i = 0; i < keys.length; i++) if (o[keys[i]] !== undefined) return true; return false; };
+    // initDTF resolves options the way ECMA-402's CreateDateTimeFormat does.
+    // required/defaults are the toLocale*String modes: 'date', 'time' or 'any'
+    // for which fields must be present, and which are added when none is.
+    var initDTF = function (self, opts, required, defaults) {
+      opts = (opts === undefined || opts === null) ? {} : Object(opts);
+      var r = {}, i, f;
+      var ds = opts.dateStyle, ts = opts.timeStyle;
+      if (ds !== undefined || ts !== undefined) {
+        if (anyOf(opts, DTF_FIELDS)) throw new TypeError("Can't set option when dateStyle or timeStyle is used");
+        if (ds !== undefined && !STYLE_DATE[ds]) throw new RangeError('Value ' + ds + ' out of range for Intl.DateTimeFormat options property dateStyle');
+        if (ts !== undefined && !STYLE_TIME[ts]) throw new RangeError('Value ' + ts + ' out of range for Intl.DateTimeFormat options property timeStyle');
+        if (ds !== undefined) for (f in STYLE_DATE[ds]) r[f] = STYLE_DATE[ds][f];
+        if (ts !== undefined) for (f in STYLE_TIME[ts]) r[f] = STYLE_TIME[ts][f];
+        self.__ds = ds; self.__ts = ts;
+      } else {
+        for (i = 0; i < DTF_FIELDS.length; i++) {
+          f = DTF_FIELDS[i];
+          var v = opts[f];
+          if (v === undefined) continue;
+          if (f === 'fractionalSecondDigits') {
+            v = Number(v);
+            if (!(v >= 1 && v <= 3)) throw new RangeError('fractionalSecondDigits value is out of range.');
+            r[f] = Math.floor(v);
+            continue;
+          }
+          v = String(v);
+          if (DTF_VALUES[f].indexOf(v) < 0) throw new RangeError('Value ' + v + ' out of range for Intl.DateTimeFormat options property ' + f);
+          r[f] = v;
+        }
+        var need = true;
+        if ((required === 'date' || required === 'any') && anyOf(r, DTF_DATE)) need = false;
+        if ((required === 'time' || required === 'any') && anyOf(r, DTF_TIME)) need = false;
+        if (need && (defaults === 'date' || defaults === 'all')) { r.year = 'numeric'; r.month = 'numeric'; r.day = 'numeric'; }
+        if (need && (defaults === 'time' || defaults === 'all')) { r.hour = 'numeric'; r.minute = '2-digit'; r.second = '2-digit'; }
+      }
+      var hc = opts.hourCycle;
+      if (hc !== undefined && ['h11', 'h12', 'h23', 'h24'].indexOf(String(hc)) < 0) throw new RangeError('Value ' + hc + ' out of range for Intl.DateTimeFormat options property hourCycle');
+      if (opts.hour12 !== undefined) hc = opts.hour12 ? 'h12' : 'h23';
+      self.__hc = hc === undefined ? 'h12' : String(hc);
+      var tz = opts.timeZone;
+      self.__tz = zoneOf(Date.now(), tz === undefined ? undefined : String(tz)).name;
+      self.__explicitTZ = tz !== undefined;
+      self.__r = r;
+    };
+    var DateTimeFormat = function (locales, opts) {
+      if (!(this instanceof DateTimeFormat)) return new DateTimeFormat(locales, opts);
+      initDTF(this, opts, 'any', 'date');
+    };
+    var dtfParts = function (self, date) {
+      var ms = date === undefined ? Date.now() : (date instanceof Date ? date.getTime() : Number(date));
+      if (!isFinite(ms)) throw new RangeError('Invalid time value');
+      var z = zoneOf(ms, self.__explicitTZ ? self.__tz : undefined);
+      var d = new Date(ms + z.off * 60000); // read through the UTC getters
+      var r = self.__r, out = [];
+      var lit = function (s) { out.push({ type: 'literal', value: s }); };
+      var put = function (t, v) { out.push({ type: t, value: String(v) }); };
+      var hasDate = anyOf(r, DTF_DATE), hasTime = anyOf(r, ['hour', 'minute', 'second', 'fractionalSecondDigits']);
+      if (hasDate) {
+        var mo = d.getUTCMonth(), y = d.getUTCFullYear(), wdName = DAYS[d.getUTCDay()];
+        var wd = r.weekday === undefined ? null : (r.weekday === 'long' ? wdName : (r.weekday === 'short' ? wdName.slice(0, 3) : wdName.charAt(0)));
+        var ys = r.year === undefined ? null : (r.year === '2-digit' ? pad2(Math.abs(y) % 100) : String(y));
+        var dd = r.day === undefined ? null : (r.day === '2-digit' ? pad2(d.getUTCDate()) : String(d.getUTCDate()));
+        var textMonth = r.month === 'long' || r.month === 'short' || r.month === 'narrow';
+        var mm = r.month === undefined ? null : (r.month === 'long' ? MONTHS[mo] : (r.month === 'short' ? MONTHS[mo].slice(0, 3) : (r.month === 'narrow' ? MONTHS[mo].charAt(0) : (r.month === '2-digit' ? pad2(mo + 1) : String(mo + 1)))));
+        var rest = mm !== null || dd !== null || ys !== null;
+        if (wd !== null) { put('weekday', wd); if (rest) lit(', '); }
+        if (textMonth) {
+          put('month', mm);
+          if (dd !== null) { lit(' '); put('day', dd); }
+          if (ys !== null) { lit(dd !== null ? ', ' : ' '); put('year', ys); }
+        } else {
+          var first = true;
+          var slash = function (t, v) { if (v === null) return; if (!first) lit('/'); first = false; put(t, v); };
+          slash('month', mm); slash('day', dd); slash('year', ys);
+        }
+      }
+      if (hasDate && hasTime) lit((r.month === 'long') ? ' at ' : ', ');
+      if (hasTime) {
+        var H = d.getUTCHours(), hc = self.__hc, twelve = hc === 'h12' || hc === 'h11', sep = false;
+        if (r.hour !== undefined) {
+          var hv = hc === 'h23' ? H : (hc === 'h24' ? (H === 0 ? 24 : H) : (hc === 'h11' ? H % 12 : (H % 12 === 0 ? 12 : H % 12)));
+          put('hour', (r.hour === '2-digit' || !twelve) ? pad2(hv) : String(hv));
+          sep = true;
+        }
+        if (r.minute !== undefined) {
+          if (sep) lit(':');
+          put('minute', (sep || r.minute === '2-digit' || r.second !== undefined) ? pad2(d.getUTCMinutes()) : String(d.getUTCMinutes()));
+          sep = true;
+        }
+        if (r.second !== undefined) {
+          if (sep) lit(':');
+          put('second', (sep || r.second === '2-digit') ? pad2(d.getUTCSeconds()) : String(d.getUTCSeconds()));
+          sep = true;
+        }
+        if (r.fractionalSecondDigits !== undefined) {
+          if (sep) lit('.');
+          put('fractionalSecond', ('00' + d.getUTCMilliseconds()).slice(-3).slice(0, r.fractionalSecondDigits));
+        }
+        if (r.hour !== undefined && twelve) { lit(' '); put('dayPeriod', H < 12 ? 'AM' : 'PM'); }
+      }
+      if (r.timeZoneName !== undefined) {
+        // No CLDR zone names are carried: "long" and the generic forms print
+        // the zone database's abbreviation, as "short" does.
+        var zn = r.timeZoneName === 'shortOffset' ? z.so : (r.timeZoneName === 'longOffset' ? z.lo : z.abbr);
+        if (out.length) lit(' ');
+        put('timeZoneName', zn);
+      }
       return out;
     };
-    DateTimeFormat.prototype.formatRange = function (a, b) { return this.format(a) + ' – ' + this.format(b); };
+    var joinParts = function (parts) { var s = ''; for (var i = 0; i < parts.length; i++) s += parts[i].value; return s; };
+    DateTimeFormat.prototype.format = function (d) { return joinParts(dtfParts(this, d)); };
+    DateTimeFormat.prototype.formatToParts = function (d) { return dtfParts(this, d); };
+    DateTimeFormat.prototype.resolvedOptions = function () {
+      var out = { locale: 'en-US', calendar: 'gregory', numberingSystem: 'latn', timeZone: this.__tz };
+      if (this.__r.hour !== undefined) { out.hourCycle = this.__hc; out.hour12 = this.__hc === 'h12' || this.__hc === 'h11'; }
+      if (this.__ds !== undefined || this.__ts !== undefined) {
+        if (this.__ds !== undefined) out.dateStyle = this.__ds;
+        if (this.__ts !== undefined) out.timeStyle = this.__ts;
+      } else {
+        for (var i = 0; i < DTF_FIELDS.length; i++) if (this.__r[DTF_FIELDS[i]] !== undefined) out[DTF_FIELDS[i]] = this.__r[DTF_FIELDS[i]];
+      }
+      return out;
+    };
+    DateTimeFormat.prototype.formatRange = function (a, b) {
+      var x = this.format(a), y = this.format(b);
+      return x === y ? x : x + ' – ' + y;
+    };
+    DateTimeFormat.prototype.formatRangeToParts = function (a, b) {
+      var tag = function (parts, src) { return parts.map(function (p) { return { type: p.type, value: p.value, source: src }; }); };
+      return tag(dtfParts(this, a), 'startRange').concat([{ type: 'literal', value: ' – ', source: 'shared' }], tag(dtfParts(this, b), 'endRange'));
+    };
     DateTimeFormat.supportedLocalesOf = function () { return ['en-US']; };
+    // The Date locale methods: (date, locales, options, required, defaults).
+    priv.dateToLocale = function (date, opts, required, defaults) {
+      if (!(date instanceof Date)) throw new TypeError('this is not a Date object.');
+      if (isNaN(date.getTime())) return 'Invalid Date';
+      var f = Object.create(DateTimeFormat.prototype);
+      initDTF(f, opts, required, defaults);
+      return joinParts(dtfParts(f, date));
+    };
 
-    var NumberFormat = function (locales, opts) { this.__o = opts || {}; };
+    // style:"unit" — English unit patterns (CLDR en.xml units): short "88 km",
+    // long "88 kilometers", narrow "88km"; "x-per-y" compounds as "km/h" or
+    // "kilometers per hour". An unknown unit prints its identifier.
+    var UNITS = {
+      percent: ['%', 'percent', 'percent', '%'], degree: [' deg', 'degree', 'degrees', '°'], celsius: ['°C', 'degree Celsius', 'degrees Celsius', '°C'], fahrenheit: ['°F', 'degree Fahrenheit', 'degrees Fahrenheit', '°'],
+      millimeter: [' mm', 'millimeter', 'millimeters', 'mm'], centimeter: [' cm', 'centimeter', 'centimeters', 'cm'], meter: [' m', 'meter', 'meters', 'm'], kilometer: [' km', 'kilometer', 'kilometers', 'km'],
+      inch: [' in', 'inch', 'inches', '″'], foot: [' ft', 'foot', 'feet', '′'], yard: [' yd', 'yard', 'yards', 'yd'], mile: [' mi', 'mile', 'miles', 'mi'],
+      gram: [' g', 'gram', 'grams', 'g'], kilogram: [' kg', 'kilogram', 'kilograms', 'kg'], ounce: [' oz', 'ounce', 'ounces', 'oz'], pound: [' lb', 'pound', 'pounds', '#'], stone: [' st', 'stone', 'stones', 'st'],
+      milliliter: [' mL', 'milliliter', 'milliliters', 'mL'], liter: [' L', 'liter', 'liters', 'L'], gallon: [' gal', 'gallon', 'gallons', 'gal'], 'fluid-ounce': [' fl oz', 'fluid ounce', 'fluid ounces', 'fl oz'],
+      bit: [' bit', 'bit', 'bits', 'bit'], byte: [' byte', 'byte', 'bytes', 'B'], kilobit: [' kb', 'kilobit', 'kilobits', 'kb'], kilobyte: [' kB', 'kilobyte', 'kilobytes', 'kB'], megabit: [' Mb', 'megabit', 'megabits', 'Mb'],
+      megabyte: [' MB', 'megabyte', 'megabytes', 'MB'], gigabit: [' Gb', 'gigabit', 'gigabits', 'Gb'], gigabyte: [' GB', 'gigabyte', 'gigabytes', 'GB'], terabyte: [' TB', 'terabyte', 'terabytes', 'TB'], petabyte: [' PB', 'petabyte', 'petabytes', 'PB'],
+      millisecond: [' ms', 'millisecond', 'milliseconds', 'ms'], second: [' sec', 'second', 'seconds', 's'], minute: [' min', 'minute', 'minutes', 'm'], hour: [' hr', 'hour', 'hours', 'h'],
+      'kilometer-per-hour': [' km/h', 'kilometer per hour', 'kilometers per hour', 'km/h'], 'mile-per-hour': [' mph', 'mile per hour', 'miles per hour', 'mph'], 'meter-per-second': [' m/s', 'meter per second', 'meters per second', 'm/s'],
+      day: [' day', 'day', 'days', 'd'], week: [' wk', 'week', 'weeks', 'w'], month: [' mth', 'month', 'months', 'm'], year: [' yr', 'year', 'years', 'y'], acre: [' ac', 'acre', 'acres', 'ac'], hectare: [' ha', 'hectare', 'hectares', 'ha']
+    };
+    var UNIT_SHORT_PLURAL = { ' day': ' days', ' wk': ' wks', ' mth': ' mths', ' yr': ' yrs', ' byte': ' byte' };
+    var unitText = function (num, abs, unit, display) {
+      var per = UNITS[unit] ? -1 : unit.indexOf('-per-');
+      if (per > 0) {
+        var a = UNITS[unit.slice(0, per)], b = UNITS[unit.slice(per + 5)];
+        if (a && b) {
+          if (display === 'long') return num + ' ' + (abs === 1 ? a[1] : a[2]) + ' per ' + b[1];
+          return num + (display === 'narrow' ? a[3] : a[0]) + '/' + (display === 'narrow' ? b[3] : b[0].replace(/^ /, ''));
+        }
+        return num + ' ' + unit;
+      }
+      var u = UNITS[unit];
+      if (!u) return num + ' ' + unit;
+      if (display === 'long') return num + ' ' + (abs === 1 ? u[1] : u[2]);
+      if (display === 'narrow') return num + u[3];
+      return num + ((abs !== 1 && UNIT_SHORT_PLURAL[u[0]]) || u[0]);
+    };
+    var NumberFormat = function (locales, opts) { if (!(this instanceof NumberFormat)) return new NumberFormat(locales, opts); this.__o = opts || {}; };
     NumberFormat.prototype.format = function (n) {
       n = Number(n);
       if (!isFinite(n)) return String(n);
@@ -2832,20 +3489,57 @@ const preludeAPIJS = `
       var isPct = o.style === 'percent';
       var isCur = o.style === 'currency';
       if (isPct) n *= 100;
-      var min = o.minimumFractionDigits != null ? Number(o.minimumFractionDigits) : (isCur ? 2 : 0);
-      var max = o.maximumFractionDigits != null ? Number(o.maximumFractionDigits) : Math.max(min, isCur ? 2 : (isPct ? 0 : 3));
       var neg = n < 0;
-      var fixed = Math.abs(n).toFixed(max);
-      // trim trailing zeros down to min fraction digits
-      if (max > min) {
-        var dotAt = fixed.indexOf('.');
-        if (dotAt >= 0) {
-          var need = dotAt + (min > 0 ? min + 1 : 0);
-          var endAt = fixed.length;
-          while (endAt > need && (fixed.charAt(endAt - 1) === '0')) endAt--;
-          if (fixed.charAt(endAt - 1) === '.') endAt--;
-          fixed = fixed.slice(0, endAt);
+      var abs = Math.abs(n);
+      var fracGiven = o.minimumFractionDigits != null || o.maximumFractionDigits != null;
+      var sigGiven = o.minimumSignificantDigits != null || o.maximumSignificantDigits != null;
+      // trimZeros drops trailing fraction zeros down to keep fraction digits.
+      var trimZeros = function (str, keep) {
+        var dotAt = str.indexOf('.');
+        if (dotAt < 0) return str;
+        var need = dotAt + (keep > 0 ? keep + 1 : 0), endAt = str.length;
+        while (endAt > need && str.charAt(endAt - 1) === '0') endAt--;
+        if (str.charAt(endAt - 1) === '.') endAt--;
+        return str.slice(0, endAt);
+      };
+      var round = function (v, compact) {
+        if (sigGiven) {
+          var maxS = Math.min(21, Math.max(1, Number(o.maximumSignificantDigits != null ? o.maximumSignificantDigits : 21)));
+          var minS = Math.min(maxS, Math.max(1, Number(o.minimumSignificantDigits != null ? o.minimumSignificantDigits : 1)));
+          if (v === 0) return minS > 1 ? (0).toFixed(minS - 1) : '0';
+          var r = Number(v.toPrecision(maxS));
+          var digits = Math.floor(Math.log10(r)) + 1; // <= 0 below 1
+          return trimZeros(r.toFixed(Math.min(20, Math.max(0, maxS - digits))), Math.max(0, minS - digits));
         }
+        if (compact && !fracGiven) {
+          // Compact default: two significant digits, never fewer than the integer part.
+          if (v >= 10 || v === 0) return String(Math.round(v));
+          return trimZeros(Number(v.toPrecision(2)).toFixed(Math.min(20, Math.max(0, 1 - Math.floor(Math.log10(v))))), 0);
+        }
+        var min = o.minimumFractionDigits != null ? Number(o.minimumFractionDigits) : (isCur ? 2 : 0);
+        var max = o.maximumFractionDigits != null ? Number(o.maximumFractionDigits) : Math.max(min, isCur ? 2 : (isPct ? 0 : (compact ? 0 : 3)));
+        if (max < min) max = min;
+        var f = v.toFixed(Math.min(20, max));
+        return max > min ? trimZeros(f, min) : f;
+      };
+      // notation: 'compact' — "61.1K", "1.2M"; compactDisplay 'long' — "61 thousand".
+      var suffix = '';
+      var fixed;
+      if (o.notation === 'compact') {
+        var longForm = o.compactDisplay === 'long';
+        var steps = [[1e12, 'T', ' trillion'], [1e9, 'B', ' billion'], [1e6, 'M', ' million'], [1e3, 'K', ' thousand']];
+        var idx = -1;
+        for (var si = 0; si < steps.length; si++) { if (abs >= steps[si][0]) { idx = si; break; } }
+        if (idx < 0 && Number(round(abs, true)) >= 1000) idx = steps.length - 1; // 999.9 rounds up into K
+        if (idx >= 0) {
+          fixed = round(abs / steps[idx][0], true);
+          if (Number(fixed) >= 1000 && idx > 0) { idx--; fixed = round(abs / steps[idx][0], true); }
+          suffix = longForm ? steps[idx][2] : steps[idx][1];
+        } else {
+          fixed = round(abs, true);
+        }
+      } else {
+        fixed = round(abs, false);
       }
       var pieces = fixed.split('.');
       if (o.useGrouping !== false && pieces[0].length > 3) {
@@ -2859,8 +3553,9 @@ const preludeAPIJS = `
         }
         pieces[0] = grouped;
       }
-      var s = pieces.join('.');
+      var s = pieces.join('.') + suffix;
       if (isPct) return (neg ? '-' : '') + s + '%';
+      if (o.style === 'unit') return (neg ? '-' : '') + unitText(s, abs, String(o.unit), o.unitDisplay || 'short');
       if (isCur) {
         var cur = String(o.currency || 'USD').toUpperCase();
         var sym = cur === 'USD' ? '$' : (cur === 'EUR' ? '€' : (cur === 'GBP' ? '£' : (cur === 'JPY' ? '¥' : cur + ' ')));
@@ -2876,52 +3571,338 @@ const preludeAPIJS = `
     };
     NumberFormat.supportedLocalesOf = function () { return ['en-US']; };
 
-    var Collator = function (locales, opts) { this.__o = opts || {}; };
-    Collator.prototype.compare = function (a, b) { a = String(a); b = String(b); return a < b ? -1 : (a > b ? 1 : 0); };
+    var Collator = function (locales, opts) { if (!(this instanceof Collator)) return new Collator(locales, opts); this.__o = opts || {}; };
+    // English collation, approximated without the CLDR root table: strings are
+    // compared first with accents and case folded away (so "a" < "ä" < "b" <
+    // "C"), then by accent, then lower case before upper — the three levels
+    // of the default "variant" sensitivity. "base" and "accent" stop early;
+    // numeric compares digit runs by value.
+    Collator.prototype.compare = function (a, b) {
+      a = String(a); b = String(b);
+      var o = this.__o, sens = o.sensitivity || 'variant';
+      var strip = function (s) { return s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); };
+      var cmp = function (x, y) {
+        if (!o.numeric) return x < y ? -1 : (x > y ? 1 : 0);
+        var rx = /(\d+)|(\D+)/g, xs = x.match(rx) || [], ys = y.match(rx) || [];
+        for (var i = 0; i < xs.length && i < ys.length; i++) {
+          var p = xs[i], q = ys[i], c;
+          if (/^\d/.test(p) && /^\d/.test(q)) c = Number(p) - Number(q); else c = p < q ? -1 : (p > q ? 1 : 0);
+          if (c !== 0) return c < 0 ? -1 : 1;
+        }
+        return xs.length - ys.length < 0 ? -1 : (xs.length > ys.length ? 1 : 0);
+      };
+      var c = cmp(strip(a).toLowerCase(), strip(b).toLowerCase());
+      if (c !== 0 || sens === 'base') return c;
+      c = cmp(a.normalize('NFD').toLowerCase(), b.normalize('NFD').toLowerCase());
+      if (c !== 0 || sens === 'accent') return c;
+      if (sens === 'case') { c = cmp(strip(a), strip(b)); return c === 0 ? 0 : -c; }
+      if (a === b) return 0;
+      // lower case first at the tertiary level
+      for (var i = 0; i < a.length && i < b.length; i++) {
+        if (a.charAt(i) !== b.charAt(i)) return a.charAt(i) === a.charAt(i).toLowerCase() ? -1 : 1;
+      }
+      return a.length < b.length ? -1 : 1;
+    };
     Collator.prototype.resolvedOptions = function () { return { locale: 'en-US', usage: this.__o.usage || 'sort', sensitivity: 'variant' }; };
     Collator.supportedLocalesOf = function () { return ['en-US']; };
 
-    var PluralRules = function (locales, opts) { this.__o = opts || {}; };
+    // Intl.PluralRules, English (CLDR supplemental/plurals.xml and
+    // ordinals.xml): cardinal "one" for the integer 1 with no visible fraction
+    // digits; ordinal one/two/few by last digit except 11–13.
+    var PluralRules = function (locales, opts) {
+      if (!(this instanceof PluralRules)) throw new TypeError("Constructor Intl.PluralRules requires 'new'");
+      this.__o = (opts === undefined || opts === null) ? {} : Object(opts);
+      var t = this.__o.type;
+      if (t !== undefined && t !== 'cardinal' && t !== 'ordinal') throw new RangeError('Value ' + t + ' out of range for Intl.PluralRules options property type');
+    };
     PluralRules.prototype.select = function (n) {
+      n = Math.abs(Number(n));
       if (this.__o.type === 'ordinal') {
-        n = Math.abs(Number(n));
         var mod10 = n % 10, mod100 = n % 100;
         if (mod10 === 1 && mod100 !== 11) return 'one';
         if (mod10 === 2 && mod100 !== 12) return 'two';
         if (mod10 === 3 && mod100 !== 13) return 'few';
         return 'other';
       }
-      return Number(n) === 1 ? 'one' : 'other';
+      return (n === 1 && !(this.__o.minimumFractionDigits > 0)) ? 'one' : 'other';
     };
-    PluralRules.prototype.resolvedOptions = function () { return { locale: 'en-US', type: this.__o.type || 'cardinal', pluralCategories: ['one', 'other'] }; };
+    PluralRules.prototype.selectRange = function () { return 'other'; };
+    PluralRules.prototype.resolvedOptions = function () {
+      var ord = this.__o.type === 'ordinal';
+      return { locale: 'en-US', type: ord ? 'ordinal' : 'cardinal', minimumIntegerDigits: 1, minimumFractionDigits: 0, maximumFractionDigits: 3, pluralCategories: ord ? ['few', 'one', 'two', 'other'] : ['one', 'other'] };
+    };
     PluralRules.supportedLocalesOf = function () { return ['en-US']; };
 
-    var RelativeTimeFormat = function (locales, opts) { this.__o = opts || {}; };
-    RelativeTimeFormat.prototype.format = function (value, unit) {
-      var v = Number(value);
-      unit = String(unit).replace(/s$/, '');
-      var abs = Math.abs(v);
-      var u = abs === 1 ? unit : unit + 's';
-      if (v < 0) return abs + ' ' + u + ' ago';
-      if (v > 0) return 'in ' + abs + ' ' + u;
-      return 'this ' + unit;
+    // Intl.RelativeTimeFormat, English (CLDR en.xml dateFields): "in 3 days",
+    // "3 days ago"; numeric "auto" gives the named forms (yesterday, next
+    // month, now). short and narrow use the abbreviated unit names.
+    var RTF_UNITS = ['second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year'];
+    var RTF_SHORT = { second: ['sec.', 'sec.'], minute: ['min.', 'min.'], hour: ['hr.', 'hr.'], day: ['day', 'days'], week: ['wk.', 'wk.'], month: ['mo.', 'mo.'], quarter: ['qtr.', 'qtrs.'], year: ['yr.', 'yr.'] };
+    var RTF_AUTO = {
+      second: { '0': 'now' }, minute: { '0': 'this minute' }, hour: { '0': 'this hour' },
+      day: { '-1': 'yesterday', '0': 'today', '1': 'tomorrow' }, week: { '-1': 'last week', '0': 'this week', '1': 'next week' },
+      month: { '-1': 'last month', '0': 'this month', '1': 'next month' }, quarter: { '-1': 'last quarter', '0': 'this quarter', '1': 'next quarter' },
+      year: { '-1': 'last year', '0': 'this year', '1': 'next year' }
     };
-    RelativeTimeFormat.prototype.formatToParts = function (value, unit) { return [{ type: 'literal', value: this.format(value, unit) }]; };
-    RelativeTimeFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', numeric: this.__o.numeric || 'always', style: this.__o.style || 'long' }; };
+    var RelativeTimeFormat = function (locales, opts) {
+      if (!(this instanceof RelativeTimeFormat)) throw new TypeError("Constructor Intl.RelativeTimeFormat requires 'new'");
+      this.__o = (opts === undefined || opts === null) ? {} : Object(opts);
+      var o = this.__o;
+      if (o.numeric !== undefined && o.numeric !== 'always' && o.numeric !== 'auto') throw new RangeError('Value ' + o.numeric + ' out of range for Intl.RelativeTimeFormat options property numeric');
+      if (o.style !== undefined && ['long', 'short', 'narrow'].indexOf(o.style) < 0) throw new RangeError('Value ' + o.style + ' out of range for Intl.RelativeTimeFormat options property style');
+    };
+    RelativeTimeFormat.prototype.formatToParts = function (value, unit) {
+      var v = Number(value);
+      if (!isFinite(v)) throw new RangeError('Invalid value ' + value + ' for Intl.RelativeTimeFormat format()');
+      unit = String(unit);
+      var u = unit.charAt(unit.length - 1) === 's' ? unit.slice(0, -1) : unit;
+      if (RTF_UNITS.indexOf(u) < 0) throw new RangeError('Invalid unit argument for format() \'' + unit + '\'');
+      if (this.__o.numeric === 'auto') {
+        var named = RTF_AUTO[u][String(v)];
+        if (named !== undefined) return [{ type: 'literal', value: named }];
+      }
+      var past = v < 0 || (v === 0 && 1 / v < 0), abs = Math.abs(v);
+      var style = this.__o.style || 'long';
+      var name = style === 'long' ? (abs === 1 ? u : u + 's') : RTF_SHORT[u][abs === 1 ? 0 : 1];
+      var num = new NumberFormat('en-US').format(abs);
+      var parts = [];
+      if (!past) parts.push({ type: 'literal', value: 'in ' });
+      parts.push({ type: 'integer', value: num, unit: u });
+      parts.push({ type: 'literal', value: ' ' + name + (past ? ' ago' : '') });
+      return parts;
+    };
+    RelativeTimeFormat.prototype.format = function (value, unit) { return joinParts(this.formatToParts(value, unit)); };
+    RelativeTimeFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', style: this.__o.style || 'long', numeric: this.__o.numeric || 'always', numberingSystem: 'latn' }; };
     RelativeTimeFormat.supportedLocalesOf = function () { return ['en-US']; };
 
-    window.Intl = {
+    // NumberFormat, DateTimeFormat and Collator are the three Intl constructors that
+    // also work called as plain functions (Intl.NumberFormat('en-GB', …) — nuxt.com
+    // does), handled in each above. Their format/compare are getters returning a
+    // function bound to the formatter, so the everyday detached uses work:
+    // list.map(nf.format), names.sort(collator.compare).
+    function boundGetter(C, name) {
+      var impl = C.prototype[name], key = '__b_' + name;
+      Object.defineProperty(C.prototype, name, {
+        get: function () {
+          var self = this;
+          if (!Object.prototype.hasOwnProperty.call(self, key)) {
+            Object.defineProperty(self, key, { value: function () { return impl.apply(self, arguments); } });
+          }
+          return self[key];
+        },
+        configurable: true
+      });
+    }
+    boundGetter(NumberFormat, 'format');
+    boundGetter(DateTimeFormat, 'format');
+    boundGetter(Collator, 'compare');
+
+    // Number.prototype.toLocaleString(locales, options) is Intl.NumberFormat's
+    // format. The engine's built-in ignores locales and — worse — reads the first
+    // argument as a radix, so the everyday n.toLocaleString('en-US') threw a
+    // RangeError and took the surrounding render with it; with no argument it
+    // returned the number ungrouped ("6574" for "6,574").
+    // (installed eagerly, below the lazy section.)
+
+    // Intl.ListFormat, English rules (the only locale this layer formats in):
+    // conjunction "a, b, and c", disjunction "a, b, or c", unit "a, b, c";
+    // short conjunction "a, b, & c"; narrow unit "a b c".
+    var ListFormat = function (locales, opts) {
+      if (!(this instanceof ListFormat)) throw new TypeError("Constructor Intl.ListFormat requires 'new'");
+      opts = opts || {};
+      this.__type = opts.type === 'disjunction' || opts.type === 'unit' ? opts.type : 'conjunction';
+      this.__style = opts.style === 'short' || opts.style === 'narrow' ? opts.style : 'long';
+    };
+    ListFormat.prototype.formatToParts = function (list) {
+      var items = Array.from(list, function (x) { if (typeof x !== 'string') throw new TypeError('Iterable yielded ' + x + ' which is not a string'); return x; });
+      var t = this.__type, st = this.__style, n = items.length, parts = [];
+      var word = t === 'disjunction' ? 'or' : (t === 'unit' ? '' : (st === 'long' ? 'and' : (st === 'short' ? '&' : '')));
+      var sep = (t === 'unit' && st === 'narrow') ? ' ' : ', ';
+      for (var i = 0; i < n; i++) {
+        if (i > 0) {
+          var lit;
+          if (i < n - 1 || !word) lit = sep;
+          else if (n === 2) lit = ' ' + word + ' ';
+          else lit = sep.replace(/ $/, '') + ' ' + word + ' ';
+          parts.push({ type: 'literal', value: lit });
+        }
+        parts.push({ type: 'element', value: items[i] });
+      }
+      return parts;
+    };
+    ListFormat.prototype.format = function (list) { return this.formatToParts(list).map(function (p) { return p.value; }).join(''); };
+    ListFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', type: this.__type, style: this.__style }; };
+    ListFormat.supportedLocalesOf = function () { return ['en-US']; };
+
+    // Intl.DurationFormat, English only like the rest of this layer. Its absence
+    // sends apps to a polyfill chunk (Mastodon awaits one before it boots).
+    // Styles: long "1 hour, 30 minutes", short "1 hr, 30 min", narrow "1h 30m",
+    // digital "1:30:00" (larger units before it in short form).
+    // formatToParts is coarse: one part per unit, not number/literal/unit triples.
+    var dfUnits = ['years', 'months', 'weeks', 'days', 'hours', 'minutes', 'seconds', 'milliseconds', 'microseconds', 'nanoseconds'];
+    var dfNames = {
+      years: ['year', 'yr', 'y'], months: ['month', 'mth', 'mo'], weeks: ['week', 'wk', 'w'], days: ['day', 'day', 'd'],
+      hours: ['hour', 'hr', 'h'], minutes: ['minute', 'min', 'm'], seconds: ['second', 'sec', 's'],
+      milliseconds: ['millisecond', 'ms', 'ms'], microseconds: ['microsecond', 'μs', 'μs'], nanoseconds: ['nanosecond', 'ns', 'ns']
+    };
+    var dfShortPlural = { yr: 'yrs', mth: 'mths', wk: 'wks', day: 'days' };
+    var DurationFormat = function (locales, opts) {
+      if (!(this instanceof DurationFormat)) throw new TypeError("Constructor Intl.DurationFormat requires 'new'");
+      opts = opts || {};
+      var st = opts.style;
+      if (st !== undefined && st !== 'long' && st !== 'short' && st !== 'narrow' && st !== 'digital') throw new RangeError('Value ' + st + ' out of range for Intl.DurationFormat options property style');
+      this.__style = st || 'short';
+      this.__opts = opts;
+    };
+    var dfRead = function (d) {
+      if (d === null || typeof d !== 'object') throw new TypeError('Invalid duration');
+      var out = {}, any = false, sign = 0;
+      dfUnits.forEach(function (u) {
+        var v = d[u];
+        if (v === undefined) return;
+        v = Number(v);
+        if (!isFinite(v) || Math.floor(v) !== v) throw new RangeError('Invalid duration value for ' + u);
+        if (v !== 0) { var s = v < 0 ? -1 : 1; if (sign && s !== sign) throw new RangeError('Duration fields must share a sign'); sign = s; }
+        out[u] = v; any = true;
+      });
+      if (!any) throw new TypeError('Invalid duration');
+      return out;
+    };
+    var dfNum = function (n) { try { return new window.Intl.NumberFormat('en-US').format(n); } catch (e) { return String(n); } };
+    var dfPad = function (n) { n = Math.abs(n); return (n < 10 ? '0' : '') + n; };
+    DurationFormat.prototype.formatToParts = function (duration) {
+      var d = dfRead(duration), st = this.__style, o = this.__opts, parts = [], pieces = [];
+      var unitStyle = function (u) {
+        var s = o[u];
+        if (s === 'long' || s === 'short' || s === 'narrow' || s === 'numeric' || s === '2-digit') return s;
+        if (st === 'digital') return (u === 'hours' || u === 'minutes' || u === 'seconds') ? 'numeric' : 'short';
+        return st;
+      };
+      var always = function (u) { return o[u + 'Display'] === 'always'; };
+      var neg = dfUnits.some(function (u) { return d[u] < 0; });
+      var clock = null;
+      dfUnits.forEach(function (u) {
+        var v = d[u] || 0, us = unitStyle(u);
+        if (us === 'numeric' || us === '2-digit') {
+          if (u === 'hours' || u === 'minutes' || u === 'seconds') { clock = clock || {}; clock[u] = v; }
+          return;
+        }
+        if (v === 0 && !always(u)) return;
+        var names = dfNames[u], abs = Math.abs(v), text;
+        if (us === 'long') text = dfNum(abs) + ' ' + names[0] + (abs === 1 ? '' : 's');
+        else if (us === 'short') text = dfNum(abs) + ' ' + (abs === 1 ? names[1] : (dfShortPlural[names[1]] || names[1]));
+        else text = dfNum(abs) + names[2];
+        pieces.push({ unit: u, text: text });
+      });
+      if (clock) {
+        var h = clock.hours || 0, m = clock.minutes || 0, s = clock.seconds || 0;
+        var showH = st === 'digital' || h !== 0 || always('hours');
+        var text = (showH ? String(Math.abs(h)) + ':' + dfPad(m) : String(Math.abs(m))) + ':' + dfPad(s);
+        pieces.push({ unit: 'clock', text: text });
+      }
+      var sep = (st === 'narrow' || st === 'digital') && !pieces.some(function (p) { return / /.test(p.text) && p.unit !== 'clock'; }) ? ' ' : ', ';
+      if (st === 'digital') sep = ', ';
+      pieces.forEach(function (p, i) {
+        if (i > 0) parts.push({ type: 'literal', value: sep });
+        parts.push({ type: p.unit === 'clock' ? 'literal' : 'integer', value: (neg && i === 0 ? '-' : '') + p.text, unit: p.unit === 'clock' ? undefined : p.unit.replace(/s$/, '') });
+      });
+      return parts;
+    };
+    DurationFormat.prototype.format = function (duration) { return this.formatToParts(duration).map(function (p) { return p.value; }).join(''); };
+    DurationFormat.prototype.resolvedOptions = function () { return { locale: 'en-US', numberingSystem: 'latn', style: this.__style }; };
+    DurationFormat.supportedLocalesOf = function () { return ['en-US']; };
+
+    // Intl.Locale: the identifier's subtags, parsed. No CLDR data is carried, so
+    // maximize()/minimize() return the locale unchanged.
+    var Locale = function (tag, opts) {
+      if (!(this instanceof Locale)) throw new TypeError("Constructor Intl.Locale requires 'new'");
+      if (tag instanceof Locale) tag = tag.toString();
+      if (typeof tag !== 'string') throw new TypeError('First argument to the Intl.Locale constructor must be a string or an object');
+      var m = /^([a-zA-Z]{2,3}|[a-zA-Z]{5,8})(?:[-_]([a-zA-Z]{4}))?(?:[-_]([a-zA-Z]{2}|\d{3}))?(?:[-_].*)?$/.exec(tag.trim());
+      if (!m) throw new RangeError('Incorrect locale information provided');
+      opts = opts || {};
+      this.language = String(opts.language || m[1]).toLowerCase();
+      var sc = opts.script || m[2], rg = opts.region || m[3];
+      this.script = sc ? sc.charAt(0).toUpperCase() + sc.slice(1).toLowerCase() : undefined;
+      this.region = rg ? String(rg).toUpperCase() : undefined;
+      this.baseName = [this.language, this.script, this.region].filter(Boolean).join('-');
+      ['calendar', 'collation', 'hourCycle', 'caseFirst', 'numeric', 'numberingSystem'].forEach(function (k) { this[k] = opts[k]; }, this);
+    };
+    Locale.prototype.toString = function () { return this.baseName; };
+    Locale.prototype.maximize = Locale.prototype.minimize = function () { return new Locale(this.baseName); };
+
+    // Intl.DisplayNames without locale data: of() answers with the code itself,
+    // which is the specified result for fallback "code" when no name is known
+    // (and undefined for fallback "none").
+    var DisplayNames = function (locales, opts) {
+      if (!(this instanceof DisplayNames)) throw new TypeError("Constructor Intl.DisplayNames requires 'new'");
+      if (!opts || typeof opts.type !== 'string') throw new TypeError('Required option "type" must be provided');
+      this.__o = opts;
+    };
+    DisplayNames.prototype.of = function (code) { return this.__o.fallback === 'none' ? undefined : String(code); };
+    DisplayNames.prototype.resolvedOptions = function () { return { locale: 'en-US', type: this.__o.type, style: this.__o.style || 'long', fallback: this.__o.fallback || 'code' }; };
+    DisplayNames.supportedLocalesOf = function () { return ['en-US']; };
+
+    // Intl.Segmenter, approximated without UAX #29 tables: graphemes are code
+    // points (a base character plus any combining marks, variation selectors
+    // and ZWJ-joined followers), words are runs of letters/digits/marks (plus
+    // internal apostrophes) with everything else as its own non-word segment,
+    // and sentences end at ., ! or ? followed by white space.
+    var Segmenter = function (locales, opts) {
+      if (!(this instanceof Segmenter)) throw new TypeError("Constructor Intl.Segmenter requires 'new'");
+      var g = opts && opts.granularity;
+      this.__g = g === 'word' || g === 'sentence' ? g : 'grapheme';
+    };
+    Segmenter.prototype.segment = function (input) {
+      input = String(input);
+      var g = this.__g, out = [], re, m;
+      if (g === 'word') re = /[\p{L}\p{N}\p{M}_]+(?:['’][\p{L}\p{N}\p{M}_]+)*|\s+|[\s\S]/gu;
+      else if (g === 'sentence') re = /[\s\S]*?(?:[.!?]+(?:\s+|$)|$)/gu;
+      else re = /\P{M}[\p{M}\u200d\ufe0e\ufe0f]*(?:\u200d\P{M}[\p{M}\ufe0e\ufe0f]*)*|[\s\S]/gu;
+      while ((m = re.exec(input)) !== null) {
+        if (m[0] === '') { if (re.lastIndex >= input.length) break; re.lastIndex++; continue; }
+        var seg = { segment: m[0], index: m.index, input: input };
+        if (g === 'word') seg.isWordLike = /[\p{L}\p{N}]/u.test(m[0]);
+        out.push(seg);
+      }
+      var segs = {
+        containing: function (i) { i = i | 0; for (var k = 0; k < out.length; k++) if (i >= out[k].index && i < out[k].index + out[k].segment.length) return out[k]; return undefined; }
+      };
+      segs[Symbol.iterator] = function () { return out[Symbol.iterator](); };
+      return segs;
+    };
+    Segmenter.prototype.resolvedOptions = function () { return { locale: 'en-US', granularity: this.__g }; };
+    Segmenter.supportedLocalesOf = function () { return ['en-US']; };
+
+    priv.NumberFormat = NumberFormat;
+    return {
       DateTimeFormat: DateTimeFormat,
       NumberFormat: NumberFormat,
       Collator: Collator,
       PluralRules: PluralRules,
       RelativeTimeFormat: RelativeTimeFormat,
+      ListFormat: ListFormat,
+      DurationFormat: DurationFormat,
+      Locale: Locale,
+      DisplayNames: DisplayNames,
+      Segmenter: Segmenter,
       getCanonicalLocales: function (l) {
         if (l == null) return [];
         if (typeof l === 'string') return [l];
         return Array.prototype.slice.call(l).map(String);
       }
     };
+    };
+    Number.prototype.toLocaleString = function (locales, options) {
+      intl();
+      return new priv.NumberFormat(locales, options).format(Number(this));
+    };
+    // Date's locale methods are Intl.DateTimeFormat with defaults: date and
+    // time, date only, time only. The engine's built-ins ignore both arguments
+    // and print ISO-like 24-hour text.
+    Date.prototype.toLocaleString = function (locales, options) { intl(); return priv.dateToLocale(this, options, 'any', 'all'); };
+    Date.prototype.toLocaleDateString = function (locales, options) { intl(); return priv.dateToLocale(this, options, 'date', 'date'); };
+    Date.prototype.toLocaleTimeString = function (locales, options) { intl(); return priv.dateToLocale(this, options, 'time', 'time'); };
   }
 
   // ---- legacy document.createEvent ----
@@ -2932,6 +3913,8 @@ const preludeAPIJS = `
       var ev;
       if (/mouse/i.test(iface)) ev = new MouseEvent('');
       else if (/custom/i.test(iface)) ev = new CustomEvent('');
+      else if (/^storage/i.test(iface) && typeof StorageEvent === 'function') ev = new StorageEvent('');
+      else if (/^keyboard/i.test(iface)) ev = new KeyboardEvent('');
       else ev = new Event('');
       ev.__uninitialized = true; // dispatching before initEvent must throw InvalidStateError
       ev.initEvent = function (type, bubbles, cancelable) {
@@ -2943,10 +3926,150 @@ const preludeAPIJS = `
       ev.initMouseEvent = function (type, bubbles, cancelable) {
         ev.initEvent(type, bubbles, cancelable);
       };
+      ev.initUIEvent = function (type, bubbles, cancelable, view, detail) {
+        ev.initEvent(type, bubbles, cancelable); ev.view = view || null; ev.detail = detail || 0;
+      };
+      ev.initKeyboardEvent = function (type, bubbles, cancelable) { ev.initEvent(type, bubbles, cancelable); };
+      // The legacy initialiser cross-tab storage shims use to synthesise a
+      // 'storage' event (createEvent('StorageEvent') + initStorageEvent).
+      ev.initStorageEvent = function (type, bubbles, cancelable, key, oldValue, newValue, url, storageArea) {
+        ev.initEvent(type, bubbles, cancelable);
+        ev.key = (key != null) ? String(key) : null;
+        ev.oldValue = (oldValue != null) ? String(oldValue) : null;
+        ev.newValue = (newValue != null) ? String(newValue) : null;
+        ev.url = (url != null) ? String(url) : '';
+        ev.storageArea = (storageArea != null) ? storageArea : null;
+      };
       return ev;
     };
   }
+
+  // ---- host interface objects ----
+  // The objects the engine creates as plain singletons (window, location,
+  // history, navigator, …) are put on the prototype of the interface a browser
+  // reports for them, and that interface is published as a global. Page code
+  // tests these: Ember decides whether it is running in a browser at all with
+  // "self.constructor === Window" and, failing it, boots non-interactive with a
+  // "none" location and renders nothing. The constructors are illegal to call,
+  // as in a browser. Only interfaces the engine actually implements are named;
+  // one it lacks (TouchEvent, ServiceWorker, Navigation, trustedTypes, canvas…)
+  // stays undefined so feature detection keeps telling the truth.
+  (function () {
+    var ETP = window.EventTarget && window.EventTarget.prototype;
+    function iface(name, parentProto) {
+      if (typeof window[name] === 'function') return window[name];
+      var C = function () { throw new TypeError('Illegal constructor'); };
+      Object.defineProperty(C, 'name', { value: name, configurable: true });
+      C.prototype = Object.create(parentProto || Object.prototype);
+      Object.defineProperty(C.prototype, 'constructor', { value: C, writable: true, configurable: true });
+      Object.defineProperty(C.prototype, Symbol.toStringTag, { value: name, configurable: true });
+      Object.defineProperty(window, name, { value: C, writable: true, configurable: true, enumerable: false });
+      return C;
+    }
+    function adopt(name, obj, parentProto) {
+      var C = iface(name, parentProto);
+      if (obj && (typeof obj === 'object' || typeof obj === 'function')) {
+        try { if (Object.getPrototypeOf(obj) === Object.prototype) Object.setPrototypeOf(obj, C.prototype); } catch (e) {}
+      }
+      return C;
+    }
+    adopt('Window', window, ETP);
+    // The global object reports its engine class unless it carries the tag itself.
+    try { Object.defineProperty(window, Symbol.toStringTag, { value: 'Window', configurable: true }); } catch (e) {}
+    var Loc = adopt('Location', window.location);
+    // A Location stringifies to its URL ('' + location, location.toString()).
+    if (!Object.prototype.hasOwnProperty.call(Loc.prototype, 'toString')) {
+      Object.defineProperty(Loc.prototype, 'toString', { value: function () { return this.href; }, writable: true, configurable: true });
+    }
+    adopt('History', window.history);
+    adopt('Navigator', window.navigator);
+    adopt('Screen', window.screen, ETP);
+    adopt('VisualViewport', window.visualViewport, ETP);
+    adopt('Performance', window.performance, ETP);
+    adopt('Storage', window.localStorage);
+    adopt('Storage', window.sessionStorage);
+    // The page's real storage areas are installed when it is bound.
+    __unblinkOnBind(function () { adopt('Storage', window.localStorage); adopt('Storage', window.sessionStorage); });
+    adopt('Crypto', window.crypto);
+    if (window.crypto) adopt('SubtleCrypto', window.crypto.subtle);
+    adopt('CustomElementRegistry', window.customElements);
+
+    // MediaQueryList: one per matchMedia() call.
+    var MQL = iface('MediaQueryList', ETP), mm = window.matchMedia;
+    if (typeof mm === 'function') {
+      window.matchMedia = function (q) {
+        var r = mm.call(window, q);
+        try { Object.setPrototypeOf(r, MQL.prototype); } catch (e) {}
+        return r;
+      };
+    }
+
+    // Event classes defined piecemeal above join the hierarchy.
+    var EP = window.Event && window.Event.prototype;
+    ['MessageEvent', 'ToggleEvent', 'CloseEvent', 'CommandEvent', 'BeforeToggleEvent'].forEach(function (n) {
+      var C = window[n];
+      if (EP && typeof C === 'function' && C.prototype && Object.getPrototypeOf(C.prototype) === Object.prototype) {
+        Object.setPrototypeOf(C.prototype, EP);
+        try { Object.defineProperty(C.prototype, Symbol.toStringTag, { value: n, configurable: true }); } catch (e) {}
+      }
+    });
+
+    // window.origin is the document origin's serialisation; window.length counts
+    // child browsing contexts, of which this single-document engine has none.
+    if (!('origin' in window) && window.location) {
+      Object.defineProperty(window, 'origin', { get: function () { return window.location.origin; }, set: function (v) { Object.defineProperty(window, 'origin', { value: v, writable: true, configurable: true, enumerable: true }); }, configurable: true, enumerable: true });
+    }
+    if (!('length' in window)) Object.defineProperty(window, 'length', { value: 0, writable: true, configurable: true, enumerable: true });
+  })();
+  // ---- named access on forms and the document ----
+  //
+  // form.fieldname / form[0] / document.formname (see formnamed.go). A Proxy one
+  // step above HTMLFormElement.prototype and Document.prototype answers what the
+  // real chain does not define; its target is an empty object inheriting the real
+  // parent, so instanceof and isPrototypeOf still see that parent.
+  (function () {
+    var named = window.__unblinkNamedGet;
+    try { delete window.__unblinkNamedGet; } catch (e) {}
+    if (typeof named !== 'function' || typeof Proxy !== 'function' || typeof Reflect !== 'object') return;
+    var splice = function (proto) {
+      if (!proto) return;
+      var parent = Object.getPrototypeOf(proto);
+      if (!parent) return;
+      Object.setPrototypeOf(proto, new Proxy(Object.create(parent), {
+        get: function (t, k, r) {
+          if (typeof k !== 'string' || k in t) return Reflect.get(t, k, r);
+          return named(r, k);
+        }
+      }));
+    };
+    if (window.HTMLFormElement) splice(window.HTMLFormElement.prototype);
+    if (window.Document) splice(window.Document.prototype);
+    // Scope objects for inline event handlers: identifier resolution asks has().
+    window.__unblinkNamedScope = function (o) {
+      return new Proxy(o, {
+        has: function (t, k) { return (k in t) || (typeof k === 'string' && named(t, k) !== undefined); },
+        get: function (t, k) {
+          if (k === Symbol.unscopables) return undefined;
+          if (typeof k !== 'string' || k in t) return t[k];
+          return named(t, k);
+        },
+        set: function (t, k, v) { t[k] = v; return true; }
+      });
+    };
+  })();
+
 })();
+`
+
+// noNetStubsJS is the fetch/XHR pair for a runtime with no transport. It is
+// spliced into the API prelude's no-network branch and reused by noNetProgram.
+const noNetStubsJS = `    window.fetch = function () { return Promise.reject(new Error('unblink: network is disabled in render')); };
+    window.XMLHttpRequest = function () {
+      this.open = function () {}; this.send = function () {}; this.abort = function () {};
+      this.setRequestHeader = function () {}; this.getResponseHeader = function () { return null; };
+      this.addEventListener = function () {}; this.removeEventListener = function () {};
+      this.readyState = 0; this.status = 0; this.responseText = ''; this.response = null;
+    };
 `
 
 // preludeAPIProgram is preludeAPIJS compiled once at init, shared across

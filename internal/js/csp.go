@@ -2,6 +2,7 @@ package js
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -582,6 +583,77 @@ func (b *bridge) cspAllowConnect(abs string) bool {
 	}
 	if b.csp.reportOnlyBlocksConnect(b.base, u) {
 		b.recordError(fmt.Errorf("Content-Security-Policy report-only: would block connection to %s", abs))
+	}
+	return true
+}
+
+// ---- inline event handlers ----
+
+// allowsInlineHandler is the CSP3 check for an inline event-handler attribute
+// (script-src-attr, falling back to script-src and default-src). A nonce can
+// never authorise an attribute; it runs only when the list allows all inline
+// behaviour ('unsafe-inline' with no nonce, hash or 'strict-dynamic' beside it),
+// or when 'unsafe-hashes' is present and the attribute text matches a hash.
+func (p *cspPolicy) allowsInlineHandler(text string) bool {
+	srcs, restricted := p.resolve("script-src-attr", "script-src", "default-src")
+	if !restricted {
+		return true
+	}
+	var hasNonce, hasHash, hasUnsafeInline, hasStrictDynamic, hasUnsafeHashes bool
+	for _, s := range srcs {
+		switch {
+		case s.kind == srcNonce:
+			hasNonce = true
+		case s.kind == srcHash:
+			hasHash = true
+		case s.kind == srcKeyword && s.keyword == "unsafe-inline":
+			hasUnsafeInline = true
+		case s.kind == srcKeyword && s.keyword == "strict-dynamic":
+			hasStrictDynamic = true
+		case s.kind == srcKeyword && s.keyword == "unsafe-hashes":
+			hasUnsafeHashes = true
+		}
+	}
+	if hasUnsafeHashes {
+		for _, s := range srcs {
+			if s.kind == srcHash && cspHashMatches(s, text) {
+				return true
+			}
+		}
+	}
+	return hasUnsafeInline && !hasNonce && !hasHash && !hasStrictDynamic
+}
+
+func (c *cspContext) allowsInlineHandler(text string) bool {
+	for _, p := range c.enforced {
+		if !p.allowsInlineHandler(text) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *cspContext) reportOnlyBlocksInlineHandler(text string) bool {
+	for _, p := range c.reportOnly {
+		if !p.allowsInlineHandler(text) {
+			return true
+		}
+	}
+	return false
+}
+
+// cspAllowInlineHandler reports whether an inline event-handler attribute may be
+// compiled, recording an enforced block or a report-only would-block.
+func (b *bridge) cspAllowInlineHandler(text string) bool {
+	if b.csp == nil {
+		return true
+	}
+	if !b.csp.allowsInlineHandler(text) {
+		b.recordError(errors.New("blocked by Content-Security-Policy: inline event handler (needs 'unsafe-inline', or 'unsafe-hashes' with a matching hash)"))
+		return false
+	}
+	if b.csp.reportOnlyBlocksInlineHandler(text) {
+		b.recordError(errors.New("Content-Security-Policy report-only: would block inline event handler"))
 	}
 	return true
 }

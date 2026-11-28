@@ -50,8 +50,10 @@ type memoKey struct {
 
 type memoVal struct {
 	markdown        string
-	mode            string // mode actually reported (article→full fallback, non-HTML kind)
+	mode            string // mode actually reported (article→main/full fallback, non-HTML kind)
 	articleFallback bool
+	fallbackReason  string
+	coverage        float64
 }
 
 // lookup is nil-safe: a nil memo (session page, waited render, authed one-shot)

@@ -1,0 +1,6 @@
+{
+  "name": "unblink-fixture-next-app",
+  "private": true,
+  "scripts": { "build": "next build && rm -rf ../../built/next-app && cp -r out ../../built/next-app" },
+  "dependencies": { "next": "16.4.6", "react": "19.3.1", "react-dom": "19.3.1" }
+}

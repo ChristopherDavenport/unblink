@@ -38,6 +38,11 @@ type result struct {
 	note        string
 }
 
+// corpusHook is set by the corpus-comparison mode, which is compiled in only
+// under the `corpus` build tag (it imports the root module's corpus package).
+// It reports whether it ran.
+var corpusHook func(cfg toolConfig, tools []string) bool
+
 func mb(kib uint64) float64 { return float64(kib) / 1024 }
 
 func main() {
@@ -73,6 +78,10 @@ func main() {
 
 	if *probe != "" {
 		runProbe(*probe, cfg)
+		return
+	}
+
+	if corpusHook != nil && corpusHook(cfg, parseTools(*toolsFlag)) {
 		return
 	}
 
@@ -252,6 +261,7 @@ func resolveChrome(explicit string) string {
 		for _, pattern := range []string{
 			filepath.Join(home, ".cache", "puppeteer", "chrome", "*", "chrome-linux64", "chrome"),
 			filepath.Join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux", "chrome"),
+			filepath.Join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux64", "chrome"),
 		} {
 			matches, _ := filepath.Glob(pattern)
 			if len(matches) > 0 {

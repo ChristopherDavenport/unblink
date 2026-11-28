@@ -41,6 +41,15 @@ type RenderResult struct {
 	// but a non-zero count flags that content may still be behind a timer —
 	// raise wait_timeout / use wait_for.
 	TimersPending int
+	// TasksHeld is how long pending queued tasks (setImmediate, MessageChannel,
+	// postMessage — a scheduler's continuation chain) held the settle open. At
+	// SettleTaskHoldMax the hold gave up: the page was still slicing work, or
+	// re-queues itself forever.
+	TasksHeld time.Duration
+	// TimersFastForwarded counts clamped one-shot timers the settle ran early:
+	// the page was otherwise quiet, so waiting out the timer's clamped delay
+	// would only have added latency.
+	TimersFastForwarded int
 	// SettledIdle reports that the settle closed via the provable-idle fast
 	// path: no in-flight network and no live timers, so no mechanism existed to
 	// run more JS and the snapshot is complete by construction. False means the

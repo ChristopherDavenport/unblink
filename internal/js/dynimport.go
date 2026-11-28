@@ -42,8 +42,9 @@ func (b *bridge) installDynamicImport() {
 //
 // referrer is the importing module's URL, which anchors both relative specifiers and
 // import-map scope selection. It is "" for the global loader — an import() in a
-// classic script or a non-literal import() in a bundled module, where the calling
-// script's URL is not known — and the document base stands in.
+// classic script, where the calling script's URL is not known — and the document
+// base stands in. A module's own import(), literal or not, goes through the
+// module-local loader (evaluateInst) with that module's URL.
 func (b *bridge) importPromise(referrer, spec string) goja.Value {
 	vm := b.vm
 	promise, resolve, reject := vm.NewPromise()

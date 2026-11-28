@@ -13,7 +13,7 @@ BIN := bin/unblink
 VERSION := $(shell git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//')
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/christopherdavenport/unblink/internal/mcpserver.version=$(VERSION)")
 
-.PHONY: all build run version test eval wpt wpt-sync fuzz bench membench crossbench vet lint fmt tidy clean
+.PHONY: all build run version test eval eval-fixtures wpt wpt-sync corpus corpus-capture corpus-compare fuzz bench membench crossbench vet lint fmt tidy clean
 
 all: build
 
@@ -35,6 +35,12 @@ test:
 eval:
 	go test -tags eval ./eval -run TestEval -count=1 -v
 
+# Rebuild the built-from-source framework fixtures the eval renders
+# (testdata/frameworks/built) with their real toolchains. Needs network + Node;
+# local-only like wpt-sync, never run by CI. FIXTURES="next-app nuxt" narrows it.
+eval-fixtures:
+	./scripts/eval-fixtures.sh $(FIXTURES)
+
 # Offline web-platform-tests conformance report over the pinned, vendored corpus
 # (testdata/wpt). Gated behind the `wpt` build tag so it never runs in `make test`;
 # runs the in-scope testharness.js subset directly against the JS engine and prints
@@ -49,6 +55,25 @@ wpt:
 wpt-sync:
 	./scripts/wpt-sync.sh
 
+# Offline real-page differential report (ADR 0022): replays the captured pages in
+# testdata/corpus/ through the full pipeline and scores them against the Chromium
+# oracle saved at capture time. On-demand like `make wpt`, never a CI gate; skips
+# when there are no captures.
+corpus:
+	go test -tags corpus ./corpus -run '^TestCorpus$$' -count=1 -v -timeout 50m
+
+# Capture corpus/manifest.json with a local headless Chromium (needs network;
+# local-only — captures are third-party content and are not committed).
+corpus-capture:
+	cd scripts/corpus && go run . $(if $(CHROME),-chrome $(CHROME)) $(ARGS)
+
+# unblink vs. Charlotte on the captured real pages, offline, both scored against
+# the capture's Chromium oracle by the corpus package's scorer (docs/corpus.md).
+# Needs the captures, Node (npx fetches the pinned Charlotte) and a Chromium —
+# pass the build that made the captures: CHROME=/path. CORPUS_DIR must be absolute.
+corpus-compare:
+	cd scripts/membench && go run -tags corpus . -root ../.. -corpus-compare $(if $(TOOLS),-tools $(TOOLS)) $(if $(CHROME),-chrome $(CHROME)) $(if $(CORPUS_DIR),-corpus-dir $(CORPUS_DIR)) $(ARGS)
+
 # Short coverage-guided fuzzing over every parser that consumes untrusted
 # bytes (HTML, reduction, PDF, robots.txt, pagination cursors). The seed
 # corpora already run in `make test`; this explores beyond them. Tune the
@@ -59,6 +84,8 @@ fuzz:
 	go test ./internal/reduce -run '^$$' -fuzz '^FuzzReduce$$' -fuzztime $(FUZZTIME)
 	go test ./internal/content/pdf -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
 	go test ./internal/content/feed -run '^$$' -fuzz '^FuzzConvert$$' -fuzztime $(FUZZTIME)
+	go test ./internal/content -run '^$$' -fuzz '^FuzzMarkdown$$' -fuzztime $(FUZZTIME)
+	go test ./internal/js -run '^$$' -fuzz '^FuzzXPath$$' -fuzztime $(FUZZTIME)
 	go test ./internal/robots -run '^$$' -fuzz '^FuzzParse$$' -fuzztime $(FUZZTIME)
 	go test ./internal/tokens -run '^$$' -fuzz '^FuzzPaginateCursor$$' -fuzztime $(FUZZTIME)
 

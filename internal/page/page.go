@@ -28,13 +28,17 @@ import (
 type Kind string
 
 const (
-	KindHTML   Kind = "html"
-	KindPDF    Kind = "pdf"
-	KindJSON   Kind = "json"
-	KindFeed   Kind = "feed"
-	KindText   Kind = "text"
-	KindImage  Kind = "image"
-	KindBinary Kind = "binary"
+	KindHTML Kind = "html"
+	KindPDF  Kind = "pdf"
+	KindJSON Kind = "json"
+	KindFeed Kind = "feed"
+	KindText Kind = "text"
+	// KindMarkdown is a body the origin served as Markdown (text/markdown). It is
+	// already the output format, so it passes through unfenced instead of being
+	// shown as a KindText code block.
+	KindMarkdown Kind = "markdown"
+	KindImage    Kind = "image"
+	KindBinary   Kind = "binary"
 )
 
 type Page struct {
@@ -86,6 +90,24 @@ type RenderDiag struct {
 	DeadlineHit   bool  // the JS budget elapsed before the page went quiet
 	DOMBusy       bool  // the DOM was still mutating when the snapshot was taken
 	TimersPending int   // one-shot timers still scheduled at snapshot (content may be behind one)
+	// SettledIdle: the settle closed because nothing could run more JS (ADR 0004).
+	SettledIdle bool
+	// TasksHeld is how long queued scheduler tasks held the settle open.
+	TasksHeld time.Duration
+	// TimersFastForwarded counts long one-shot timers that were run early
+	// because the page had otherwise gone quiet.
+	TimersFastForwarded int
+
+	// The render-collapse guard (ADR 0023). TextBefore/TextAfter are the bytes of
+	// content text the document held before its scripts ran and after (0/0 when
+	// the guard is off). Discarded is true when the scripts left under a tenth of
+	// a substantial server-rendered page — a hydration crash, an error or consent
+	// shell — so the rendered DOM was thrown away and the page is the server's
+	// HTML again: Page.Rendered is then false, while everything else here still
+	// describes the render that ran.
+	TextBefore int
+	TextAfter  int
+	Discarded  bool
 
 	// Requests/Console are the page-JS network log and console output captured
 	// during the render, surfaced by the requests/console tools (not dumped on
@@ -301,11 +323,29 @@ type Article struct {
 	ContentNode *html.Node // the cleaned content subtree (clone, safe to mutate)
 	TextLength  int
 	// Source records which reduction actually produced the content: "readability"
-	// (a distinct article body was extracted) or "full" (the whole reduced page —
-	// either requested, or the fallback when readability found no article). Lets
-	// callers report an article→full fallback instead of silently mislabeling it.
+	// (a distinct article body was extracted), "main" (the page's main landmark)
+	// or "full" (the whole reduced page — either requested, or a fallback). Lets
+	// callers report an article fallback instead of silently mislabeling it.
 	Source string
+	// Fallback says why an article reduction returned something else: "" (it did
+	// not), FallbackNoArticle or FallbackPartialArticle.
+	Fallback string
+	// Coverage is the share of the page's content region (dom.MeasureContent)
+	// that a readability extraction holds, set only when the extraction was
+	// accepted but left a noticeable part out — under PartialNoteCoverage, with at
+	// least the partial-article rule's minimum left out. 0 means "nothing to
+	// report": a full or main reduction, or an extraction that holds the page.
+	Coverage float64
 }
+
+// Why an article reduction fell back to a wider one (Article.Fallback).
+const (
+	// FallbackNoArticle: readability found no article body at all.
+	FallbackNoArticle = "no_article"
+	// FallbackPartialArticle: readability found one, but it holds only a small
+	// part of the page's content — a hub, listing or index, not an article.
+	FallbackPartialArticle = "partial_article"
+)
 
 // Table is an extracted HTML data table. Computed on demand by dom.Tables (via
 // the data tool), never as part of the per-read Extract pass. Truncated reports

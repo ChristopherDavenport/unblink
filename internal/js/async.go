@@ -22,7 +22,10 @@ const xhrTimeoutReason = "fetch: timeout"
 // only installed when a Transport is available; otherwise fetch/XHR keep their
 // rejecting stubs.
 func (b *bridge) installAsync() {
-	if b.transport == nil {
+	// A bridge bound before install (the background worker) knows now whether it has
+	// a transport. A shell does not: it installs the primitive, and bind() swaps in
+	// the rejecting stubs if the page turns out to have no network (noNetProgram).
+	if b.bound && b.transport == nil {
 		return
 	}
 	_ = b.vm.Set("__unblinkFetch", func(call goja.FunctionCall) goja.Value {

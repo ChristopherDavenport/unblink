@@ -5,8 +5,9 @@
 //
 // A *goja.Runtime is not goroutine-safe, so each Render gets its own runtime and
 // event loop, used exactly once, bounded by a concurrency semaphore. An optional
-// pre-warm pool creates those (fresh, never-reused) loops in the background so the
-// runtime-creation cost is off the render critical path.
+// pre-warm pool prepares those (fresh, never-reused) runtimes in the background —
+// the loop, the installed DOM/Web API surface and both preludes, everything that
+// does not depend on the page — so a render only binds one to its document.
 package js
 
 import (
@@ -44,13 +45,15 @@ const (
 type Engine struct {
 	timeout   time.Duration
 	sem       chan struct{}
-	pool      chan *eventloop.EventLoop // pre-warmed, fresh, single-use loops; nil when disabled
+	pool      chan warmRuntime // pre-warmed, fresh, single-use runtimes; nil when disabled
 	stop      chan struct{}
 	closeOnce sync.Once
-	assets    *assetCache    // TTL'd script/module/bundle cache; nil when disabled
+	assets    *assetCache    // TTL'd script/module/transform cache; nil when disabled
 	webdriver bool           // navigator.webdriver; true unless the operator opted into --tls-mimic parity
 	memGuard  *memGuard      // heap watchdog over all live/one-shot runtimes; nil when disabled
 	extHost   *ExtensionHost // loaded WebExtensions (network rules); nil when none configured
+
+	liveTaskBudget time.Duration // idle-watchdog task budget for live contexts (Context.watch)
 }
 
 // Option configures an Engine.
@@ -64,21 +67,30 @@ type config struct {
 	webdriver  bool
 	memLimit   uint64
 	extensions []*webext.Bundle
+	liveTask   time.Duration
 }
 
 // WithTimeout sets the wall-clock budget for a single render.
 func WithTimeout(d time.Duration) Option { return func(c *config) { c.timeout = d } }
 
+// WithLiveTaskBudget sets how long one page task may run on a live context
+// between operations before the idle watchdog interrupts it (default
+// DefaultLiveTaskBudget). Repeated offenders stop the context; see Context.watch.
+func WithLiveTaskBudget(d time.Duration) Option { return func(c *config) { c.liveTask = d } }
+
 // WithConcurrency caps how many renders may run at once.
 func WithConcurrency(n int) Option { return func(c *config) { c.concurrent = n } }
 
-// WithPrewarm keeps n fresh event loops ready in the background so runtime
-// creation is off the render critical path. 0 disables the pool (loops are
-// created per render). Loops are always single-use; the pool never reuses one.
+// WithPrewarm keeps n prepared runtimes ready in the background so runtime
+// setup (creating the loop, installing the API surface, running the preludes — the
+// bulk of a small render's cost) is off the render critical path. 0 disables the
+// pool (each render prepares its own). Runtimes are always single-use; the pool
+// never reuses one. An idle prepared runtime holds its installed surface in memory
+// (about 1.6 MiB of heap) and one parked goroutine.
 func WithPrewarm(n int) Option { return func(c *config) { c.prewarm = n } }
 
 // WithAssetCache caches page-JS *asset* downloads (external scripts, module
-// sources) and esbuild bundle outputs across renders for ttl. Page data
+// sources) and each module's esbuild transform across renders for ttl. Page data
 // requests (fetch/XHR) are never cached. 0 disables (the default).
 func WithAssetCache(ttl time.Duration) Option { return func(c *config) { c.assetTTL = ttl } }
 
@@ -114,8 +126,12 @@ func New(opts ...Option) *Engine {
 		c.concurrent = DefaultMaxConcurrent
 	}
 	e := &Engine{timeout: c.timeout, sem: make(chan struct{}, c.concurrent), assets: newAssetCache(c.assetTTL), webdriver: c.webdriver, memGuard: newMemGuard(c.memLimit), extHost: newExtensionHost(c.extensions)}
+	e.liveTaskBudget = c.liveTask
+	if e.liveTaskBudget <= 0 {
+		e.liveTaskBudget = DefaultLiveTaskBudget
+	}
 	if c.prewarm > 0 {
-		e.pool = make(chan *eventloop.EventLoop, c.prewarm)
+		e.pool = make(chan warmRuntime, c.prewarm)
 		e.stop = make(chan struct{})
 		go e.refill()
 	}
@@ -129,8 +145,9 @@ func New(opts ...Option) *Engine {
 // goja_nodejs's DefaultSourceLoader is os.Open, so a zero-value registry lets page
 // JS read arbitrary host files (e.g. require('/etc/passwd'), and .json paths are
 // parsed and handed back to the script) and exfiltrate them via fetch. We refuse
-// all module source loads instead. ESM `import` is unaffected: it is bundled by
-// esbuild through the guarded network transport, not through require().
+// all module source loads instead. ESM `import` is unaffected: modules are fetched
+// through the guarded network transport and transformed by esbuild.Transform (which
+// has no filesystem access; see runModules), not loaded through require().
 func rejectRequire(string) ([]byte, error) {
 	return nil, errors.New("unblink: require() is disabled")
 }
@@ -145,31 +162,88 @@ func newLoop() *eventloop.EventLoop {
 	return eventloop.NewEventLoop(eventloop.WithRegistry(reg), eventloop.EnableConsole(false))
 }
 
-// refill keeps the pool topped up with fresh event loops, blocking (no busy-wait)
+// warmRuntime is one single-use runtime handed to a render or a live context. A
+// pooled one arrives prepared: its loop is started and b holds a bridge shell with
+// install() and both preludes already run, so the render only binds it to the page.
+// A cold one (no pool, or a burst beyond it) has b == nil and an unstarted loop; the
+// caller prepares it on the loop. Either way the sequence is the same — prepare,
+// then bind — so the pooled path is the one every render exercises.
+type warmRuntime struct {
+	loop *eventloop.EventLoop
+	b    *bridge
+}
+
+// prepare builds everything about a runtime that does not depend on the page: the
+// bridge shell, the installed prototypes/interfaces/globals, and the two preludes.
+// It is the bulk of a render's fixed cost (thousands of function objects), which is
+// why the pool pays it ahead of time. Must run on the loop goroutine.
+func (e *Engine) prepare(vm *goja.Runtime, loop *eventloop.EventLoop) *bridge {
+	b := newBridgeShell(vm, loop, e.extHost)
+	b.assets = e.assets
+	b.webdriver = e.webdriver
+	b.install()
+	// Stubs simplest to express in JS (storage, observers, rAF), then the
+	// web-platform API layer (encoding, fetch classes, viewport/matchMedia,
+	// Intl, messaging). Failure here is non-fatal.
+	_, _ = vm.RunProgram(preludeProgram)
+	_, _ = vm.RunProgram(preludeAPIProgram)
+	b.takePreludeHelpers()
+	b.preludesRan = true
+	return b
+}
+
+// refill keeps the pool topped up with prepared runtimes, blocking (no busy-wait)
 // whenever the pool is full until a render frees a slot.
 func (e *Engine) refill() {
 	for {
-		loop := newLoop()
+		w := warmRuntime{loop: newLoop()}
+		w.loop.Start()
+		ready := make(chan struct{})
+		if !w.loop.RunOnLoop(func(vm *goja.Runtime) {
+			defer close(ready)
+			defer func() {
+				if r := recover(); r != nil {
+					w.b = nil
+				}
+			}()
+			w.b = e.prepare(vm, w.loop)
+		}) {
+			close(ready)
+		}
 		select {
-		case e.pool <- loop:
+		case <-ready:
 		case <-e.stop:
+			w.loop.Terminate()
+			return
+		}
+		if w.b == nil { // preparation failed: never hand out a half-built runtime
+			w.loop.Terminate()
+			w = warmRuntime{loop: newLoop()}
+			w.loop.Start()
+		}
+		select {
+		case e.pool <- w:
+		case <-e.stop:
+			w.loop.Terminate()
 			return
 		}
 	}
 }
 
-// takeLoop returns a fresh event loop: from the pool when one is ready, otherwise
-// created inline (cold start, or a burst beyond the pool size). It never blocks on
-// the pool.
-func (e *Engine) takeLoop() *eventloop.EventLoop {
+// takeRuntime returns a fresh runtime with its loop started: a prepared one from
+// the pool when one is ready, otherwise a cold one created inline (cold start, or
+// a burst beyond the pool size). It never blocks on the pool.
+func (e *Engine) takeRuntime() warmRuntime {
 	if e.pool != nil {
 		select {
-		case loop := <-e.pool:
-			return loop
+		case w := <-e.pool:
+			return w
 		default:
 		}
 	}
-	return newLoop()
+	w := warmRuntime{loop: newLoop()}
+	w.loop.Start()
+	return w
 }
 
 // Close stops the pre-warm refiller and the memory-guard watchdog. It is
@@ -178,6 +252,15 @@ func (e *Engine) Close() {
 	e.closeOnce.Do(func() {
 		if e.stop != nil {
 			close(e.stop)
+			// Pooled runtimes have started loops; stop the ones never handed out.
+			for drained := false; !drained; {
+				select {
+				case w := <-e.pool:
+					w.loop.Terminate()
+				default:
+					drained = true
+				}
+			}
 		}
 		e.extHost.Close()
 		e.memGuard.close()
@@ -224,8 +307,8 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	}
 
 	start := time.Now()
-	loop := e.takeLoop()
-	loop.Start()
+	warm := e.takeRuntime()
+	loop := warm.loop
 	var vmRef atomic.Pointer[goja.Runtime]
 	var b *bridge
 	var stats settleStats
@@ -248,7 +331,11 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		e.memGuard.register(vm)
 		// reqTimeout is the render budget so a wait_timeout override also gives the
 		// page's own fetches longer to complete (else the awaited content never lands).
-		b = newBridge(vm, loop, doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget, e.extHost)
+		if b = warm.b; b == nil {
+			b = e.prepare(vm, loop)
+		}
+		clockOffset := pinClock(vm, env.ClockStart)
+		b.bind(doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget)
 		b.allowCrossOrigin = env.AllowCrossOrigin
 		b.sriEnabled = !env.DisableSRI
 		b.respHeaders = env.ResponseHeaders
@@ -259,12 +346,9 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 				b.hideNonces() // capture + blank nonces before page JS can read them
 			}
 		}
-		b.assets = e.assets
-		b.webdriver = e.webdriver
-		b.install()
-		// Kick off the concurrent script-body prefetch before the prelude runs so
-		// the fetches overlap prelude execution and each other; runScripts blocks
-		// on each body in document order.
+		// Kick off the concurrent script-body prefetch as soon as the page is bound,
+		// so the fetches overlap each other; runScripts blocks on each body in
+		// document order.
 		b.startPrefetch(scripts)
 		// Warm the modulepreload/preload chunk graph concurrently too, so the serial
 		// runtime import() path (dynimport) hits the asset cache instead of fetching
@@ -277,12 +361,12 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		if clamp < 0 {
 			clamp = 0
 		}
-		_ = vm.Set("__unblinkTimerDeadlineMs", time.Now().Add(clamp).UnixMilli())
-		// Stubs simplest to express in JS (storage, observers, rAF), then the
-		// web-platform API layer (encoding, fetch classes, viewport/matchMedia,
-		// Intl, messaging). Failure here is non-fatal.
-		_, _ = vm.RunProgram(preludeProgram)
-		_, _ = vm.RunProgram(preludeAPIProgram)
+		renderStart := time.Now()
+		// The timer wrapper compares these against Date.now(), so they are
+		// expressed on the page's clock (the real one unless Env.ClockStart).
+		_ = vm.Set("__unblinkTimerDeadlineMs", renderStart.Add(clamp+clockOffset).UnixMilli())
+		_ = vm.Set("__unblinkTimerBudgetEndMs", renderStart.Add(budget+clockOffset).UnixMilli())
+		b.finishBind()
 		setupDone = time.Now()
 		// Tell the extension background this tab navigated to the page, before any
 		// request, so it builds a per-tab page store and filters with the right context.
@@ -290,14 +374,12 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		// Extension content scripts share the page world (ADR 0010). Gather their
 		// hiding CSS once, then inject JS at each run_at around the page's own scripts.
 		b.injectContentScriptCSS()
+		b.readyState = "loading" // the page load begins (see setReadyState)
 		b.injectContentScripts(webext.RunAtStart)
 		// CSP unsafe-eval gate installs just before page scripts (after trusted
 		// extension content scripts, which keep eval).
 		b.installCSPEvalGate()
-		b.runScripts(scripts)
-		if len(modules) > 0 {
-			b.runModules(modules)
-		}
+		b.runDocumentScripts(scripts, modules) // sets readyState "interactive" once parsing is done
 		b.injectContentScripts(webext.RunAtEnd)
 		b.fireLifecycle()
 		b.injectContentScripts(webext.RunAtIdle)
@@ -323,23 +405,29 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 	case <-done:
 	case <-hard.C:
 		interrupted = true
-		if vm := vmRef.Load(); vm != nil {
-			vm.Interrupt("unblink: render timeout")
-		}
-		<-done
+		interruptUntil(vmRef.Load(), "unblink: render timeout", done)
 	case <-ctx.Done():
 		interrupted = true
-		if vm := vmRef.Load(); vm != nil {
-			vm.Interrupt("unblink: context cancelled")
-		}
-		<-done
+		interruptUntil(vmRef.Load(), "unblink: context cancelled", done)
 		rerr = ctx.Err()
 	}
 	// Terminate before the caller reads doc so no background setInterval mutates the
 	// tree concurrently with extraction. Terminate joins the loop goroutine, giving
 	// the happens-before edge for the b/stats reads below.
-	loop.Terminate()
+	//
+	// The render is over, so page JS must not run again — and Terminate can only
+	// stop a loop BETWEEN jobs. A callback that never returns (a setInterval whose
+	// body spins, the second of two runaway timers) would otherwise start after
+	// the settle closed and block the join forever. Keep interrupting until the
+	// loop goroutine has exited.
+	joined := make(chan struct{})
+	go func() {
+		loop.Terminate()
+		close(joined)
+	}()
+	interruptUntil(vmRef.Load(), "unblink: render finished", joined)
 	if vm := vmRef.Load(); vm != nil {
+		vm.ClearInterrupt() // the post-render reads below may call into the runtime
 		e.memGuard.unregister(vm)
 	}
 	// Flatten shadow content (resolving <slot> distribution) into the light tree so
@@ -380,6 +468,8 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		env.Diag.DOMBusy = stats.domBusy
 		env.Diag.NetPending = int(stats.pending)
 		env.Diag.TimersPending = stats.timersPending
+		env.Diag.TasksHeld = stats.taskHeld
+		env.Diag.TimersFastForwarded = stats.fastForwards
 		env.Diag.SettledIdle = stats.idleExit && !interrupted
 		if b != nil {
 			if interrupted {
@@ -396,9 +486,54 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 				env.Diag.PendingNavigation = b.pendingNav.String()
 			}
 			// Post-Terminate (settle complete + loop joined): the request/console
-			// logs now include everything the settle waited on.
+			// logs now include everything the settle waited on — and so do the
+			// errors: an exception thrown from a timer, a late chunk or an async
+			// callback happens after the script pass that first filled Diag.
 			b.fillCaptureLogs(env.Diag)
+			env.Diag.Errors = b.collectDiagnostics().Errors
 		}
 	}
 	return rerr
+}
+
+// interruptEvery is how often interruptUntil re-arms the interrupt.
+const interruptEvery = 10 * time.Millisecond
+
+// interruptUntil interrupts vm, again and again, until stop is closed.
+//
+// One Interrupt is not enough to stop a page. goja's interrupt is one-shot: it
+// unwinds the call that is running — or the next one to start — and is cleared
+// as that call returns to Go (Runtime.leaveAbrupt). The event loop then starts
+// the next queued callback with no interrupt pending, and if that callback never
+// returns either (the next tick of a setInterval whose body spins, a second
+// runaway timer) nothing stops it: the settle's closing tick never gets to run,
+// the caller waits on it forever, and a core spins until the process exits.
+// Re-arming until the awaited event has happened closes that hole.
+func interruptUntil(vm *goja.Runtime, reason string, stop <-chan struct{}) {
+	if vm == nil {
+		<-stop
+		return
+	}
+	t := time.NewTicker(interruptEvery)
+	defer t.Stop()
+	for {
+		vm.Interrupt(reason)
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// pinClock makes the runtime's clock read start-relative time (Env.ClockStart)
+// and returns the offset it applied; a zero start leaves the real clock. Must
+// run before the bridge is bound, which is when the page's time origin is taken.
+func pinClock(vm *goja.Runtime, start time.Time) time.Duration {
+	if start.IsZero() {
+		return 0
+	}
+	off := time.Until(start)
+	vm.SetTimeSource(func() time.Time { return time.Now().Add(off) })
+	return off
 }

@@ -161,6 +161,12 @@ func ancestorForm(n *html.Node) *html.Node {
 // pointerdown is canceled, and usePress cancels pointerdown yet expects click.
 func (b *bridge) dispatchPress(n *html.Node) {
 	for _, typ := range pressSequence {
+		if typ == "click" {
+			// The click carries the element's activation behaviour (a checkbox
+			// toggles, a radio button takes its group, a label forwards).
+			b.clickActivate(n, func() bool { return b.dispatchOnNode(n, b.newUIEvent(typ, true, true, b.wrap(n))) })
+			continue
+		}
 		b.dispatchOnNode(n, b.newUIEvent(typ, true, true, b.wrap(n)))
 		if typ == "mousedown" {
 			// Browsers move focus to the nearest focusable ancestor on mousedown.
@@ -188,6 +194,10 @@ func (b *bridge) dispatchHover(n *html.Node) {
 // through afterAttr: a .value= property write must not fire a custom element's
 // attributeChangedCallback the way a real setAttribute would.
 func (b *bridge) setControlValue(n *html.Node, val string) {
+	if n.Data == "select" {
+		b.selectByValue(n, val) // a select's value is its selected option (selectstate.go)
+		return
+	}
 	if n.Data == "textarea" {
 		setTextContent(n, val)
 		b.onMutate(mutationRecord{typ: "characterData", target: n})

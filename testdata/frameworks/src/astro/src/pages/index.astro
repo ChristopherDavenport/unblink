@@ -1,0 +1,19 @@
+---
+import Kiln from '../components/Kiln.jsx';
+---
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Astro Islands Fixture</title>
+  </head>
+  <body>
+    <main>
+      <article>
+        <h1>Astro Pottery Islands</h1>
+        <p>A static Astro build: this prose is server-rendered HTML, and the two kilns below are Preact islands hydrated in place.</p>
+        <div id="load-island"><Kiln client:load label="Load" /></div>
+        <div id="visible-island"><Kiln client:visible label="Visible" /></div>
+      </article>
+    </main>
+  </body>
+</html>

@@ -2,10 +2,8 @@ package js
 
 import (
 	"net/url"
-	"strconv"
 	"strings"
 
-	"github.com/dop251/goja"
 	"golang.org/x/net/html"
 )
 
@@ -15,38 +13,6 @@ import (
 // navigation, recorded in pendingNav (like location.href) so the caller can follow
 // it. GET forms carry their serialized fields as the query string; POST forms record
 // the action target best-effort (the body isn't carried on the follow).
-
-// htmlCollection wraps a node slice as a live-ish HTMLCollection: numeric indices,
-// length, item(i), and namedItem(name) (matched by id, then name attribute). The
-// challenge uses both document.forms[0] (index) and form.elements.namedItem("solution").
-func (b *bridge) htmlCollection(nodes []*html.Node) *goja.Object {
-	vm := b.vm
-	o := vm.NewObject()
-	for i, n := range nodes {
-		_ = o.Set(strconv.Itoa(i), b.wrap(n))
-	}
-	_ = o.Set("length", len(nodes))
-	_ = o.Set("item", func(call goja.FunctionCall) goja.Value {
-		i := int(call.Argument(0).ToInteger())
-		if i < 0 || i >= len(nodes) {
-			return goja.Null()
-		}
-		return b.wrap(nodes[i])
-	})
-	_ = o.Set("namedItem", func(call goja.FunctionCall) goja.Value {
-		name := call.Argument(0).String()
-		if name == "" {
-			return goja.Null()
-		}
-		for _, n := range nodes {
-			if getAttr(n, "id") == name || getAttr(n, "name") == name {
-				return b.wrap(n)
-			}
-		}
-		return goja.Null()
-	})
-	return o
-}
 
 // formControls returns a form's submittable controls in tree order: the
 // form-associated elements a submit serializes — including form-associated custom
@@ -127,15 +93,7 @@ func controlValue(n *html.Node) string {
 	case "textarea":
 		return textContent(n)
 	case "select":
-		for _, opt := range queryAll(n, "option") {
-			if hasAttr(opt, "selected") {
-				if v := getAttr(opt, "value"); v != "" || hasAttr(opt, "value") {
-					return v
-				}
-				return textContent(opt)
-			}
-		}
-		return ""
+		return selectValue(n)
 	default:
 		return getAttr(n, "value")
 	}
@@ -221,20 +179,11 @@ func (b *bridge) submitForm(form *html.Node, fireEvent bool) {
 	b.navigate(target.String())
 }
 
-// fireSubmitEvent dispatches a cancelable, bubbling submit event at the form and
-// invokes its onsubmit property handler, returning false if submission was canceled
-// (preventDefault called, or the onsubmit handler returned false — the classic
-// content-attribute cancel convention).
+// fireSubmitEvent dispatches a cancelable, bubbling submit event at the form,
+// returning false if submission was canceled: preventDefault was called, or the
+// form's onsubmit handler (property or content attribute, run by the dispatch
+// like any other listener) returned false.
 func (b *bridge) fireSubmitEvent(form *html.Node) bool {
-	wrapper := b.wrap(form)
-	ev := b.newEvent("submit", true, true, wrapper)
-	notCanceled := b.dispatchOnNode(form, ev)
-	if obj := wrapper.ToObject(b.vm); obj != nil {
-		if fn, ok := goja.AssertFunction(obj.Get("onsubmit")); ok {
-			if ret, err := fn(wrapper, ev.js); err == nil && ret != nil && !ret.ToBoolean() {
-				return false
-			}
-		}
-	}
-	return notCanceled && !ev.defaultPrevented
+	ev := b.newEvent("submit", true, true, b.wrap(form))
+	return b.dispatchOnNode(form, ev) && !ev.defaultPrevented
 }

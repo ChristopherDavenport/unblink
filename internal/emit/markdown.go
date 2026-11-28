@@ -11,16 +11,31 @@ import (
 	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
 
 	"github.com/christopherdavenport/unblink/internal/page"
 )
 
+// Tables are rendered as GFM tables (the table plugin): header row, one line per
+// row, cells delimited — where they used to be written as one run of cell text
+// ("AttributeDescription hx-getIssues a GET request…"). Padding is minimal, since
+// column alignment costs tokens and means nothing to a model. The plugin declines
+// a table it cannot express as one — role="presentation", or a cell holding
+// several lines (paragraphs, a list, a <br>) — and that table falls back to its
+// rows as paragraphs, with reduce keeping the cells apart
+// (dom.SeparateInlineSiblings).
+//
 // mdConverter is built once and shared — the same plugin set the v2
 // ConvertString convenience wrapper constructs per call. A Converter is
 // documented safe for concurrent use (internally mutex-guarded); per-call
 // options like WithDomain are passed to ConvertString, not baked in here.
 var mdConverter = converter.NewConverter(
-	converter.WithPlugins(base.NewBasePlugin(), commonmark.NewCommonmarkPlugin()),
+	converter.WithPlugins(base.NewBasePlugin(), commonmark.NewCommonmarkPlugin(),
+		table.NewTablePlugin(
+			table.WithSkipEmptyRows(true),
+			table.WithCellPaddingBehavior(table.CellPaddingBehaviorMinimal),
+		),
+		literalText{}),
 )
 
 // mdImage matches a Markdown inline image: ![alt](url) with an optional title.
@@ -75,7 +90,7 @@ func Markdown(p *page.Page) error {
 	var b strings.Builder
 	if title := strings.TrimSpace(p.Article.Title); title != "" {
 		b.WriteString("# ")
-		b.WriteString(title)
+		b.WriteString(escapeInline(title))
 		b.WriteString("\n\n")
 	}
 	b.WriteString(body)

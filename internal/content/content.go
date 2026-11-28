@@ -1,5 +1,5 @@
-// Package content converts non-HTML page bodies — JSON, plain text, RSS/Atom/JSON
-// feeds, PDF, and images — into Markdown for the read pipeline. It is dispatched
+// Package content converts non-HTML page bodies — JSON, plain text, Markdown,
+// RSS/Atom/JSON feeds, PDF, and images — into Markdown for the read pipeline. It is dispatched
 // by page.Kind from the browser orchestrator, mirroring how reduce/emit run for
 // HTML pages.
 //
@@ -31,6 +31,9 @@ func Render(ctx context.Context, p *page.Page) error {
 		p.Markdown = renderJSON(p.Raw)
 	case page.KindText:
 		p.Markdown = renderText(p.Raw)
+	case page.KindMarkdown:
+		p.Markdown = renderMarkdown(p.Raw)
+		upgradeTitle(p, MarkdownTitle(p.Raw))
 	case page.KindFeed:
 		md, title, err := feed.Convert(p.Raw, p.FinalURL)
 		if err != nil {
@@ -78,6 +81,81 @@ func renderJSON(raw []byte) string {
 
 func renderText(raw []byte) string {
 	return fencedBlock("", string(raw))
+}
+
+// renderMarkdown passes a Markdown body through as-is: it is already the output
+// format, so fencing it (as renderText would) only costs the reader its
+// structure. The one edit is normalisation — a leading BOM is dropped and CRLF/CR
+// line endings become LF — so pagination and the cursor fingerprint see the same
+// text regardless of the origin's platform.
+func renderMarkdown(raw []byte) string {
+	s := strings.TrimPrefix(string(raw), "\uFEFF")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	if s != "" && !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	return s
+}
+
+// maxTitleScanLines bounds MarkdownTitle's scan: a title sits at the top of a
+// document, and the body is untrusted and may be huge.
+const maxTitleScanLines = 200
+
+// MarkdownTitle returns a Markdown document's title: its first ATX level-1
+// heading ("# Title") outside a fenced code block, else the `title:` key of a
+// leading YAML front-matter block. It returns "" when neither is present within
+// the first maxTitleScanLines lines.
+func MarkdownTitle(raw []byte) string {
+	s := strings.TrimPrefix(string(raw), "\uFEFF")
+	var frontTitle string
+	inFront, inFence := false, false
+	var fence string
+	line := 0
+	for len(s) > 0 && line < maxTitleScanLines {
+		var l string
+		if i := strings.IndexByte(s, '\n'); i >= 0 {
+			l, s = s[:i], s[i+1:]
+		} else {
+			l, s = s, ""
+		}
+		l = strings.TrimRight(l, "\r")
+		line++
+		trimmed := strings.TrimSpace(l)
+		if line == 1 && trimmed == "---" {
+			inFront = true
+			continue
+		}
+		if inFront {
+			if trimmed == "---" || trimmed == "..." {
+				inFront = false
+				continue
+			}
+			if v, ok := strings.CutPrefix(l, "title:"); ok && frontTitle == "" {
+				frontTitle = strings.Trim(strings.TrimSpace(v), `"'`)
+			}
+			continue
+		}
+		if inFence {
+			if strings.HasPrefix(trimmed, fence) && strings.Trim(trimmed, fence[:1]) == "" {
+				inFence = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			n := len(trimmed) - len(strings.TrimLeft(trimmed, trimmed[:1]))
+			fence, inFence = trimmed[:n], true
+			continue
+		}
+		if rest, ok := strings.CutPrefix(trimmed, "# "); ok {
+			// Drop an optional closing sequence ("# Title #").
+			rest = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(rest), "#"))
+			if rest != "" {
+				return rest
+			}
+		}
+	}
+	return frontTitle
 }
 
 func renderBinaryManifest(p *page.Page) string {

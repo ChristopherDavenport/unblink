@@ -75,7 +75,8 @@ Load-bearing details:
 - A dependency shared across `import()` calls is instantiated once, so cross-chunk
   singletons and `instanceof` identity work. poe.ninja (Astro + React 19.2) hydrates
   its real content instead of the empty shell.
-- **Scope: the dynamic `import()` path only.** Static `<script type=module>`
+- **Scope: the dynamic `import()` path only** (superseded 2026-11-27 — see the
+  amendment below). Static `<script type=module>`
   (`runModules`) still bundles per entry (esbuild dedups *within* one entry's graph,
   which is sufficient there). A module loaded by **both** a static module-script and a
   dynamic `import()` could therefore still be duplicated across those two paths. This
@@ -89,3 +90,117 @@ Load-bearing details:
   fetched/transformed once instead of once per importing bundle (poe.ninja re-fetched
   React ~4× before), so heavy code-split graphs do *less* redundant work; the asset
   and compiled-program caches still amortize across renders.
+
+## Amendment (2026-11-27): static module scripts load through the registry too
+
+**The scope limit above is withdrawn.** `runModules` no longer calls `esbuild.Build`;
+every `<script type=module>` entry, external or inline, and its static graph load
+through this registry. `esbuild.Build` is not called anywhere on page-supplied code.
+
+### Why: the bundler read the local filesystem
+
+esbuild's bundler treats a dynamic import (or `require`) whose argument is a
+non-literal relative path as a **glob import**: ``import(`./${n}.json`)`` becomes the
+pattern `./**/*.json`, `import("./" + x)` becomes `./**/*`, and `../` patterns climb.
+It expands the pattern against the real filesystem and inlines every match. That
+expansion never reaches a plugin's `OnResolve`/`OnLoad`, so the network-only resolver
+plugin did not contain it. The root was the process working directory for a module
+fetched from the network and `/` for an inline module (`ResolveDir: "/"`).
+
+Untrusted page JS could therefore read any file esbuild has a default loader for
+(`.js`, `.mjs`, `.ts`, `.json`, `.css`, `.txt`, …) under the server's working
+directory or a parent, and send its contents to any origin with `fetch`. The inline
+form walked the whole filesystem, which is also a denial of service (minutes of CPU,
+gigabytes of memory). Real pages tripped it by accident: webpack's ESM chunk loader is
+`import("./" + chunkName)`, which made esbuild try to bundle whatever sat in the
+working directory and drop the page's entry when it met a file type it could not load.
+
+Moving `ResolveDir` to an empty directory does not fix it (`../` escapes), and there is
+no option to turn glob imports off. `esbuild.Transform` compiles one source string and
+has no resolver and no filesystem access, so the registry — which already used it —
+is the fix. `TestModuleGlobImportCannotReadLocalFS` is the regression test;
+`TestNoEsbuildBundlerOnPageCode` is a tripwire against reintroducing `Build`.
+
+### What changed in the registry
+
+- **Entries.** An external module script is `instantiateGraph(url)` + `evaluate(url)`.
+  An inline module has no URL: it gets an unregistered instance (`instantiateInline`)
+  whose referrer is the document base, so it can be neither imported nor deduped.
+- **Still synchronous.** `runModules` blocks the loop goroutine for the instantiate
+  phase (the fetches run concurrently off-loop), as the bundle build did. Module
+  scripts still run in document order, after classic scripts and before
+  `DOMContentLoaded`, and no async primitive is added (ADR 0004).
+- **One instance across static and dynamic.** The "one React" property now holds for a
+  module reached by a static entry and by `import()`, and for a module shared by two
+  module scripts (each entry used to bundle its own copy).
+- **Lazy means lazy.** A literal `import("./chunk.js")` is a call to the loader, not a
+  bundle edge, so the chunk and its static graph are fetched when the page calls it.
+  The bundler fetched all of them at load.
+- **Failure is local.** A lazy chunk that fails to load rejects that `import()`
+  promise. A static dependency that fails throws at the importer's `require`, failing
+  that entry with a recorded error; other entries run. Under the bundler any failed
+  load, lazy or not, dropped the whole entry.
+- **Cycles see the live namespace.** A cyclic importer now receives the module's live
+  `module.exports` (which esbuild's output assigns before the module's own requires
+  run) instead of a placeholder object that was never filled.
+- **A dependency's evaluation error is rethrown as itself** to each importer, instead
+  of being wrapped in a new `TypeError`.
+- **`import.meta`.** `import.meta.url` is the module URL (the document base for an
+  inline module) and `import.meta.resolve()` applies the import map. Both were
+  `undefined` on either path before. esbuild's `const import_meta = {};` is rebound to
+  a wrapper parameter by `importMetaDeclRE`.
+- **Non-literal `import()`.** The lowered call is redirected by rewriting only its
+  prefix (`dynImportPrefixRE`), so any argument expression survives, and it resolves
+  against the importing module's URL. In a bundled static module it used the document
+  base.
+- **JSON modules.** A URL ending in `.json` loads as a JSON module on every path (the
+  bundle loader did this; the dynamic path did not). The body goes through
+  `JSON.parse` from a string literal and is never spliced into the wrapper as code.
+- **SRI.** An integrity-checked module entry is registered from the verified bytes
+  (`instantiateFrom`), so the loader cannot fetch the URL a second time and run
+  different bytes when the asset cache is off.
+- **Caching.** The per-entry bundle cache is gone. Each module's transform is cached
+  in the asset cache under a hash of its source, independent of the page URL and the
+  import map, so repeat renders still skip esbuild.
+
+### Differences from the bundle path that a page could observe
+
+- An external module named by two script tags evaluates once (module-map behaviour);
+  it used to run twice.
+- Modules are no longer scope-hoisted into one function. Each is a CommonJS unit with
+  esbuild's interop shims, as dynamic chunks already were: the "CommonJS interop, not
+  full ESM" consequence above now applies to static graphs too. As before, esbuild
+  does not add a strict-mode directive, so module code is not forced into strict mode.
+- A module's source does not see the wrapper (amended 2026-11-27). Each unit runs in
+  a function whose parameters are named `require`, `module` and `exports`. In a
+  browser a free `require`/`module`/`exports` in an ES module is the page's global of
+  that name, usually undefined, and page code branches on it: a bundler's
+  `__require` helper returns the global `require` when one exists (Discourse then
+  reads its AMD loader's registry off it as `require.entries`), and a UMD prologue
+  assigns to `module.exports`. The transform therefore passes esbuild a `Define` that
+  rewrites exactly the free source references to `globalThis.<name>` — esbuild's own
+  generated plumbing and local bindings are untouched — and appends `export {}` so a
+  module with no import/export syntax is still parsed as ESM (top-level `this` is
+  `undefined`, not `exports`). `Define` is only passed for names the source mentions
+  (`freeWordIn`), because it rebuilds esbuild's globals table per call. The event
+  loop's own neutered Node `require` global is removed from the page world, so
+  `typeof require` is `"undefined"` in classic scripts and modules alike. This
+  replaces the earlier call-time fallback (an unresolvable `require(id)` handed to
+  the page's loader), which covered calls but not `typeof require` or property reads.
+- A failed static dependency no longer prevents the modules that precede it in
+  evaluation order from running: evaluation is post-order and stops at the failing
+  `require`. A browser evaluates nothing in that graph.
+- Top-level `await` is unchanged: a transform error for that module (it was a bundle
+  error for the whole entry).
+- Syntax lowering is unchanged: the same esbuild ES2017 target, now applied per module.
+- CSP and SRI are unchanged in scope: they gate the module entry, and its static
+  dependencies inherit the decision.
+
+### Cost
+
+One transform and one function wrapper per module replace one bundle. Measured on the
+new `BenchmarkRenderModuleGraph*` (an entry importing 100 chunks, 201 modules): about
+9 ms per render with the asset cache warm against about 3 ms for the bundle, and about
+37 ms cold against about 10 ms. A single large module (`BenchmarkRenderLitModule*`)
+shows no measurable difference. In exchange a code-split page no longer downloads and compiles the lazy
+chunks it never runs.

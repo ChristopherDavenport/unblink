@@ -3,6 +3,7 @@ package js
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/dop251/goja"
 )
@@ -30,11 +31,24 @@ func (b *bridge) installGlobals(win *goja.Object) {
 		b.recordConsole(level, msg)
 	})
 
+	// Uncaught-exception sink for the prelude's timer wrapper (consumed and
+	// deleted by it): a throw that escapes a timer callback is reported like one
+	// that escapes a script.
+	_ = vm.Set("__unblinkReportUncaught", func(call goja.FunctionCall) goja.Value {
+		b.reportThrown(call.Argument(0))
+		return goja.Undefined()
+	})
+
 	// The prelude's timer wrapper registers its live-timer audit here (consumed
 	// and deleted like __unblinkConsoleError); settlePoll reads it on close.
 	_ = vm.Set("__unblinkRegisterTimerAudit", func(call goja.FunctionCall) goja.Value {
 		if fn, ok := goja.AssertFunction(call.Argument(0)); ok {
 			b.timerAudit = fn
+			// Second argument: run the earliest-due clamped timer now (see
+			// settlePoll's fast-forward).
+			if ff, ok := goja.AssertFunction(call.Argument(1)); ok {
+				b.timerFastForward = ff
+			}
 		}
 		return goja.Undefined()
 	})
@@ -49,6 +63,26 @@ func (b *bridge) installGlobals(win *goja.Object) {
 	_ = nav.Set("hardwareConcurrency", 4)
 	_ = nav.Set("maxTouchPoints", 0)
 	_ = nav.Set("vendor", "")
+	// The legacy identification members every browser still answers with the same
+	// frozen values. Old-but-live sniffing code reads them unguarded
+	// (navigator.appVersion.indexOf("Mac") threw on open-wc.org and took the
+	// module with it).
+	_ = nav.Set("appVersion", strings.TrimPrefix(userAgent, "Mozilla/"))
+	_ = nav.Set("appName", "Netscape")
+	_ = nav.Set("appCodeName", "Mozilla")
+	_ = nav.Set("product", "Gecko")
+	_ = nav.Set("productSub", "20030107")
+	_ = nav.Set("vendorSub", "")
+	// No plugins, no MIME-type handlers, no built-in PDF viewer, no Java.
+	_ = nav.Set("pdfViewerEnabled", false)
+	_ = nav.Set("javaEnabled", func(goja.FunctionCall) goja.Value { return vm.ToValue(false) })
+	for _, name := range []string{"plugins", "mimeTypes"} {
+		list := vm.NewArray()
+		_ = list.Set("item", func(goja.FunctionCall) goja.Value { return goja.Null() })
+		_ = list.Set("namedItem", func(goja.FunctionCall) goja.Value { return goja.Null() })
+		_ = list.Set("refresh", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+		_ = nav.Set(name, list)
+	}
 	_ = nav.Set("doNotTrack", goja.Null())
 	// webdriver is true by default: unblink is automation and says so (the UA
 	// string already carries "unblink"). Under --tls-mimic the caller opts into
@@ -100,7 +134,7 @@ func (b *bridge) installGlobals(win *goja.Object) {
 	_ = vm.Set("location", loc)
 	_ = win.Set("location", loc)
 
-	if b.base != nil {
+	if b.base != nil && len(b.historyStack) == 0 {
 		b.historyStack = []historyEntry{{url: b.base}}
 	}
 	hist := vm.NewObject()
@@ -120,6 +154,19 @@ func (b *bridge) installGlobals(win *goja.Object) {
 	})
 	b.historyObj = hist
 	_ = hist.Set("length", 1)
+	// history.state is the current entry's state: null until a pushState/
+	// replaceState stores one. Routers read it back right after writing it
+	// (React Router's scroll restoration, Next's app router), so a missing
+	// property — undefined — made `history.state.key` throw.
+	b.defineGetter(hist, "state", func() goja.Value {
+		if b.historyPos >= 0 && b.historyPos < len(b.historyStack) {
+			if st := b.historyStack[b.historyPos].state; st != nil && !goja.IsUndefined(st) {
+				return st
+			}
+		}
+		return goja.Null()
+	})
+	_ = hist.Set("scrollRestoration", "auto")
 	_ = vm.Set("history", hist)
 	_ = win.Set("history", hist)
 
@@ -223,12 +270,7 @@ func (b *bridge) historyGo(delta int) {
 	} else {
 		_ = ev.js.Set("state", goja.Null())
 	}
-	b.dispatchOnWindow(ev)
-	if h := b.windowObj.Get("onpopstate"); h != nil {
-		if fn, ok := goja.AssertFunction(h); ok {
-			b.callSafe(fn, b.windowObj, ev.js)
-		}
-	}
+	b.dispatchOnWindow(ev) // window.onpopstate runs as part of the dispatch
 }
 
 // navigate handles location.href/assign/replace. A render never performs the real
@@ -249,12 +291,7 @@ func (b *bridge) navigate(raw string) {
 		ev := b.newEvent("hashchange", false, false, b.windowObj)
 		_ = ev.js.Set("oldURL", old.String())
 		_ = ev.js.Set("newURL", u.String())
-		b.dispatchOnWindow(ev)
-		if h := b.windowObj.Get("onhashchange"); h != nil {
-			if fn, ok := goja.AssertFunction(h); ok {
-				b.callSafe(fn, b.windowObj, ev.js)
-			}
-		}
+		b.dispatchOnWindow(ev) // window.onhashchange runs as part of the dispatch
 	}
 }
 
@@ -294,6 +331,16 @@ func rawFragment(f string) string {
 // event loop / goja; this just fills the gaps so registration-time code doesn't
 // throw ReferenceError.
 const preludeJS = `
+// Page-dependent state is not known while the preludes run: a pooled runtime is
+// prepared before any page exists (Engine.prepare). Code that needs the page URL,
+// the render's start instant, its timer deadline or its stores registers a bind
+// hook; the engine runs the hooks once the page is bound (bridge.finishBind) and
+// removes both names before any page script runs.
+(function () {
+  var hooks = [];
+  globalThis.__unblinkOnBind = function (f) { hooks.push(f); };
+  globalThis.__unblinkBind = function () { for (var i = 0; i < hooks.length; i++) { try { hooks[i](); } catch (e) {} } hooks = []; };
+})();
 (function () {
   // Browsers hand out numeric timer ids; goja's event loop returns a host Timer
   // object. zone.js stamps __zone_symbol__zoneTask onto non-numeric handles
@@ -303,7 +350,11 @@ const preludeJS = `
   (function () {
     var nativeSet = window.setTimeout, nativeClear = window.clearTimeout;
     var nativeSetI = window.setInterval, nativeClearI = window.clearInterval;
-    var seq = 1, live = {};
+    var seq = 1, live = {}, fires = {};
+    // The clamp reads the clock through the Date.now captured here, before
+    // page code can patch Date. The engine expresses its deadlines on that same
+    // clock, so a pinned page clock (Env.ClockStart) shifts both alike.
+    var realNow = Date.now;
     // A one-shot timer whose delay would fire it after the render budget never
     // runs before the snapshot, so content behind it (deferred hydration, splash
     // timeouts, polling first ticks) silently vanishes. __unblinkTimerDeadlineMs
@@ -311,33 +362,122 @@ const preludeJS = `
     // instant timers must fire by; a delay past it is pulled in to just inside
     // the budget. Only timers that otherwise never fire change behavior. Intervals
     // are never clamped (they'd busy-loop against the deadline).
-    var deadline = (typeof window.__unblinkTimerDeadlineMs === 'number') ? window.__unblinkTimerDeadlineMs : 0;
+    var deadline = 0;
+    // Once the deadline has passed, "pull it in" would mean "run it now" — and a
+    // timer that re-arms itself with a long delay (a poll loop, a retry backoff)
+    // would become a busy loop for the rest of the budget, issuing its request
+    // every few milliseconds. So after the deadline a timer is pulled in only if
+    // it would outlast the budget (budgetEnd), and only lateClamps times in
+    // total: enough to follow a short chain of deferred timers, never a loop.
+    var budgetEnd = 0;
+    __unblinkOnBind(function () {
+      deadline = (typeof window.__unblinkTimerDeadlineMs === 'number') ? window.__unblinkTimerDeadlineMs : 0;
+      budgetEnd = (typeof window.__unblinkTimerBudgetEndMs === 'number') ? window.__unblinkTimerBudgetEndMs : deadline;
+    });
+    var lateClamps = 32;
     // clamped tracks one-shot timers whose delay was pulled in because it
-    // exceeded the budget. The settle poll holds open while any remain unfired,
-    // so a clamped timer's deferred content lands before the snapshot (without
-    // it the poll would declare the page settled ~60ms in, long before the timer
-    // fires). Cleared when the timer runs or is cleared.
+    // exceeded the budget: id -> the instant it was originally due. The settle
+    // poll holds open while any remain unfired, so a clamped timer's deferred
+    // content lands before the snapshot, and once the page is otherwise quiet
+    // it runs them early in due order (fastForward) instead of waiting out the
+    // clamped delay. Cleared when the timer runs or is cleared.
     var clamped = {};
+    // A pull-in is for content behind a timer, not for a loop or a far-off
+    // event. A timer that re-arms itself with a long delay (a version poll, a
+    // keep-alive, an idle animation, a retry backoff) would otherwise be pulled
+    // in again each time it ran — a request per pull-in when the callback
+    // fetches. So:
+    //   - a delay over maxPullDelay is never pulled in (a refresh interval, a
+    //     session timeout, "at midnight" — not deferred content);
+    //   - a callback is not pulled in again from inside a pulled-in timer's own
+    //     callback, and never more than pullsPerCallback times in all;
+    //   - a chain of pulled-in timers is followed maxPullDepth deep;
+    //   - once the settle has fast-forwarded maxPullRounds times, nothing more
+    //     is pulled in at all (a loop that re-arms under fresh closures, or
+    //     from a short timer, ends there).
+    // A timer that is not pulled in keeps its real delay: it does not fire in
+    // this render and does not hold the settle open.
+    var pulls = (typeof WeakMap === 'function') ? new WeakMap() : null;
+    var pullDepth = 0, maxPullDepth = 4, pullsPerCallback = 3;
+    var pullRounds = 0, maxPullRounds = 4, maxPullDelay = 30000;
+    function mayPull(fn, ms) {
+      if (ms > maxPullDelay || pullRounds >= maxPullRounds || pullDepth >= maxPullDepth) return false;
+      if (!pulls || typeof fn !== 'function') return true;
+      var n = pulls.get(fn) || 0;
+      if (n >= pullsPerCallback || (n > 0 && pullDepth > 0)) return false;
+      pulls.set(fn, n + 1);
+      return true;
+    }
     function toFn(fn) { return typeof fn === 'function' ? fn : new Function(String(fn)); }
+    // An exception that escapes a timer callback is uncaught: report it
+    // (window.onerror, "error" listeners, diagnostics) instead of losing it in
+    // the event loop.
+    var reportUncaught = window.__unblinkReportUncaught;
+    delete window.__unblinkReportUncaught;
+    function run(cb, args) {
+      if (!reportUncaught) { cb.apply(undefined, args); return; }
+      try { cb.apply(undefined, args); } catch (e) { reportUncaught(e); }
+    }
     window.setTimeout = function (fn, ms) {
       var args = Array.prototype.slice.call(arguments, 2), cb = toFn(fn), id = seq++;
       ms = +ms || 0;
-      var wasClamped = false;
+      var depth = 0;
       if (deadline > 0) {
-        var remaining = deadline - Date.now();
-        if (remaining < 0) remaining = 0;
-        if (ms > remaining) { ms = remaining; wasClamped = true; clamped[id] = true; }
+        var now = realNow(), remaining = deadline - now;
+        if (remaining > 0) {
+          if (ms > remaining && mayPull(fn, ms)) { clamped[id] = now + ms; ms = remaining; depth = pullDepth + 1; }
+        } else if (ms > budgetEnd - now && lateClamps > 0 && mayPull(fn, ms)) {
+          lateClamps--; clamped[id] = now + ms; ms = 0; depth = pullDepth + 1;
+        }
       }
-      live[id] = nativeSet(function () { delete live[id]; delete clamped[id]; cb.apply(undefined, args); }, ms);
+      var fire = function () {
+        delete live[id]; delete clamped[id]; delete fires[id];
+        if (!depth) { run(cb, args); return; }
+        var outer = pullDepth; pullDepth = depth;
+        try { run(cb, args); } finally { pullDepth = outer; }
+      };
+      if (depth) fires[id] = fire;
+      live[id] = nativeSet(fire, ms);
       return id;
     };
+    // fastForward runs the clamped timer that was due first, now. The settle
+    // poll calls it when nothing else is going on — once per timer pending at
+    // that moment, newRound set on the first — so a page whose only pending
+    // work is long timers does not wait out most of the budget for them.
+    function fastForward(newRound) {
+      if (newRound) pullRounds++;
+      var best, due = Infinity, k;
+      for (k in clamped) { if (clamped[k] < due) { due = clamped[k]; best = k; } }
+      if (best === undefined) return false;
+      var h = live[best], fire = fires[best];
+      if (h !== undefined) nativeClear(h);
+      if (fire) fire(); else { delete live[best]; delete clamped[best]; }
+      return true;
+    }
     window.clearTimeout = function (id) {
-      var h = live[id]; if (h !== undefined) { delete live[id]; delete clamped[id]; nativeClear(h); }
+      var h = live[id]; if (h !== undefined) { delete live[id]; delete clamped[id]; delete fires[id]; delete tasks[id]; nativeClear(h); }
     };
+    // A queued task: a callback with no delay semantics at all, queued to run
+    // as soon as the current one returns. setImmediate, MessageChannel and
+    // window.postMessage are how schedulers yield and continue (React's work
+    // loop, any "yield to the event loop" helper), so a pending one means the
+    // page is in the middle of work it has split into slices — even when no
+    // DOM mutation or request marks it. The settle poll holds its quiet window
+    // while any is pending, up to a bound (ADR 0004, amended). A timer with a
+    // delay, even zero, is not one: setTimeout(fn, 0) and requestAnimationFrame
+    // loops are how pages idle and animate.
+    var tasks = {};
+    function queueTask(cb, args) {
+      var id = seq++;
+      tasks[id] = true;
+      live[id] = nativeSet(function () { delete live[id]; delete tasks[id]; run(cb, args || []); }, 0);
+      return id;
+    }
+    window.__unblinkQueueTask = function (fn) { return queueTask(fn); }; // consumed by the API prelude
     if (nativeSetI) {
       window.setInterval = function (fn, ms) {
         var args = Array.prototype.slice.call(arguments, 2), cb = toFn(fn), id = seq++;
-        live[id] = nativeSetI(function () { cb.apply(undefined, args); }, ms);
+        live[id] = nativeSetI(function () { run(cb, args); }, ms);
         return id;
       };
       window.clearInterval = function (id) {
@@ -351,23 +491,23 @@ const preludeJS = `
     // exists — an unwrapped one would hide work-loop continuations from the
     // provable-idle check.
     window.setImmediate = function (fn) {
-      var args = Array.prototype.slice.call(arguments, 1);
-      return window.setTimeout.apply(undefined, [fn, 0].concat(args));
+      return queueTask(toFn(fn), Array.prototype.slice.call(arguments, 1));
     };
     window.clearImmediate = window.clearTimeout;
     // Audit hook: {c: clamped one-shot timers still unfired, t: all live wrapped
-    // timers (one-shots, intervals, immediates)}. The settle poll reads this
+    // timers (one-shots, intervals, immediates), q: queued tasks pending}. The settle poll reads this
     // every tick: non-zero c holds the poll open (deferred content pending) and
     // is reported at close as timers_pending; t==0 combined with zero in-flight
     // network is the provable-idle signal — no mechanism left to run more JS —
     // that lets the settle close without waiting out the quiet window.
     if (typeof window.__unblinkRegisterTimerAudit === 'function') {
       window.__unblinkRegisterTimerAudit(function () {
-        var c = 0, t = 0, k;
+        var c = 0, t = 0, q = 0, k;
         for (k in clamped) c++;
         for (k in live) t++;
-        return { c: c, t: t };
-      });
+        for (k in tasks) q++;
+        return { c: c, t: t, q: q };
+      }, fastForward);
       delete window.__unblinkRegisterTimerAudit;
     }
   })();
@@ -571,23 +711,88 @@ const preludeJS = `
     this.unobserve = function () {}; this.disconnect = function () {};
   };
 
-  function defEvent(name, init) {
-    window[name] = function (type, opts) {
+  // Event interfaces form the standard hierarchy (Event ← UIEvent ← MouseEvent ←
+  // PointerEvent, …): "e instanceof Event" holds for every event, a subclass
+  // constructor runs its ancestors' initialisers, and members the dictionaries
+  // default (button 0, key '', …) are prototype defaults, so an engine-built
+  // event that only carries its type still answers them the way a browser does.
+  function defEvent(name, parent, init, defaults) {
+    if (typeof parent === 'function') { defaults = init; init = parent; parent = null; }
+    var P = parent ? window[parent] : null;
+    var F = function (type, opts) {
       opts = opts || {};
-      this.type = type;
-      this.bubbles = !!opts.bubbles;
-      this.cancelable = !!opts.cancelable;
-      this.composed = !!opts.composed;
-      this.defaultPrevented = false;
+      if (P) P.call(this, type, opts);
+      else {
+        this.type = String(type);
+        this.bubbles = !!opts.bubbles;
+        this.cancelable = !!opts.cancelable;
+        this.composed = !!opts.composed;
+        this.defaultPrevented = false;
+        this.timeStamp = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+      }
       if (init) init(this, opts);
     };
+    if (P) {
+      F.prototype = Object.create(P.prototype);
+      Object.setPrototypeOf(F, P);
+    }
+    Object.defineProperty(F.prototype, 'constructor', { value: F, writable: true, configurable: true });
+    Object.defineProperty(F.prototype, Symbol.toStringTag, { value: name, configurable: true });
+    Object.defineProperty(F, 'name', { value: name, configurable: true });
+    if (defaults) for (var k in defaults) Object.defineProperty(F.prototype, k, { value: defaults[k], writable: true, configurable: true, enumerable: true });
+    Object.defineProperty(window, name, { value: F, writable: true, configurable: true, enumerable: false });
+    return F;
   }
-  defEvent('Event');
-  defEvent('CustomEvent', function (e, o) { e.detail = o.detail; });
-  defEvent('MouseEvent', function (e, o) { e.clientX = o.clientX || 0; e.clientY = o.clientY || 0; e.button = o.button || 0; e.detail = o.detail || 0; });
-  defEvent('PointerEvent', function (e, o) { e.clientX = o.clientX || 0; e.clientY = o.clientY || 0; e.button = o.button || 0; e.buttons = o.buttons || 0; e.detail = o.detail || 0; e.pointerType = o.pointerType || ''; e.pointerId = o.pointerId || 0; e.isPrimary = !!o.isPrimary; e.width = o.width || 0; e.height = o.height || 0; e.pressure = o.pressure || 0; });
-  defEvent('KeyboardEvent', function (e, o) { e.key = o.key || ''; e.code = o.code || ''; e.keyCode = o.keyCode || 0; });
-  defEvent('InputEvent', function (e, o) { e.data = (o.data != null) ? o.data : null; });
+  var EvCtor = defEvent('Event', null, null, { isTrusted: false, eventPhase: 0, returnValue: true, cancelBubble: false, timeStamp: 0 });
+  ['NONE', 'CAPTURING_PHASE', 'AT_TARGET', 'BUBBLING_PHASE'].forEach(function (n, i) { EvCtor[n] = i; EvCtor.prototype[n] = i; });
+  defEvent('CustomEvent', 'Event', function (e, o) { e.detail = (o.detail !== undefined) ? o.detail : null; });
+  var modKeys = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, getModifierState: function () { return false; } };
+  function withMods(d) { for (var k in modKeys) d[k] = modKeys[k]; return d; }
+  function copyMods(e, o) { ['ctrlKey', 'shiftKey', 'altKey', 'metaKey'].forEach(function (k) { if (o[k] !== undefined) e[k] = !!o[k]; }); }
+  defEvent('UIEvent', 'Event', function (e, o) { if (o.detail !== undefined) e.detail = o.detail | 0; if (o.view !== undefined) e.view = o.view; }, { detail: 0, view: null, which: 0 });
+  defEvent('MouseEvent', 'UIEvent', function (e, o) {
+    e.clientX = o.clientX || 0; e.clientY = o.clientY || 0; e.button = o.button || 0; e.detail = o.detail || 0;
+    ['screenX', 'screenY', 'buttons', 'movementX', 'movementY'].forEach(function (k) { if (o[k] !== undefined) e[k] = +o[k] || 0; });
+    if (o.relatedTarget !== undefined) e.relatedTarget = o.relatedTarget;
+    copyMods(e, o);
+  }, withMods({ clientX: 0, clientY: 0, screenX: 0, screenY: 0, pageX: 0, pageY: 0, offsetX: 0, offsetY: 0, movementX: 0, movementY: 0, x: 0, y: 0, button: 0, buttons: 0, relatedTarget: null }));
+  defEvent('PointerEvent', 'MouseEvent', function (e, o) { e.buttons = o.buttons || 0; e.pointerType = o.pointerType || ''; e.pointerId = o.pointerId || 0; e.isPrimary = !!o.isPrimary; e.width = o.width || 0; e.height = o.height || 0; e.pressure = o.pressure || 0; },
+    { pointerId: 0, pointerType: '', isPrimary: false, width: 1, height: 1, pressure: 0, tiltX: 0, tiltY: 0, twist: 0 });
+  defEvent('WheelEvent', 'MouseEvent', function (e, o) { e.deltaX = +o.deltaX || 0; e.deltaY = +o.deltaY || 0; e.deltaZ = +o.deltaZ || 0; e.deltaMode = o.deltaMode | 0; }, { deltaX: 0, deltaY: 0, deltaZ: 0, deltaMode: 0 });
+  defEvent('DragEvent', 'MouseEvent', function (e, o) { e.dataTransfer = (o.dataTransfer != null) ? o.dataTransfer : null; }, { dataTransfer: null });
+  defEvent('KeyboardEvent', 'UIEvent', function (e, o) {
+    e.key = o.key || ''; e.code = o.code || ''; e.keyCode = o.keyCode || 0;
+    if (o.repeat !== undefined) e.repeat = !!o.repeat;
+    if (o.location !== undefined) e.location = o.location | 0;
+    if (o.isComposing !== undefined) e.isComposing = !!o.isComposing;
+    copyMods(e, o);
+  }, withMods({ key: '', code: '', keyCode: 0, charCode: 0, repeat: false, isComposing: false, location: 0 }));
+  defEvent('FocusEvent', 'UIEvent', function (e, o) { e.relatedTarget = (o.relatedTarget != null) ? o.relatedTarget : null; }, { relatedTarget: null });
+  defEvent('InputEvent', 'UIEvent', function (e, o) { e.data = (o.data != null) ? o.data : null; if (o.inputType !== undefined) e.inputType = String(o.inputType); if (o.isComposing !== undefined) e.isComposing = !!o.isComposing; }, { data: null, inputType: '', isComposing: false });
+  defEvent('CompositionEvent', 'UIEvent', function (e, o) { e.data = (o.data != null) ? String(o.data) : ''; }, { data: '' });
+  defEvent('SubmitEvent', 'Event', function (e, o) { e.submitter = (o.submitter != null) ? o.submitter : null; }, { submitter: null });
+  defEvent('PopStateEvent', 'Event', function (e, o) { e.state = (o.state !== undefined) ? o.state : null; }, { state: null });
+  defEvent('HashChangeEvent', 'Event', function (e, o) { e.oldURL = (o.oldURL != null) ? String(o.oldURL) : ''; e.newURL = (o.newURL != null) ? String(o.newURL) : ''; }, { oldURL: '', newURL: '' });
+  defEvent('PageTransitionEvent', 'Event', function (e, o) { e.persisted = !!o.persisted; }, { persisted: false });
+  defEvent('BeforeUnloadEvent', 'Event');
+  defEvent('ProgressEvent', 'Event', function (e, o) { e.lengthComputable = !!o.lengthComputable; e.loaded = +o.loaded || 0; e.total = +o.total || 0; }, { lengthComputable: false, loaded: 0, total: 0 });
+  defEvent('AnimationEvent', 'Event', function (e, o) { e.animationName = (o.animationName != null) ? String(o.animationName) : ''; e.elapsedTime = +o.elapsedTime || 0; e.pseudoElement = (o.pseudoElement != null) ? String(o.pseudoElement) : ''; }, { animationName: '', elapsedTime: 0, pseudoElement: '' });
+  defEvent('TransitionEvent', 'Event', function (e, o) { e.propertyName = (o.propertyName != null) ? String(o.propertyName) : ''; e.elapsedTime = +o.elapsedTime || 0; e.pseudoElement = (o.pseudoElement != null) ? String(o.pseudoElement) : ''; }, { propertyName: '', elapsedTime: 0, pseudoElement: '' });
+  defEvent('ClipboardEvent', 'Event', function (e, o) { e.clipboardData = (o.clipboardData != null) ? o.clipboardData : null; }, { clipboardData: null });
+  defEvent('StorageEvent', 'Event', function (e, o) {
+    e.key = (o.key != null) ? String(o.key) : null;
+    e.oldValue = (o.oldValue != null) ? String(o.oldValue) : null;
+    e.newValue = (o.newValue != null) ? String(o.newValue) : null;
+    e.url = (o.url != null) ? String(o.url) : '';
+    e.storageArea = (o.storageArea != null) ? o.storageArea : null;
+  });
+  defEvent('PromiseRejectionEvent', 'Event', function (e, o) { e.promise = o.promise; e.reason = o.reason; });
+  defEvent('ErrorEvent', 'Event', function (e, o) {
+    e.message = (o.message != null) ? String(o.message) : '';
+    e.filename = (o.filename != null) ? String(o.filename) : '';
+    e.lineno = o.lineno >>> 0; e.colno = o.colno >>> 0;
+    e.error = o.error;
+  });
 
   // Minimal EventTarget + AbortController/AbortSignal (self-contained JS).
   function ETShim() { this.__l = {}; }

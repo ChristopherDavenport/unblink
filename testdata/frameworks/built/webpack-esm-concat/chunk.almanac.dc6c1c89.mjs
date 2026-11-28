@@ -1,0 +1,1 @@
+export const id="almanac";export const ids=["almanac"];export const modules={"../webpack/src/almanac.js":(a,e,n)=>{function c(){return"<h2>Webpack Split Chunk Loaded</h2><p>Frost dates and moon phases were supplied by the almanac chunk.</p>"}n.r(e),n.d(e,{render:()=>c})}};

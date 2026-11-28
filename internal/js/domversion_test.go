@@ -69,7 +69,11 @@ func TestMutationAPIsBumpDOMVersion(t *testing.T) {
 		{"input value property", "document.getElementById('inp').value = 'v';"},
 		{"textarea value property", "document.getElementById('ta').value = 'v2';"},
 		{"checked property", "document.getElementById('chk').checked = true;"},
-		{"template content access", "void document.getElementById('tpl').content;"},
+		// Reading template.content used to move the template's children out of the
+		// live tree on first access. They are moved when the page is bound now
+		// (sealTemplates), so the read no longer mutates anything; writing the
+		// template's markup still does.
+		{"template innerHTML write", "document.getElementById('tpl').innerHTML = '<b>n</b>';"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,12 +102,12 @@ func TestMutationAPIsBumpDOMVersion(t *testing.T) {
 
 // The control: a click whose handler mutates nothing snapshot-visible keeps the
 // version stable, so Interact can report Changed=false and reads can skip the
-// refresh. el.style belongs here: the engine's style is a non-serialized
-// property bag (no CSSOM), so style writes never appear in a snapshot and
-// correctly do not bump the version.
+// refresh. An expando on the wrapper and a style write that changes nothing
+// belong here. (A style write that does change the style attribute is
+// snapshot-visible and is covered by TestStyleWriteBumpsDOMVersion.)
 func TestNoOpDispatchKeepsDOMVersion(t *testing.T) {
 	page := strings.Replace(domVersionPage, "__MUTATE__",
-		"el.style.display = 'none'; void 0;", 1)
+		"el.__seen = 1; el.style.display = ''; void 0;", 1)
 	lc, done := openLive(t, page)
 	defer done()
 	ctx := context.Background()
@@ -139,5 +143,28 @@ func TestSnapshotVersionPairsWithBytes(t *testing.T) {
 	}
 	if sv != v {
 		t.Errorf("snapshot version %d != DOMVersion %d with no interleaving mutation", sv, v)
+	}
+}
+
+// el.style writes land in the style attribute, which a snapshot serializes and
+// extraction reads (display:none hides content), so they make a snapshot stale.
+func TestStyleWriteBumpsDOMVersion(t *testing.T) {
+	page := strings.Replace(domVersionPage, "__MUTATE__", "el.style.display = 'none';", 1)
+	lc, done := openLive(t, page)
+	defer done()
+	ctx := context.Background()
+	v0, err := lc.DOMVersion(ctx)
+	if err != nil {
+		t.Fatalf("version before: %v", err)
+	}
+	if res, err := lc.Dispatch(ctx, js.Action{Selector: "#go", Type: "click"}); err != nil || !res.Matched {
+		t.Fatalf("dispatch: matched=%v err=%v", res.Matched, err)
+	}
+	v1, err := lc.DOMVersion(ctx)
+	if err != nil {
+		t.Fatalf("version after: %v", err)
+	}
+	if v1 == v0 {
+		t.Errorf("a style write that hides an element left the version at %d", v0)
 	}
 }

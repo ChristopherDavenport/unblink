@@ -24,8 +24,12 @@ lint locally (needs the golangci-lint binary).
 make build     # go build (version stamped from the nearest v* tag)
 make test      # go test ./... (includes every fuzz target's seed corpus)
 make eval      # offline in-process MCP eval gate (build tag `eval`; scorecard on stderr)
+make eval-fixtures # rebuild the built-from-source framework fixtures in testdata/frameworks/built (needs network + Node; local-only)
 make wpt       # offline web-platform-tests conformance report (build tag `wpt`; on-demand, not a gate)
 make wpt-sync  # refresh the vendored WPT subset in testdata/wpt/ (needs network; local-only)
+make corpus    # offline real-page differential report vs. a Chromium oracle (build tag `corpus`; on-demand, not a gate)
+make corpus-capture # capture corpus/manifest.json with local headless Chromium into testdata/corpus/ (needs network; local-only, not committed)
+make corpus-compare # unblink vs. Charlotte over the captured corpus, same oracle and scorer (scripts/membench, tag `corpus`; CHROME=<capture Chromium>, TOOLS=, ARGS=)
 make fuzz      # coverage-guided fuzzing of the untrusted-input parsers (FUZZTIME=15s each)
 make bench     # perf benchmarks over the hot-path packages (narrow: BENCH=regexp, repeat: BENCHCOUNT=N)
 make membench  # unblink vs. headless Chromium footprint/latency (scripts/membench, separate module)
@@ -48,7 +52,9 @@ commit, apply the change, `make bench > /tmp/new.txt`, then
 `go run golang.org/x/perf/cmd/benchstat@latest /tmp/base.txt /tmp/new.txt`.
 Include the benchstat table in the PR. JS renders settle on two tiers (ADR
 0004): provably-idle pages (no in-flight network, no live timers) close in
-~1-3ms; anything armed pays the ~60ms quiet window after its last activity.
+~1-3ms; anything armed pays the ~60ms quiet window after its last activity
+(a DOM mutation, a request, or a pending queued task — a scheduler's
+`setImmediate`/`MessageChannel` continuation).
 
 **Go-version gotcha:** the module needs Go ≥ 1.27 (`whatwg-url` 0.9 requires it). The Makefile exports
 `GOTOOLCHAIN=auto` so `go` downloads the toolchain pinned in `go.mod`
@@ -156,7 +162,15 @@ the agent via the `requests` tool); only the page-JS *read* is denied. The layer
 - **Resource bounds on untrusted JS**: process heap watchdog + `SetMemoryLimit`
   (ADR 0003, `--js-memory-limit`), per-render/dispatch download-**bytes** budget
   (ADR 0009, `--js-max-bytes`), wall-clock render budget + timer clamp, live-runtime
-  LRU cap.
+  LRU cap. **A goja `Interrupt` is one-shot** — it unwinds one call and is cleared
+  — so never follow it with a bare `<-done` or `loop.Terminate()`: a second
+  never-returning callback (`setInterval(() => { for (;;) {} }, 10)`) would run
+  uninterrupted and the wait would never end. Use `interruptUntil`
+  (`internal/js/engine.go`). A live session's loop is also watched *between*
+  operations (`Context.watch`): a page task over the 2 s idle budget is
+  interrupted, three in a row shut the runtime down (`js.ErrRunaway` →
+  `live_js_stopped`), and the watchdog stands down while an operation owns the
+  loop — keep any new on-loop engine work inside `Context.run` so it counts as one.
 
 Shared implementation pattern for the JS-side policies: an `Env` field
 (`AllowCrossOrigin`/`DisableSRI`/`DisableCSP`/`ResponseHeaders`) → a bridge field →
@@ -168,10 +182,95 @@ not `doFetch`).
 
 ## Conventions & gotchas
 
+- **A `<select>`'s value is its selected `<option>`s** (`internal/js/selectstate.go`):
+  the `selected` attribute is the single state page JS, `interact`, submission and
+  `dom` form extraction share — never a `value` attribute on the `<select>`.
+- **Document script order** (`runDocumentScripts`, `internal/js/scripts.go`):
+  non-deferred classic scripts in document order, then `readyState` becomes
+  `interactive`, then `defer` external scripts and module scripts interleaved in
+  document order, then `DOMContentLoaded`. Both `Render` and `Open` go through it.
+- **JS engine invariants added by the real-page corpus work** (each has a test;
+  break one and real sites break):
+  - *Prepare, then bind.* The prewarm pool prepares a whole runtime (install +
+    both preludes) with **no page**; a render binds it (`bind`/`finishBind`,
+    `internal/js/bridge.go`). Install and prelude code must never read
+    page-dependent state (URL, navigation start, timer deadline, isolation flags,
+    storage, "is there a network") — take it in a bind hook. A cold render runs
+    the same two steps, so tests exercise the pooled path.
+  - *Rarely used prelude sections are lazy* (`lazyGlobals` in
+    `prelude_api.go`: Intl, IndexedDB, `crypto.subtle`, DOMMatrix, the
+    ElementInternals ARIA accessors). A lazy section runs at first use, so it
+    must not read page state at definition time, register a bind hook, or patch
+    a prototype; anything that must exist up front stays outside it.
+  - *Scripts run via `runDocumentScripts`* (`internal/js/scripts.go`):
+    non-deferred classic scripts, `readyState` → `interactive`, then deferred
+    classic scripts and modules by document position. `Render`, `Open` and
+    extension background pages all use it.
+  - *A `<template>`'s contents are inert from the start*: every path that parses
+    markup into the tree must call `sealTemplates`.
+  - *Runaway page code is interrupted repeatedly, not once.* goja's `Interrupt`
+    is one-shot, so `interruptUntil` re-arms it until the loop has stopped; a
+    live session's loop is watched between operations (`DefaultLiveTaskBudget`,
+    three strikes → `js.ErrRunaway` → `live_js_stopped`).
+  - *Queued tasks hold the settle* (ADR 0004, 2026-11-27 amendment):
+    `setImmediate`/`MessageChannel`/`postMessage` continuations keep the quiet
+    window open, capped at 2s per settle; `setTimeout(fn, 0)` and rAF do not.
+    After the timer-clamp deadline only timers that outlast the budget are
+    pulled in, 32 per render.
+  - *Pulled-in timers are fast-forwarded* (ADR 0004, 2026-11-28 amendment): the
+    settle runs them in due order as soon as nothing else is pending, instead of
+    waiting for their clamped delay. A pull-in is for content behind a timer
+    only: never a delay over 30s, not a callback re-arming itself, four deep,
+    four rounds (`mayPull` in the `globals.go` timer wrapper). Loosening any of
+    these turns polls into request loops against the page's origin.
+  - *`js_errors` covers the whole render*, including errors after settle began.
+  - *Property state reaches extraction.* Reflected IDL attributes are
+    table-driven (`internal/js/reflect.go`), `el.style` is a view over the
+    `style` attribute, and a select's value is the `selected` attribute on its
+    options — one state for page JS, `interact`, submission and `dom`.
+    Event-handler properties and `on*` attributes run (CSP gates the
+    attributes as inline script).
+  - *Module source sees the page's `require`/`module`/`exports`*, never the CJS
+    wrapper's (`transformModuleCJS`, ADR 0018).
+  - *Intl is en-US only, and the default time zone is the process zone*
+    (`internal/js/datetime.go`): `Date` getters come from goja's `time.Local`,
+    so the Intl default must match it. Formatting tests name a `timeZone` and
+    must pass under any `TZ` (run them with `TZ=Pacific/Auckland` too).
+  - *Known deviations*: `Array.isArray(nodeList)` is true; with form/document
+    named access a built-in always wins and `'name' in form` is false; a
+    single-choice select is never in the nothing-selected state; `innerText`
+    judges visibility from tags and inline style only.
+- **Markdown output rules** (`internal/dom`, `internal/emit`, `internal/reduce`):
+  two inline elements with no text node between them are separated by a space
+  (`dom/inlinesep.go`; never inside `pre`/`code`, ruby, SVG, CJK or digit runs);
+  a text `<` is written `\<`, never as an entity and never raw
+  (`emit/escape.go` — this is also what stops page text becoming markup);
+  tables are Markdown tables unless `role="presentation"` or multi-line cells;
+  a collapsed `<details>` is kept with its summary marked `▸ ` (unlike `hidden`,
+  `aria-hidden`, inline `display:none` and a closed `<dialog>`, which are
+  dropped); an inline SVG emits its `<text>` labels joined with ` · `. A
+  paginated `read` reports `total_tokens`, and an article extraction holding
+  under 85% of the content region reports `article_coverage`.
 - **stdout is reserved for MCP JSON-RPC.** All logging goes to stderr via `slog`
   (`--log-level`). Never print to stdout outside the MCP transport.
 - **Never return an unbounded blob.** `read` defaults to article-mode extraction
   and paginates via an opaque cursor; whole-page Markdown can be huge.
+- **Page-JS state lives in the node tree, not on wrappers.** Extraction reads only
+  the `*html.Node` tree, so anything page JS can set must land there: reflected IDL
+  attributes come from the one table in `internal/js/reflect.go` (add a row, not a
+  hand-written accessor; presence is per interface because Preact/Vue branch on
+  `name in el`), `el.style` writes go to the `style` attribute
+  (`internal/js/cssstyle.go`), and `on<type>` handlers are real listener entries
+  (`internal/js/eventhandlers.go`). Prototype accessors cost allocations on every
+  render — share one get/set function per rule, as those files do. Inline-style
+  writes bump `styleVersion` (snapshot staleness), **not** `domVersion` (settle
+  activity): an animation loop must not pin the settle.
+- **Article mode checks its own coverage** (`internal/reduce/readability.go`,
+  `dom.MeasureContent`): when the readability extraction holds under half of the
+  page's content-region text (or under two-thirds with the remainder mostly link
+  text), and at least 1000 bytes were left out, `read` falls back to the main
+  landmark (`mode: "main"`) or `Full` and reports `article_fallback_reason`
+  (`partial_article`/`no_article`) — hub and listing pages are not articles.
 - reduce/emit run on a **copy** of the page so shared (cached or session) pages
   are never mutated — see `Browser.Read`.
 - New capability code goes in the relevant `internal/<pkg>`; route everything to
@@ -215,7 +314,11 @@ not `doFetch`).
   change); 0003 is the JS memory guard (process-level heap watchdog +
   `debug.SetMemoryLimit`, because goja has no per-runtime accounting); 0004 is the
   provable-idle settle invariant (every new async primitive must route through the
-  timer audit / `pending` bracket); 0005 is the composed Shadow DOM (flattened tree
+  timer audit / `pending` bracket; per the 2026-11-27 amendment a primitive that
+  means "continue as soon as possible" — `setImmediate`, `MessageChannel`,
+  `postMessage` — goes through the prelude's `queueTask`, whose pending tasks hold
+  the quiet window for up to `settleTaskHoldMax` = 2s so time-sliced hydration is
+  not cut off; `setTimeout(fn, 0)` and rAF loops deliberately do not); 0005 is the composed Shadow DOM (flattened tree
   + cross-boundary events); 0006 is the broad Go-backed `crypto.subtle` (reversing
   the earlier "leave undefined", since real pages call it on first paint); 0007 is
   the semantic-only structured representation (computed from the node tree, never a
@@ -273,8 +376,17 @@ not `doFetch`).
   component + renderer chunks) isn't duplicated into two singleton copies (the
   "useMemoCache of null" failure); two-phase (off-loop instantiate/dedup, on-loop
   post-order evaluate), replaces bundleDynamicChunk, preserves the ADR 0004 settle
-  bracket; scope = the dynamic-import path only (static `<script type=module>` still
-  bundles per entry). Import maps (`internal/js/importmap.go`: `imports` + `scopes`)
+  bracket; as of the 2026-11-27 amendment static `<script type=module>` entries
+  (external and inline) load through the same registry, so a module URL is one
+  instance across static entries and `import()`, an uncalled literal `import()` is
+  not fetched, and a failed module fails only its importers. **`esbuild.Build` must
+  never be used on page code** — its bundler expands a non-literal relative
+  `import()`/`require` as a glob over the real filesystem, bypassing plugins (a
+  local-file read by untrusted page JS, v0.16.0–v0.25.0); only `esbuild.Transform`
+  is allowed, and `TestNoEsbuildBundlerOnPageCode` is the tripwire. A module's source must not see
+  the CommonJS wrapper it runs in: free `require`/`module`/`exports` are rewritten to
+  the page's globals with esbuild `Define` (`transformModuleCJS`), and the runtime's
+  neutered Node `require` global is deleted from the page world. Import maps (`internal/js/importmap.go`: `imports` + `scopes`)
   resolve through one `bridge.moduleResolve` on every path — static bundling, registry
   deps, dynamic `import()`; a classic script's or non-literal `import()` uses the
   document base as referrer, only the first import map is read, and its `integrity`
@@ -292,7 +404,34 @@ not `doFetch`).
   `ErrRobotsDisallowed` → `robots_disallowed`; a 4xx robots.txt allows, 5xx or
   unreachable disallows for a 30s TTL per RFC 9309; subresources, page-JS
   subrequests, the robots.txt/llms.txt probes, `search` and Crawl-delay are
-  deliberately not gated). Add a new
+  deliberately not gated); 0021 is
+  Markdown content negotiation (a `text/markdown` response is always passed through
+  as `page.KindMarkdown`, unfenced; *asking* for it — `Accept: text/markdown` on a
+  `read` navigation only — is per call via `read`'s tri-state `prefer_markdown`, with
+  the operator default `--prefer-markdown` provisionally off behind the single
+  constant `browser.DefaultPreferMarkdown` in `internal/browser/markdownneg.go`; the
+  operator default reaches stateless reads only, a session negotiates only on an
+  explicit per-call true; the two representations cache under separate keys; it is
+  not suppressed under `--tls-mimic`, where it breaks the Chrome header persona);
+  0022 is the real-page differential corpus (the `corpus/` package + `make corpus`,
+  build tag `corpus`, mirroring `wpt/`: `scripts/corpus` — a separate module —
+  captures each `corpus/manifest.json` page's network responses and Chromium's
+  rendered text into the gitignored `testdata/corpus/`; replay runs the full
+  pipeline offline over an archive-backed transport (`browser.WithJSRoundTripper`,
+  test-only in intent — it replaces the pool carrying the SSRF dial guard) with
+  the page clock pinned to the capture instant (`browser.WithPageClock`) and
+  scores main-content recall per feature-matrix cell; only a *consequential* replay
+  loss — script, document, data, style — excuses a low score, an unusable oracle is
+  refused rather than scored, and `CORPUS_ONLY`/`CORPUS_DEBUG`/`CORPUS_DUMP`/
+  `CORPUS_OUT` drive one page; on-demand measurement, not a CI gate); 0023 is the
+  render-collapse guard (`internal/browser/collapse.go`: if the content-region text
+  was ≥1000 bytes before scripts ran and is under 10% of that after, the render is
+  discarded, the server HTML is re-parsed and returned, and `read`/`browse` report
+  `render_discarded`; `Page.Rendered` then means "the tree is the rendered DOM" —
+  scripts having run is `RenderDiag != nil`; a met `wait_for`/`wait_text` gate is
+  never discarded and a live session's runtime tree is never swapped; because the
+  guard hides an engine crash behind the static score, check `render_discarded`
+  when judging a corpus page). Add a new
   ADR when a decision would otherwise live only in a PR description.
   (`reference/` and `internal/config/` were empty scaffolding, deleted in
   Phase 20.)
@@ -319,7 +458,8 @@ not `doFetch`).
   `composedPath()`); declarative Shadow DOM (`<template shadowrootmode>`) is flattened
   on the static no-JS path. **Still permanent non-goals** (no layout engine): real
   *element* layout/geometry and CSSOM (constant-stubbed to zeros/empty, never
-  computed), canvas/WebGL, Workers/WebSocket/IndexedDB, and Shadow-DOM *style scoping*
+  computed; `el.style` is a declaration block over the `style` attribute so inline
+  writes reach the tree, but nothing is validated or cascaded), canvas/WebGL, Workers/WebSocket/IndexedDB, and Shadow-DOM *style scoping*
   (`:host`/`::slotted`/`::part`) / slot reprojection / closed-mode privacy from
   extraction. The **viewport
   environment** is the one exception (Phase 21): `innerWidth`/`screen`/

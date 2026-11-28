@@ -50,6 +50,21 @@ curl -L -o ~/.cache/unblink-membench/lightpanda \
 chmod +x ~/.cache/unblink-membench/lightpanda
 ```
 
+## Real pages: `make corpus-compare`
+
+The fixtures above are small and local. `make corpus-compare` runs unblink and
+Charlotte over the captured real-page corpus instead, offline, and scores both
+against the Chromium oracle saved at capture time — fidelity (recall,
+precision) beside cost (tokens, latency). It is compiled only under the
+`corpus` build tag (`corpus_*.go`), because it imports the root module's
+`corpus` package for the oracle, scorer and replay matcher; the default build
+of this module does not. See [`docs/corpus.md`](../../docs/corpus.md) for how
+it works and how to read it.
+
+```sh
+make corpus-compare CHROME=/path/to/the/chromium/that/made/the/captures
+```
+
 ## Fairness rules
 
 - **Same fixtures, same local server** for every tool — no network variance.

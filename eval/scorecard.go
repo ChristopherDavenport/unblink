@@ -35,7 +35,8 @@ type caseResult struct {
 	Scorers  []scoredScorer
 	Mean     float64
 	Pass     bool
-	RunErr   error // non-nil if the world/host could not be built or run
+	RunErr   error  // non-nil if the world/host could not be built or run
+	KnownGap string // see Case.KnownGap: reported, never gated or averaged
 
 	Dur      time.Duration // total tool-call time across the case's steps
 	StepDurs []stepTiming
@@ -45,7 +46,7 @@ type caseResult struct {
 // resulting transcript. A run error yields a zero-score, non-passing result so
 // the gate treats infrastructure failures as regressions.
 func scoreCase(ctx context.Context, c Case) caseResult {
-	cr := caseResult{Name: c.Name, Floor: c.Floor, MustPass: c.MustPass}
+	cr := caseResult{Name: c.Name, Floor: c.Floor, MustPass: c.MustPass, KnownGap: c.KnownGap}
 	tr, cleanup, err := run(ctx, c)
 	if err != nil {
 		cr.RunErr = err
@@ -89,6 +90,10 @@ func writeReport(w io.Writer, results []caseResult) {
 		switch {
 		case cr.RunErr != nil:
 			result = "ERROR"
+		case cr.KnownGap != "" && cr.Pass:
+			result = "GAP-CLOSED"
+		case cr.KnownGap != "":
+			result = "KNOWN-GAP"
 		case !cr.Pass:
 			result = "FAIL"
 		}
@@ -114,10 +119,32 @@ func writeReport(w io.Writer, results []caseResult) {
 		dtw.Flush()
 	}
 
+	// Known gaps: cases that state correct behaviour the engine lacks. Listed
+	// every run so a gap cannot quietly become permanent.
+	var gaps []caseResult
+	for _, cr := range results {
+		if cr.KnownGap != "" {
+			gaps = append(gaps, cr)
+		}
+	}
+	if len(gaps) > 0 {
+		fmt.Fprintf(w, "\nKNOWN GAPS (%d case(s) reported, not gated, not in the overall score)\n", len(gaps))
+		for _, cr := range gaps {
+			state := fmt.Sprintf("%.2f < floor %.2f", cr.Mean, cr.Floor)
+			if cr.Pass && cr.RunErr == nil {
+				state = fmt.Sprintf("NOW PASSES (%.2f) — remove its KnownGap marker so it gates", cr.Mean)
+			}
+			fmt.Fprintf(w, "  %s: %s\n      %s\n", cr.Name, state, cr.KnownGap)
+		}
+	}
+
 	// Per-axis rollup.
 	sums := map[Axis]float64{}
 	counts := map[Axis]int{}
 	for _, cr := range results {
+		if cr.KnownGap != "" {
+			continue
+		}
 		for _, sc := range cr.Scorers {
 			sums[sc.Axis] += sc.Score
 			counts[sc.Axis]++
@@ -158,7 +185,16 @@ func writeReport(w io.Writer, results []caseResult) {
 // empty failures slice means the gate passes.
 func gate(results []caseResult, overallFloor float64) (overall float64, passed int, failures []string) {
 	var sum float64
+	gated := 0
 	for _, cr := range results {
+		if cr.KnownGap != "" {
+			// Reported by writeReport; a run error is still a harness failure.
+			if cr.RunErr != nil {
+				failures = append(failures, fmt.Sprintf("%s: run error: %v", cr.Name, cr.RunErr))
+			}
+			continue
+		}
+		gated++
 		sum += cr.Mean
 		if cr.Pass && cr.RunErr == nil {
 			passed++
@@ -170,8 +206,8 @@ func gate(results []caseResult, overallFloor float64) (overall float64, passed i
 			failures = append(failures, fmt.Sprintf("%s: %.2f < floor %.2f", cr.Name, cr.Mean, cr.Floor))
 		}
 	}
-	if len(results) > 0 {
-		overall = sum / float64(len(results))
+	if gated > 0 {
+		overall = sum / float64(gated)
 	}
 	if overall < overallFloor {
 		failures = append(failures, fmt.Sprintf("overall %.2f < %.2f", overall, overallFloor))

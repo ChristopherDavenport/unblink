@@ -1,0 +1,11 @@
+{
+  "name": "unblink-fixture-webpack",
+  "private": true,
+  "scripts": {
+    "build": "webpack --config webpack.classic.js && webpack --config webpack.esm.js && cp html/classic.html ../../built/webpack-classic/index.html && cp html/esm.html ../../built/webpack-esm/index.html"
+  },
+  "devDependencies": {
+    "webpack": "5.113.0",
+    "webpack-cli": "7.3.1"
+  }
+}

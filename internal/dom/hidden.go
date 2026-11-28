@@ -7,7 +7,9 @@ import (
 )
 
 // IsHidden reports whether an element node is hidden from a human reader by common
-// means: the `hidden` boolean attribute, aria-hidden="true", or an inline style that
+// means: the `hidden` boolean attribute, aria-hidden="true", a <dialog> that is not
+// open (the user-agent stylesheet's `dialog:not([open]) { display: none }`, which
+// needs no cascade to know), or an inline style that
 // sets display:none / visibility:hidden / pushes the element off-screen. It is a
 // heuristic (no full CSS/layout engine), aimed at the channels used to smuggle
 // prompt-injection text past a human — hidden divs, off-screen "screen-reader" text —
@@ -16,6 +18,18 @@ import (
 func IsHidden(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
+	}
+	if n.Data == "dialog" && n.Namespace == "" {
+		open := false
+		for _, a := range n.Attr {
+			if a.Key == "open" {
+				open = true
+				break
+			}
+		}
+		if !open {
+			return true
+		}
 	}
 	for _, a := range n.Attr {
 		switch a.Key {
@@ -88,6 +102,32 @@ func StripHidden(root *html.Node) {
 			root.RemoveChild(c)
 		default:
 			StripHidden(c)
+		}
+	}
+}
+
+// StripTemplates removes every <template> element under root. A template's
+// contents are inert: a browser parses them into a separate fragment that is
+// never rendered, so they are not page text. (With JavaScript on, the engine
+// has already moved them out of the tree; this covers the static path. A
+// declarative shadow root's template is composed into its host at parse time
+// and is gone by now.)
+func StripTemplates(root *html.Node) {
+	var doomed []*html.Node
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if c.Type == html.ElementNode && c.Namespace == "" && c.Data == "template" {
+				doomed = append(doomed, c)
+				continue
+			}
+			walk(c)
+		}
+	}
+	walk(root)
+	for _, n := range doomed {
+		if n.Parent != nil {
+			n.Parent.RemoveChild(n)
 		}
 	}
 }

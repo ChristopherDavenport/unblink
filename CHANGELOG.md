@@ -3,10 +3,164 @@
 All notable changes are recorded here. Earlier history lives in the phase log of
 [docs/architecture.md](docs/architecture.md).
 
-## Unreleased
+## v0.26.0 — 2026-11-28
+
+### Security
+
+- **Untrusted page JavaScript could read local files (esbuild glob imports).**
+  Affected versions: v0.16.0 (the first public release) through v0.25.0.
+  `<script type=module>` was bundled with esbuild, whose bundler expands a dynamic
+  import or `require` with a non-literal relative argument (``import(`./${x}.json`)``,
+  `import("./" + x)`, `../` forms too) as a glob over the real filesystem, without
+  consulting unblink's network-only resolver. A page could read files under the
+  server's working directory or its parents — or anywhere under `/` from an inline
+  module — for every file type esbuild loads by default (JavaScript, TypeScript, JSON,
+  CSS, text), and send the contents to any origin. The inline form also walked the
+  whole filesystem, stalling the render and consuming gigabytes of memory. It needed
+  JavaScript rendering (the default) and one visit to a hostile page; `--disable-js`
+  was not affected. Page modules are no longer bundled: they load through the
+  per-render module registry, which only uses esbuild's `Transform` (no filesystem
+  access). See the 2026-11-27 amendment to
+  [ADR 0018](docs/decisions/0018-module-instance-registry.md).
+
+- **Untrusted page JavaScript could hang a render forever.** Affected versions:
+  v0.16.0 (the first public release) through v0.25.0 — reproduced on every tagged
+  release. The render watchdog stops a script that never
+  yields by interrupting the engine, and an interrupt unwinds exactly one call. If
+  another callback that never returns was already queued — the next tick of
+  `setInterval(function () { for (;;) {} }, 10)` is enough — the event loop started
+  it with no interrupt pending. The render never returned, its worker slot was never
+  released and one CPU core spun until the process exited; a few such pages exhaust
+  the render concurrency limit. A live session's operations and its close could hang
+  the same way. The engine now keeps interrupting until the render's settle has
+  closed and until its event loop has stopped. `--disable-js` was not affected.
+
+- **A session page could spin a CPU core between tool calls.** Present on `main`
+  after v0.25.0; tagged releases were not individually tested. A session's live JavaScript
+  runtime keeps serving the page's timers between tool calls, and nothing watched
+  it then: a timer callback that never returns spun one core until the next call or
+  the session's close. An idle watchdog now interrupts any page task that runs
+  longer than 2 s while no tool call is in flight, and shuts the runtime down after
+  three in a row. `interact` then reports `live_js_stopped` (retrying reloads the
+  page's scripts; in-page state is lost) and `read` returns the last captured page
+  with a `js_errors` line saying its JavaScript is no longer running. A tool call
+  queued behind a runtime that closes now returns instead of waiting forever.
+
+### Changed
+
+- **A cold JavaScript runtime is about 10% cheaper to build.** `Intl`, the
+  IndexedDB stub, `crypto.subtle`, `DOMMatrix` and the ElementInternals ARIA
+  accessors are built when page code first uses them instead of for every
+  runtime (28.8k to 25.9k allocations for a minimal render). Each global exists
+  from the start (`'Intl' in window` is true) and becomes an ordinary data
+  property on first use.
+
+- **A page with a long timer no longer takes the whole render budget to read.**
+  A one-shot timer that would outlast the budget is pulled in so content behind
+  it lands; the render then waited for it to fire, 600 ms before the budget
+  ended, so any page with a version poll, an idle animation or a timeout guard
+  took about 4.4 seconds. Pulled-in timers now run as soon as nothing else is
+  pending (no request, DOM change or queued task), in the order they were due.
+  Pull-ins are also narrower: never for a delay over 30 seconds, not again for a
+  callback re-arming itself, four deep for a chain, and none after four rounds.
+  On the real-page corpus the median read fell from 341 to 221 ms and the 90th
+  percentile from 4.5 to 2.4 s, with no change in content. See the 2026-11-28
+  amendment to [ADR 0004](docs/decisions/0004-provable-idle-settle.md).
+
+- **The pre-warm pool now prepares the whole runtime, not just its event loop.**
+  Installing the DOM/Web API surface and running the preludes had grown to most
+  of a small render's cost. A pooled runtime (`--js-prewarm`, default 4) now has
+  that done ahead of time and is only bound to its page when a render takes it:
+  a minimal render on a pooled runtime takes about 1.3 ms against 2.8 ms cold.
+  The work itself is unchanged, so a cold render (pool disabled, or a burst past
+  the pool) costs what it did, and an idle pooled runtime holds about 1.6 MiB of
+  heap where a bare loop held far less.
+- **A collapsed `<details>` is marked in `read` output.** Its summary line now
+  starts with `▸ `, so an agent can tell content the page shows from content the
+  page keeps behind a disclosure. The content itself is still emitted, in every
+  mode.
+
+- **Module scripts load through the module registry.** One instance per module URL is
+  now shared by every importer in a render, static or dynamic. A literal `import()`
+  the page never calls is no longer fetched at load, and a module that fails to load
+  fails only the importers that need it instead of the whole entry. `import.meta.url`
+  and `import.meta.resolve()` work, `import()` of a `.json` URL works on every path,
+  and a module's own non-literal `import()` resolves against that module's URL. An
+  external module named by two script tags now runs once. A wide module graph costs
+  more CPU per render than the single bundle did.
+
+- **Engine-built objects are instances of their interfaces.** `window` is a `Window`
+  (Ember's "is this a browser?" test, `self.constructor === Window`, now passes — an
+  Ember app such as Discourse no longer boots non-interactive and blank), and
+  `location`, `history`, `navigator`, `screen`, `performance`, the storages, `crypto`
+  and `customElements` are instances of their interfaces. Event classes form the
+  standard hierarchy, so `e instanceof Event` holds for every event and a dispatched
+  `click` is a `PointerEvent` whose `button` is 0. `querySelectorAll` returns a
+  `NodeList` and `children`/`getElementsBy*` an `HTMLCollection` with
+  `item()`/`namedItem()`. New: `UIEvent`, `FocusEvent`, `WheelEvent`, `DragEvent`,
+  `CompositionEvent`, `SubmitEvent`, `PopStateEvent`, `HashChangeEvent`,
+  `PageTransitionEvent`, `BeforeUnloadEvent`, `ProgressEvent`, `AnimationEvent`,
+  `TransitionEvent`, `ClipboardEvent`, `Node.baseURI`, `window.origin`,
+  `window.length`, and `String(location)` is its URL.
 
 ### Added
 
+- **The corpus replay runs each page at the moment it was captured.**
+  `browser.WithPageClock` (harness-only, no flag; `js.Env.ClockStart`
+  underneath) pins what page code reads as the time — `Date` and the
+  performance time origin — while timers and the settle stay on the real clock.
+  A page that prints "3 hours ago" now computes it against the capture instant,
+  as Chromium did for the oracle: bbc.com 0.881 to 0.940, lobste.rs 0.688 to
+  0.821.
+
+- **Named access on forms and the document.** `form.fieldname`, `form[0]`,
+  `form.elements.fieldname` (an `HTMLFormControlsCollection`, with a
+  `RadioNodeList` and its `.value` where several controls share a name) and
+  `document.formname` / `document.imagename` now resolve, and an inline event
+  handler can name its form's controls directly (`onclick="q.value = ''"`).
+  Two deviations: a built-in member always wins over a control of the same name
+  (a browser lets `<input name="submit">` shadow `form.submit`), and
+  `'fieldname' in form` is false. Window named access (a global per element id)
+  is deliberately not provided.
+- **`read` says how much it did not return.** A paginated result carries
+  `total_tokens` and its note reads "Page 1 of 5 of a document of about 28,452
+  tokens", with the cursor and the `find`/`browse` alternatives. An article-mode
+  result that holds under 85% of the page's main content carries
+  `article_coverage` and a note pointing at `mode=full`.
+
+- **`mode=article` no longer returns a fragment of a hub page.** On a section
+  front, a link directory or an index, readability's best block is one card or
+  the footer blurb, and `read` (whose default mode is `article`) returned it as
+  the page. The extraction is now checked against the page's content — the main
+  landmark or body, minus navigation, sidebar, header and footer chrome — and
+  when it holds under half of it (or under two thirds, with the rest a list of
+  links) `read` returns the main landmark instead, or the whole page when there
+  is none. The result reports it: `mode` is `main` or `full`, `article_fallback`
+  is true and the new `article_fallback_reason` is `partial_article`
+  (`no_article` for the existing nothing-found fallback). Real article pages are
+  unchanged.
+- **Render-collapse guard.** When a server-rendered page's JavaScript leaves
+  under a tenth of its content — a hydration crash that puts the framework's
+  error boundary where the document was, an error or consent shell — the
+  rendered DOM is discarded and the page is the server's HTML, as with
+  `render=false`. `read` and `browse` report `render_discarded`; in a session,
+  `interact` still acts on the live JavaScript DOM and says so
+  (`render_was_discarded`). A client-rendered app (nothing to fall back to), a
+  render that merely shortens or hides content, and a render whose
+  `wait_for`/`wait_text` gate was met are never discarded. See
+  [ADR 0023](docs/decisions/0023-render-collapse-guard.md).
+- **Markdown content negotiation (`read`'s `prefer_markdown`,
+  `--prefer-markdown`).** A `text/markdown` response is now returned as-is
+  (`kind: "markdown"`), no longer wrapped in a code fence as plain text. `read`
+  gained a tri-state `prefer_markdown`: `true` asks the site for its Markdown
+  version (`Accept: text/markdown, text/html;q=0.9, …`), `false` fetches the
+  HTML page (also after a Markdown read of the same URL), and absent follows the
+  server default, which `--prefer-markdown` / `--prefer-markdown=false` set and
+  which is off for now. A site without a Markdown version answers with HTML and
+  the read is unchanged. No other tool, subresource, page-JS request, form
+  submit or discovery probe sends the header, and the URL cache keeps the two
+  representations apart. See
+  [ADR 0021](docs/decisions/0021-markdown-content-negotiation.md).
 - **Opt-in robots.txt enforcement (`--respect-robots`).** Off by default, so
   nothing changes unless an operator sets it. With it on, every agent-directed
   navigation is checked against the target origin's robots.txt (`*` group, path
@@ -22,6 +176,274 @@ All notable changes are recorded here. Earlier history lives in the phase log of
   the robots.txt/llms.txt discovery probes, and `search` provider
   calls. `Crawl-delay` is still only reported; pace with `--rate-limit`. See
   [ADR 0020](docs/decisions/0020-opt-in-robots-enforcement.md).
+
+### Fixed
+
+- **`document.forms.<name>` and the SVG interfaces exist.** An `HTMLCollection`
+  answers by id and name (`document.forms.login`, `document.images.logo`), not
+  only by index. The SVG interface family (`SVGAElement`, `SVGPathElement`,
+  `SVGGElement` and some forty more) is published and SVG elements are
+  instances of their own interface; `x instanceof SVGAElement`, which
+  SvelteKit's router runs on every click, was a `ReferenceError`. They are
+  built on first use.
+- **A static read no longer includes `<template>` contents.** With JavaScript
+  off (`render=false`, `--disable-js`), the text and links inside a `<template>`
+  were emitted as page content; they are inert markup a browser never renders.
+
+- **Clicking a checkbox or radio button changes it.** A click — from the
+  `interact` tool or `element.click()` — dispatched the event and nothing else,
+  so `interact` on a checkbox reported `changed: false` and left it unchecked.
+  The click now carries the element's activation behaviour: a checkbox toggles
+  and a radio button takes over its group before the event is dispatched (a
+  listener reads the new `checked`), a canceled click restores the previous
+  state, `input` and `change` follow an uncanceled one, a click on a `<label>`
+  reaches its control, and a disabled control ignores it.
+
+- **Dates, times and relative times format as a browser's do, in English.**
+  `Date.prototype.toLocaleString`/`toLocaleDateString`/`toLocaleTimeString`
+  ignored their arguments and printed 24-hour ISO-like text ("13:37:00" where a
+  browser shows "1:37 PM"), and `Intl.DateTimeFormat` ignored `timeZone`,
+  `timeZoneName`, `hour12`/`hourCycle`, `fractionalSecondDigits` and most field
+  widths. Both now follow the CLDR English patterns for every field
+  combination and style, resolve time zones (IANA names, case-insensitively,
+  and ±hh:mm offsets) from the system zone database, return typed
+  `formatToParts`, and throw the specified `RangeError`/`TypeError` for bad
+  options. With no `timeZone` the formatter uses the process zone — the one
+  `Date`'s own getters use — and reports its IANA name instead of always
+  claiming UTC. `Intl.RelativeTimeFormat` honours `numeric: "auto"`
+  ("yesterday") and `style`; `Intl.PluralRules` validates and reports its
+  categories; `Intl.NumberFormat` formats `style: "unit"`; `Intl.Collator`
+  orders accents and case as English does instead of by code point. Other
+  locales still format as en-US.
+
+- **A `<template>`'s contents are inert from the start.** They were moved into
+  the content fragment only when page code first read `.content`; until then
+  they were the element's children, reachable by `firstElementChild`,
+  `querySelector` and `document.querySelectorAll`. A library that walks the
+  document before reading `.content` (Alpine, for every `x-teleport`/`x-if`
+  template) initialised nodes that were then pulled out from under it, and each
+  expression inside threw a `ReferenceError` — 50 of them on arstechnica.com.
+  Contents are now sealed when the page is bound and whenever markup is parsed
+  (`innerHTML`, `insertAdjacentHTML`, `DOMParser`); `cloneNode(true)` and
+  `importNode` copy a template's content, and `innerHTML`/`outerHTML` serialize
+  it, nested templates included. Declarative shadow roots are unchanged.
+- **A connected `<style>` element has a `sheet`** that stores inserted rules in
+  order (`insertRule`, `deleteRule`, `cssRules`). It is a store, not a CSSOM —
+  nothing is parsed or applied — but styled-components and Emotion in production
+  mode treat its absence as fatal, which replaced bbc.com's app with Next's
+  error page.
+- **A data race in live-session `Dispatch`** when the runtime was stopped while
+  the action was still running: the matched flag is now handed over atomically.
+- **An MV2 extension background page's scripts run in the page order**
+  (deferred scripts and modules after immediate ones, by document position).
+
+- **`Intl.NumberFormat` formats compact notation and significant digits.**
+  `notation: 'compact'` ("61.1K", "1.2M"; `compactDisplay: 'long'` gives
+  "61 thousand") and `minimumSignificantDigits`/`maximumSignificantDigits` were
+  ignored, so a count badge came out as "61,110" where the server had rendered
+  "61.1K" — a Vue hydration mismatch on nuxt.com and visibly different text on
+  solidjs.com. English only, like the rest of the Intl layer.
+
+- **`Intl.DurationFormat` and the IndexedDB interface objects exist.** An app
+  that finds no `Intl.DurationFormat` loads a polyfill chunk before it boots
+  (Mastodon does); the engine now formats English durations in the `long`,
+  `short`, `narrow` and `digital` styles (`formatToParts` is coarse: one part
+  per unit). The in-memory IndexedDB stub's requests, databases, transactions
+  and stores are instances of `IDBRequest`, `IDBOpenDBRequest`, `IDBDatabase`,
+  `IDBTransaction` and `IDBObjectStore`, which wrapper libraries test with
+  `instanceof`; a missing `IDBRequest` was an unhandled `ReferenceError`.
+- **The first page of a paginated `read` is no longer cut short before a long
+  block.** A list, table or code block larger than `max_tokens` made everything
+  before it a page of its own, so some reads returned only the site menu. Such a
+  block is now packed line by line into the page being filled.
+
+- **Inline SVG chart labels are separate.** The `<text>` elements of an inline
+  SVG ran together (`EmberReactAngular 1Angular 2`); each is now its own label,
+  joined with ` · `, and SVG `<style>`/`<defs>` content never reaches the output.
+
+- **Tables in `read` output are Markdown tables.** A `<table>` was emitted as its
+  cell text run together on one line. Data tables are now GFM tables (header row,
+  one line per row); `role="presentation"` tables and tables whose cells hold
+  several lines fall back to rows as paragraphs with the cells kept apart.
+
+- **Angle brackets in page text are no longer HTML entities in Markdown.** Link
+  text `<svelte:window>` came out as `&lt;svelte:window&gt;`. Text `<` is now
+  `\<`, `>` is bare (or `\>` where it would open a block quote), and `&` is
+  escaped only when it begins a character reference, so literal `&lt;` in a page
+  stays distinguishable from `<`. Page text still can never become raw HTML or an
+  autolink, and the title — previously written unescaped — now follows the same
+  rule.
+
+- **Adjacent inline elements no longer run together in Markdown.** Markup such as
+  `<span>01</span><span>Getting Started</span>` or a row of touching links is laid
+  out apart by CSS, but came out as `01Getting Started` / `JanMarMay`. Two
+  inline-level elements with no text between them now get a space
+  (`dom.SeparateInlineSiblings`), except inside code, ruby, SVG and maths, at
+  CJK boundaries, between digits, around punctuation and after a lone letter.
+  Found by the Charlotte comparison on the real-page corpus.
+
+- **`<select>` has one state.** A select's value is its selected options, kept as
+  the `selected` attribute on the `<option>` elements, and page JavaScript, `interact`,
+  form submission and extraction all read and write that. `select.options`
+  (an `HTMLOptionsCollection`), `selectedOptions`, `selectedIndex`, `value`, `type`,
+  `length`, `add()`, `remove(index)`, `item()`, `namedItem()`, `option.index` and
+  `new Option(…)` are new; `option.selected` reports selectedness, so a single-choice
+  select with nothing marked has its first enabled option selected. React reads
+  `select.options` for every controlled select and threw without it. `interact` no
+  longer writes a `value` attribute on the `<select>`, and a form field's extracted
+  value for a select is its selected option. `NodeList`/`HTMLCollection` are real
+  arrays underneath, so a property set on one sticks.
+
+- **`defer` is honoured.** External classic scripts with `defer` now run after the
+  document is parsed — after every other classic script, in document order,
+  interleaved with module scripts, with `readyState` `"interactive"` — instead of
+  where they appear. A deferred library in `<head>` configured by an inline script
+  in `<body>` (Alpine registering components on `alpine:init`) started before the
+  page had configured it, and every component was "not defined".
+
+- **DOM and platform gaps traced to script errors on real pages** (each was an
+  error on a corpus page):
+  - `comment.nextElementSibling`/`previousElementSibling` (Lit's SSR hydration
+    walked from its marker comment to `undefined`; every hydrating component threw).
+  - `protocol`, `host`, `hostname`, `port`, `pathname`, `search`, `hash`, `origin`,
+    `href`, `src` and `relList` are on the elements that have them, not on every
+    element. A component class with its own `this.search` or `this.host` no longer
+    throws "Cannot assign to read only property" in its constructor. The anchor
+    components are now writable.
+  - A classic script containing an async generator or `for await` is lowered and
+    run instead of being skipped whole (the vendor bundle on webpack.js.org).
+  - `Intl.NumberFormat`, `DateTimeFormat` and `Collator` work called without `new`,
+    and their `format`/`compare` are bound, so `list.map(nf.format)` works.
+    `Intl.ListFormat`, `Intl.Locale`, `Intl.DisplayNames` (answers with the code) and
+    an approximate `Intl.Segmenter` are new.
+  - `document.doctype` and `DocumentType`, `document.createAttribute`,
+    `Node.normalize`, `document.elementFromPoint`/`elementsFromPoint` (answered from
+    the same no-layout model as the rects: the body inside the viewport, nothing
+    outside), text-control selection (`setSelectionRange`, `select`, `setRangeText`,
+    `selectionStart/End`), `SVGAnimatedString` for an SVG element's `className`,
+    `navigator.appVersion` and the other frozen identification members, an iterable
+    `document.styleSheets`, and `template.innerHTML` reading and writing the
+    template's content.
+
+- **A render no longer closes in the middle of time-sliced work.** React hydrates in
+  ~5 ms slices, yielding through `setImmediate`, and changes nothing in the page
+  until it commits; with no request in flight that looked like a quiet page, and the
+  render closed 60 ms in. `setImmediate`, `MessageChannel` and `window.postMessage`
+  — the ways a scheduler yields and continues — now hold the settle open while one is
+  pending, for at most 2 s per render. `setTimeout(fn, 0)` and
+  `requestAnimationFrame` loops do not. See the amendment to
+  [ADR 0004](docs/decisions/0004-provable-idle-settle.md).
+- **A `MessagePort` delivers a message posted from inside a handler in a later
+  task,** as a browser does, instead of in the same synchronous drain.
+
+- **A self-rearming timer no longer becomes a busy loop at the end of a render.** A
+  one-shot timer longer than the render budget is pulled in so the content behind it
+  still appears. Once that deadline had passed, *every* new timer was pulled in to
+  zero delay, so a timer that re-arms itself — a 30-second poll, a retry backoff —
+  ran back to back for the last 600 ms of the budget: about 20,000 times in a test,
+  and on a Discourse forum 1,731 `POST …/message-bus/…/poll` requests in one read.
+  After the deadline a timer is now pulled in only if it would outlast the budget,
+  and at most 32 times per render.
+- **`CSS.supports()` no longer claims other engines' vendor properties.** It answered
+  `true` to everything, including `-webkit-backdrop-filter`, `-webkit-touch-callout`
+  and `-moz-appearance` — the probes pages use to detect Safari, iOS and Firefox. A
+  component library took its WebKit branch, rendered different markup on the client,
+  and React hydration failed (error #418) on Next.js App Router pages. Standard
+  properties still answer `true`; vendor-prefixed ones answer as desktop Chrome does.
+- **A closed `<dialog>` is hidden content, and `dialog.show()`/`showModal()`/`close()`
+  exist.** A `<dialog>` without `open` is not rendered by any browser, but its text
+  was extracted like visible text; a page that builds hundreds of closed dialogs (a
+  specification's per-term reference panels) grew its Markdown by half. It now counts
+  as hidden, like `[hidden]`, and the three methods set and remove `open`, so a dialog
+  a script opens is visible. Calling them used to throw.
+
+- **Property writes reach the page tree (reflected attributes).** `input.name = …`,
+  `a.title = …`, `img.alt = …`, `el.hidden = true`, `link.rel = …`,
+  `option.selected = true`, `el.ariaLabel = …` set an expando on the JavaScript
+  wrapper and nothing else, so `read`, `forms` and `links` never saw state a page set
+  through properties; only `id`, `className`, `href`, `src`, `value`, `checked` and
+  `slot` reflected. The common reflected attributes of every HTML interface now read
+  and write the content attribute, with the standard's defaults and keyword rules,
+  and exist only on the interfaces that have them (`'disabled' in input` is true,
+  `'disabled' in div` is false — the test Preact and Vue use to choose between a
+  property and an attribute). `meta.content` no longer reads `undefined`.
+- **`el.style` writes reach the `style` attribute.** `el.style.display = 'none'`,
+  `style.setProperty(…)` and `style.cssText = …` changed a private object; the
+  element's `style` attribute, which `innerText` and hidden-content stripping read,
+  never moved. `el.style` is now a declaration block over the attribute. There is
+  still no CSSOM: values are not validated and nothing is computed. Content a page
+  hides with an inline style is now treated as hidden, and content it reveals as
+  visible.
+- **`innerHTML`/`outerHTML` write void elements as `<br>`, not `<br/>`.**
+
+- **Event-handler properties and attributes run.** `window.onload = fn`,
+  `el.onclick = fn`, `document.onreadystatechange = fn` and `onclick="…"` in markup
+  were stored and never called; only `addEventListener` listeners ran. They are now
+  real event handlers: one entry in the target's listener list at the position the
+  handler was first set, `this` and `event` bound, `return false` cancelling the
+  event, `<body onload>` and friends forwarded to the window. An attribute's text is
+  compiled on first use, with the element, its form owner and the document in scope,
+  and is gated by the page's Content-Security-Policy as inline script
+  (`script-src-attr`, `'unsafe-inline'`, `'unsafe-hashes'`; a nonce never covers an
+  attribute). `interact` clicks and submits run them.
+- **Uncaught exceptions reach `window.onerror` and `error` listeners.** An exception
+  that escapes a script, an event listener or a timer callback fires an `ErrorEvent`
+  at the window (`onerror` gets the five-argument form, and returning `true` handles
+  it). Listener and timer exceptions used to vanish without a trace; they are now in
+  `js_errors` unless a handler took them.
+- **`js_errors` covers the whole render.** It was filled once, after the initial
+  script pass, so an error raised later — from a timer, a lazily loaded chunk, a
+  `console.error` in an async callback, a promise rejected after load — was never
+  reported by a one-shot `read`. It is now read when the render settles.
+
+- **JavaScript engine: DOM and Web API gaps found by the real-page corpus.** Each
+  of these stopped a mainstream framework from booting or hydrating, or made a page
+  update the engine could not see:
+  - `ReadableStream.read()` on an open, empty stream now stays pending until the
+    producer enqueues (it resolved `{done: true}`, which React's Flight client reads
+    as "Connection closed" — no Next.js App Router page hydrated). `tee()`,
+    `pipeTo()`/`pipeThrough()` and `TransformStream` go through the controller;
+    `Response.body`, `Blob.stream()`, `new Response(stream)` and
+    `ReadableStream.from()` are new.
+  - The ParentNode and ChildNode mixins exist on every interface that has them:
+    `append`/`prepend`/`replaceChildren` and `querySelector(All)`/`children`/
+    `getElementById` on `DocumentFragment` (`template.content`, range and created
+    fragments), `ShadowRoot` and parsed documents; `before`/`after`/`replaceWith`/
+    `remove` on elements, text and comment nodes. `new DocumentFragment()`,
+    `new Text()` and `new Comment()` construct real nodes. `ShadowRoot` is a global
+    and a `DocumentFragment`.
+  - Every element is an instance of its tag's interface (`HTMLScriptElement`, …),
+    `Object.prototype.toString.call(el)` names it, and `constructor.name` no longer
+    exposes a Go symbol.
+  - `innerText`/`outerText` exist (a layout-free approximation on read, exact on
+    write). `textContent` on a text or comment node reads and writes its data.
+  - `document.readyState` goes `loading` → `interactive` → `complete` with
+    `readystatechange`, where it was a constant `complete`.
+  - `document.evaluate`, `XPathEvaluator`, `XPathExpression` and `XPathResult`: an
+    XPath 1.0 evaluator over the node tree, bounded in expression size, nesting and
+    evaluation steps.
+  - `el.attributes` is live and `removeAttributeNode`/`setAttributeNode` exist;
+    `classList` is a full, live `DOMTokenList` and `link.relList.supports()` answers
+    from what the engine acts on; `document.createNodeIterator`, `document.scripts`/
+    `images`/`links`, `document.domain`, `history.state`, `StorageEvent`,
+    `performance.timing`/`navigation` and the navigation timing entry are new.
+  - `<html>`/`<body>` report the constant 1280×720 viewport rect; element scroll
+    methods exist and `scrollTop` is writable.
+  - `n.toLocaleString('en-US')` formats (it threw a `RangeError`).
+  - `unhandledrejection` is dispatched to window listeners; an element's `load`
+    event no longer reaches window listeners.
+  - Inside a module script a free `require`, `module` or `exports` is the page's
+    global of that name (usually undefined), as in a browser, instead of the engine's
+    module wrapper: a bundler runtime no longer takes its CommonJS branch, a page's AMD
+    loader is reachable with its properties (`require.entries`), and a UMD prologue in
+    a module no longer clobbers the module's exports. A module with no import/export
+    syntax is still a module (top-level `this` is `undefined`). The page world has no
+    Node-style `require` global, so `typeof require` is `"undefined"`.
+- **`data:` script URLs are decoded locally** on every script path (classic,
+  script-inserted, module entry and dependency, `import()`, preload hints) instead
+  of being sent to the network. They are subject to `script-src` — only an explicit
+  `data:` source or `'strict-dynamic'` admits one — to `integrity`, and to
+  `--js-max-bytes`.
 
 ## v0.25.0 — 2026-11-27
 

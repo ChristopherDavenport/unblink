@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/andybalholm/cascadia"
@@ -81,9 +82,9 @@ func (b *bridge) loadInsertedScript(n *html.Node) {
 	b.loadExternalScript(n, src)
 }
 
-// scriptSrc returns a script element's effective src. `el.src = url` sets a property on
-// the JS wrapper (it does not reflect to the html attribute), while setAttribute('src',
-// url) writes the attribute — so check both, preferring the JS property.
+// scriptSrc returns a script element's effective src. The src property reflects the
+// attribute, so the two normally agree; the property is still read first because a
+// page (or a library patching HTMLScriptElement) can shadow it on the wrapper.
 func (b *bridge) scriptSrc(n *html.Node) string {
 	if obj := b.wrap(n).ToObject(b.vm); obj != nil {
 		if v := obj.Get("src"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
@@ -132,7 +133,7 @@ func (b *bridge) loadExternalScript(n *html.Node, src string) {
 				body, ok = cached, true
 			} else {
 				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
-				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
+				res, ferr := b.scriptDo(ctx, abs)
 				cancel()
 				if ferr == nil && res != nil && res.Status < 400 {
 					if integrity != "" {
@@ -167,18 +168,11 @@ func (b *bridge) loadExternalScript(n *html.Node, src string) {
 	}()
 }
 
-// fireScriptEvent dispatches a non-bubbling load/error event at the script element and
-// also invokes its on<type> property handler — webpack sets script.onload/onerror
-// directly, and the generic dispatch only runs addEventListener listeners.
+// fireScriptEvent dispatches a non-bubbling load/error event at the script
+// element. Its on<type> handler — webpack sets script.onload/onerror directly —
+// runs as part of the dispatch (eventhandlers.go).
 func (b *bridge) fireScriptEvent(n *html.Node, typ string) {
-	wrapper := b.wrap(n)
-	ev := b.newEvent(typ, false, false, wrapper)
-	b.dispatchOnNode(n, ev)
-	if obj := wrapper.ToObject(b.vm); obj != nil {
-		if fn, ok := goja.AssertFunction(obj.Get("on" + typ)); ok {
-			b.callSafe(fn, wrapper, ev.js)
-		}
-	}
+	b.dispatchOnNode(n, b.newEvent(typ, false, false, b.wrap(n)))
 }
 
 // scriptText returns the concatenated text content of a <script> node.
@@ -192,6 +186,75 @@ func scriptText(n *html.Node) string {
 	return sb.String()
 }
 
+// runDocumentScripts runs the document's parser-inserted scripts in the order a
+// browser does:
+//
+//  1. every classic script that is not deferred, in document order, as the
+//     parser reaches it;
+//  2. the document is then fully parsed: readyState becomes "interactive";
+//  3. the scripts that wait for the end of parsing — external classic scripts
+//     with `defer`, and module scripts, which are deferred by definition — in
+//     document order, interleaved.
+//
+// DOMContentLoaded follows (fireLifecycle). `defer` on an inline classic script
+// has no effect, as specified. `async` scripts run where the document names them
+// (a browser runs them whenever they arrive, so any order is a valid one).
+//
+// The order is load-bearing for the common pattern of a deferred library in
+// <head> configured by an inline script in <body>: Alpine is loaded with defer
+// and starts as soon as it runs, and the page registers its components in a
+// later inline script listening for alpine:init. Run in plain document order
+// the library started first and every component was "not defined".
+func (b *bridge) runDocumentScripts(scripts, modules []*html.Node) {
+	b.scriptOrdinal = make(map[*html.Node]int, len(scripts))
+	var immediate, deferred []*html.Node
+	for i, s := range scripts {
+		b.scriptOrdinal[s] = i
+		if hasAttr(s, "defer") && !hasAttr(s, "async") && strings.TrimSpace(getAttr(s, "src")) != "" {
+			deferred = append(deferred, s)
+		} else {
+			immediate = append(immediate, s)
+		}
+	}
+	b.runScripts(immediate)
+	b.setReadyState("interactive") // parsing is done; deferred scripts, modules and DOMContentLoaded follow
+
+	if len(deferred) == 0 {
+		if len(modules) > 0 {
+			b.runModules(modules)
+		}
+		return
+	}
+	if len(modules) == 0 {
+		b.runScripts(deferred)
+		return
+	}
+	// Both kinds wait for the end of parsing and then run in document order:
+	// merge the two lists by position and run each maximal run of one kind.
+	pos := make(map[*html.Node]int)
+	for i, s := range selScript.MatchAll(b.doc) {
+		pos[s] = i
+	}
+	isModule := make(map[*html.Node]bool, len(modules))
+	for _, m := range modules {
+		isModule[m] = true
+	}
+	all := append(append([]*html.Node{}, deferred...), modules...)
+	sort.SliceStable(all, func(i, j int) bool { return pos[all[i]] < pos[all[j]] })
+	for i := 0; i < len(all); {
+		j := i
+		for j < len(all) && isModule[all[j]] == isModule[all[i]] {
+			j++
+		}
+		if isModule[all[i]] {
+			b.runModules(all[i:j])
+		} else {
+			b.runScripts(all[i:j])
+		}
+		i = j
+	}
+}
+
 // runScripts compiles and runs each script in document order. External (src)
 // script bodies come from the asset cache, the concurrent prefetch
 // (startPrefetch), or a synchronous Transport fetch, in that order — execution
@@ -200,6 +263,9 @@ func scriptText(n *html.Node) string {
 func (b *bridge) runScripts(scripts []*html.Node) {
 	for i, s := range scripts {
 		var src string
+		if n, ok := b.scriptOrdinal[s]; ok {
+			i = n // the script's position among the document's classic scripts
+		}
 		name := fmt.Sprintf("script-%d.js", i) // inline fallback; externals use their URL
 		if srcAttr := strings.TrimSpace(getAttr(s, "src")); srcAttr != "" {
 			if b.transport == nil {
@@ -224,7 +290,7 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 				// charset-transcoded body, not the raw bytes SRI must hash) and block
 				// on mismatch, like a browser refusing a tampered script.
 				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
-				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
+				res, ferr := b.scriptDo(ctx, abs)
 				cancel()
 				if ferr != nil || res == nil || res.Status >= 400 {
 					continue
@@ -244,7 +310,7 @@ func (b *bridge) runScripts(scripts []*html.Node) {
 				src = string(body)
 			} else {
 				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
-				res, ferr := b.transport.Do(ctx, "GET", abs, nil, nil)
+				res, ferr := b.scriptDo(ctx, abs)
 				cancel()
 				if ferr != nil || res == nil || res.Status >= 400 {
 					continue
@@ -281,7 +347,7 @@ func (b *bridge) compileAndRun(name, src string) {
 		return
 	}
 	if _, err := b.vm.RunProgram(prog); err != nil {
-		b.recordError(err)
+		b.reportException(err) // window.onerror / "error" listeners, then diagnostics
 	}
 }
 
@@ -305,6 +371,15 @@ func classicProgram(name, src string) (*goja.Program, error) {
 		// bundle runs instead of being skipped wholesale. Only on a compile error, only
 		// when the source could contain an import token.
 		if lowered, ok := lowerDynamicImport(src); ok {
+			if p2, e2 := goja.Compile(name+".lowered", lowered, false); e2 == nil {
+				prog, err = p2, nil
+			}
+		}
+	}
+	if err != nil && (strings.Contains(src, "async") || strings.Contains(src, "await")) {
+		// Still not compiling: goja also lacks async generators and for-await.
+		// Lower those too (and dynamic import with them) and try once more.
+		if lowered, ok := lowerAsyncIteration(src); ok {
 			if p2, e2 := goja.Compile(name+".lowered", lowered, false); e2 == nil {
 				prog, err = p2, nil
 			}

@@ -104,7 +104,13 @@ type Browser struct {
 	// robots.txt disallows (--respect-robots, ADR 0020; see robotsgate.go). Off by
 	// default: robots.txt is then context only.
 	respectRobots bool
-	safeOutput    bool // strip hidden content + defang image beacons in emitted content
+	// preferMarkdown is what a stateless read that does not say gets: ask the
+	// origin for its Markdown representation, or not (--prefer-markdown, default
+	// DefaultPreferMarkdown; ADR 0021, see markdownneg.go).
+	preferMarkdown bool
+	safeOutput     bool // strip hidden content + defang image beacons in emitted content
+	// noCollapseGuard turns off the render-collapse guard (ADR 0023, collapse.go).
+	noCollapseGuard bool
 
 	renderer       Renderer     // nil when JavaScript rendering is disabled
 	liveEngine     liveRenderer // non-nil when the renderer supports persistent per-session runtimes
@@ -122,6 +128,7 @@ type Browser struct {
 	jsReqTimeout       time.Duration
 	jsMaxLive          int               // cap on concurrent live JS runtimes (LRU torn down)
 	jsRT               http.RoundTripper // shared conn pool for all JS subrequest clients (SSRF guard baked in)
+	pageClock          time.Time         // pinned page-visible clock for replay harnesses (WithPageClock); zero = real time
 
 	limiter *ratelimit.Limiter // shared per-host rate limiter (nil = disabled)
 	retries int                // fetch retries, threaded into JS subrequest clients
@@ -148,6 +155,7 @@ type options struct {
 	jsConcurrency      int
 	jsMaxLive          int
 	jsMemLimit         uint64
+	jsLiveTaskBudget   time.Duration // see WithJSLiveTaskBudget
 	jsAssetCache       bool
 	rateRPS            float64
 	rateBurst          int
@@ -155,13 +163,17 @@ type options struct {
 	tlsMimic           bool
 	siteHints          bool
 	respectRobots      bool
+	preferMarkdown     bool
 	safeOutput         bool
+	noCollapseGuard    bool // see WithRenderCollapseGuard (collapse.go)
 	allowPrivate       bool
 	search             search.Provider
 	sessionTTL         time.Duration
 	sessionCap         int
 	extensionPaths     []string
 	extensionDirs      []string
+	jsRoundTripper     http.RoundTripper // see WithJSRoundTripper (replay.go)
+	pageClock          time.Time         // see WithPageClock (replay.go)
 }
 
 // WithFetchOptions forwards options to the underlying fetch clients (default and
@@ -269,6 +281,14 @@ func WithoutCSP(disable bool) Option { return func(o *options) { o.jsDisableCSP 
 // session and page survive — the next interact reopens it). 0 keeps the default.
 func WithJSMaxLive(n int) Option { return func(o *options) { o.jsMaxLive = n } }
 
+// WithJSLiveTaskBudget sets how long one page task may run on a session's live
+// runtime while no tool call is in flight before it is interrupted; a page whose
+// tasks keep exceeding it has its runtime shut down (js.ErrRunaway, reported as
+// live_js_stopped). 0 keeps js.DefaultLiveTaskBudget. Not wired to a flag.
+func WithJSLiveTaskBudget(d time.Duration) Option {
+	return func(o *options) { o.jsLiveTaskBudget = d }
+}
+
 // WithJSMemoryLimit caps the Go heap running page JS may grow before every live
 // runtime is interrupted (ADR-0003). 0 disables the guard. Negative is treated
 // as 0 by the flag layer.
@@ -319,6 +339,19 @@ func WithSiteHints(enabled bool) Option { return func(o *options) { o.siteHints 
 // gated; Crawl-delay is not enforced. Independent of WithSiteHints. See ADR 0020.
 func WithRespectRobots(enabled bool) Option { return func(o *options) { o.respectRobots = enabled } }
 
+// WithPreferMarkdown sets what a Read that does not say (Request.PreferMarkdown
+// nil) does: ask origins for a Markdown representation of the page, or not. The
+// default is DefaultPreferMarkdown. When negotiating, a stateless read's document
+// request sends "Accept: text/markdown, text/html;q=0.9, …", and an origin that
+// answers with text/markdown is returned as-is, with no parse, JavaScript render
+// or reduction. Only that one request negotiates — never a session navigation
+// (unless the call asks), another tool's fetch, a subresource, a page-JS
+// subrequest, a form submit, or a metadata probe. A text/markdown response is
+// passed through whatever this is set to. See ADR 0021.
+func WithPreferMarkdown(enabled bool) Option {
+	return func(o *options) { o.preferMarkdown = enabled }
+}
+
 // WithSafeOutput toggles the untrusted-content safety pass on emitted content:
 // stripping human-hidden text and defanging Markdown image beacons. On by default;
 // disable to get the raw, unmodified reduction.
@@ -331,7 +364,7 @@ func New(opts ...Option) (*Browser, error) {
 		jsNetwork: true, jsMaxBytes: DefaultJSMaxBytes, jsMaxRequests: DefaultJSMaxRequests, jsTimeout: DefaultJSTimeout,
 		jsPrewarm: js.DefaultMaxConcurrent, jsMaxLive: DefaultJSMaxLive, jsMemLimit: DefaultJSMemLimit, jsAssetCache: true,
 		rateRPS: DefaultRateRPS, rateBurst: DefaultRateBurst, retries: DefaultRetries,
-		siteHints: true, safeOutput: true,
+		siteHints: true, safeOutput: true, preferMarkdown: DefaultPreferMarkdown,
 	}
 	for _, opt := range opts {
 		opt(&o)
@@ -353,7 +386,7 @@ func New(opts ...Option) (*Browser, error) {
 		if conc <= 0 {
 			conc = DefaultJSConcurrency()
 		}
-		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithConcurrency(conc), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic), js.WithMemoryLimit(o.jsMemLimit)}
+		jsOpts := []js.Option{js.WithTimeout(o.jsTimeout), js.WithConcurrency(conc), js.WithPrewarm(o.jsPrewarm), js.WithWebdriver(!o.tlsMimic), js.WithMemoryLimit(o.jsMemLimit), js.WithLiveTaskBudget(o.jsLiveTaskBudget)}
 		if o.jsAssetCache {
 			jsOpts = append(jsOpts, js.WithAssetCache(DefaultCacheTTL))
 		}
@@ -410,7 +443,9 @@ func New(opts ...Option) (*Browser, error) {
 		sessions:           mgr,
 		siteHints:          o.siteHints,
 		respectRobots:      o.respectRobots,
+		preferMarkdown:     o.preferMarkdown,
 		safeOutput:         o.safeOutput,
+		noCollapseGuard:    o.noCollapseGuard,
 		renderer:           o.renderer,
 		jsNetwork:          o.jsNetwork,
 		jsMaxBytes:         o.jsMaxBytes,
@@ -429,6 +464,10 @@ func New(opts ...Option) (*Browser, error) {
 		limiter: limiter,
 		retries: o.retries,
 		search:  o.search,
+	}
+	b.pageClock = o.pageClock
+	if o.jsRoundTripper != nil {
+		b.jsRT = cookieStripper{inner: o.jsRoundTripper}
 	}
 	if lr, ok := o.renderer.(liveRenderer); ok {
 		b.liveEngine = lr
@@ -463,6 +502,16 @@ type Request struct {
 	// Selector is an optional CSS selector applied when Format == "raw_html":
 	// only the matching elements are serialized. Ignored by other formats.
 	Selector string
+
+	// PreferMarkdown is Read's per-call override of the operator's
+	// --prefer-markdown default: true asks the origin for text/markdown on this
+	// navigation, false sends the browser-like Accept, nil follows the default
+	// (which applies to stateless reads only). Ignored by every other tool. See
+	// negotiatesMarkdown for the calls that never negotiate.
+	PreferMarkdown *bool
+	// negotiateMarkdown is the resolved decision, set by Read alone, so no other
+	// tool's navigation can carry the Markdown Accept.
+	negotiateMarkdown bool
 
 	// WaitFor/WaitText/WaitTimeout gate a JavaScript render: keep it alive until the
 	// selector resolves and/or the text appears (or WaitTimeout elapses). Setting
@@ -535,12 +584,15 @@ type renderOpts struct {
 	// one-shot fetches — those get fresh per-render storage (single origin, so no
 	// partitioning is needed). Resolved in processFetched with the final page origin.
 	storageFor func(origin string) (local, session js.Storage)
+	// markdown asks the origin for its Markdown representation on the document
+	// request (ADR 0021). Only Read sets it.
+	markdown bool
 }
 
 // renderOpts derives the render intent from a Request. A wait condition implies a
 // render (there is nothing to wait for without running the page's JS).
 func (r Request) renderOpts() renderOpts {
-	ro := renderOpts{render: r.Render, timeout: r.WaitTimeout}
+	ro := renderOpts{render: r.Render, timeout: r.WaitTimeout, markdown: r.negotiateMarkdown}
 	if r.WaitFor != "" || r.WaitText != "" {
 		ro.wait = &js.WaitCondition{Selector: r.WaitFor, Text: r.WaitText}
 		ro.render = true
@@ -631,7 +683,7 @@ func (b *Browser) fetchStateless(ctx context.Context, url string, ro renderOpts)
 	if err := b.gateURL(ctx, url); err != nil {
 		return nil, err
 	}
-	key := cacheKey(url, ro.render)
+	key := cacheKeyFor(url, ro)
 	if p, ok := b.cache.get(key); ok {
 		if err := b.checkRobots(ctx, p.FinalURL); err != nil {
 			return nil, err
@@ -662,7 +714,9 @@ func (b *Browser) revalidate(ctx context.Context, key, url string, stale *page.P
 	if etag == "" && lastMod == "" {
 		return nil, false, nil
 	}
-	p, err := b.client.GetConditional(b.navContext(ctx), url, etag, lastMod)
+	// The stale entry's validators belong to the representation its key names, so
+	// the conditional request must negotiate the same one.
+	p, err := b.client.GetConditional(b.docContext(ctx, ro), url, etag, lastMod)
 	if err != nil {
 		// The conditional GET is a plain GET plus validator headers, so this is the
 		// same failure a normal fetch would hit — report it rather than refetching.
@@ -681,11 +735,25 @@ func (b *Browser) revalidate(ctx context.Context, key, url string, stale *page.P
 	return pp, true, nil
 }
 
+// cacheKey names a stateless cache entry for the default (HTML) representation;
+// rendered and unrendered pages are distinct entries.
 func cacheKey(url string, render bool) string {
 	if render {
 		return "render\x00" + url
 	}
 	return url
+}
+
+// cacheKeyFor is cacheKey for a navigation's full options. A Markdown-negotiated
+// response is a different representation of the same URL, so it gets its own
+// key: an HTML page is never served to a caller that negotiated Markdown, or the
+// reverse (a cache-level Vary: Accept).
+func cacheKeyFor(url string, ro renderOpts) string {
+	key := cacheKey(url, ro.render)
+	if ro.markdown {
+		key = "markdown\x00" + key
+	}
+	return key
 }
 
 // fetchPage runs fetch -> parse -> [render] -> extract. When render is requested
@@ -701,7 +769,7 @@ func (b *Browser) fetchPage(ctx context.Context, client *fetch.Client, url strin
 	if err := b.gateURL(ctx, url); err != nil {
 		return nil, err
 	}
-	p, err := client.Get(b.navContext(ctx), url)
+	p, err := client.Get(b.docContext(ctx, ro), url)
 	if err != nil {
 		return nil, err
 	}
@@ -727,12 +795,15 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 	var renderDur time.Duration
 	if ro.render && b.renderer != nil {
 		var diag js.RenderResult
+		// Size the server-rendered document before its scripts run, so a render
+		// that destroys it can be told from one that builds it (ADR 0023).
+		textBefore := b.measureForCollapse(p)
 		// Origin-partition session storage by the final page origin (SOP, ADR 0015).
 		var localStore, sessStore js.Storage
 		if ro.storageFor != nil {
 			localStore, sessStore = ro.storageFor(originKey(renderPageURL(p)))
 		}
-		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: localStore, SessionStorage: sessStore, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout, AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: p.Header}
+		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: localStore, SessionStorage: sessStore, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout, AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: p.Header, ClockStart: b.pageClock}
 		if b.jsNetwork {
 			env.Transport = b.newRenderTransport(client, ro.timeout)
 		}
@@ -752,6 +823,7 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 			p.RenderDiag.NetDenied = gt.Denied()
 		}
 		renderDur = p.RenderDiag.TotalDur
+		b.guardRenderCollapse(p, textBefore)
 	} else {
 		// No JS: flatten declarative Shadow DOM (<template shadowrootmode>) into composed
 		// light content so SSR web components render and their links/forms/headings are
@@ -810,25 +882,28 @@ func storageProviderFor(sess *session.Session) func(string) (js.Storage, js.Stor
 // observable without changing the read output.
 func applyRenderDiag(p *page.Page, diag js.RenderResult, url string) {
 	p.RenderDiag = &page.RenderDiag{
-		Framework:         diag.Framework,
-		Errors:            diag.Errors,
-		Upgrades:          diag.Upgrades,
-		WaitRequested:     diag.WaitRequested,
-		WaitMet:           diag.WaitMet,
-		PendingNavigation: diag.PendingNavigation,
-		NetRequests:       diag.NetRequests,
-		NetFailed:         diag.NetFailed,
-		NetBytes:          diag.NetBytes,
-		NetPending:        diag.NetPending,
-		DeadlineHit:       diag.DeadlineHit,
-		DOMBusy:           diag.DOMBusy,
-		TimersPending:     diag.TimersPending,
-		RequestsTruncated: diag.RequestsTruncated,
-		ConsoleTruncated:  diag.ConsoleTruncated,
-		SetupDur:          diag.SetupDur,
-		ExecDur:           diag.ExecDur,
-		SettleDur:         diag.SettleDur,
-		TotalDur:          diag.TotalDur,
+		Framework:           diag.Framework,
+		Errors:              diag.Errors,
+		Upgrades:            diag.Upgrades,
+		WaitRequested:       diag.WaitRequested,
+		WaitMet:             diag.WaitMet,
+		PendingNavigation:   diag.PendingNavigation,
+		NetRequests:         diag.NetRequests,
+		NetFailed:           diag.NetFailed,
+		NetBytes:            diag.NetBytes,
+		NetPending:          diag.NetPending,
+		DeadlineHit:         diag.DeadlineHit,
+		DOMBusy:             diag.DOMBusy,
+		TimersPending:       diag.TimersPending,
+		SettledIdle:         diag.SettledIdle,
+		TasksHeld:           diag.TasksHeld,
+		TimersFastForwarded: diag.TimersFastForwarded,
+		RequestsTruncated:   diag.RequestsTruncated,
+		ConsoleTruncated:    diag.ConsoleTruncated,
+		SetupDur:            diag.SetupDur,
+		ExecDur:             diag.ExecDur,
+		SettleDur:           diag.SettleDur,
+		TotalDur:            diag.TotalDur,
 	}
 	p.RenderDiag.Requests = make([]page.NetRequest, len(diag.Requests))
 	for i, r := range diag.Requests {
@@ -869,25 +944,46 @@ func deriveNonHTMLMeta(p *page.Page) {
 	if name == "" || name == "/" || name == "." {
 		name = u.Host
 	}
+	// A Markdown document names itself; prefer that over the URL filename.
+	if p.Kind == page.KindMarkdown {
+		if t := content.MarkdownTitle(p.Raw); t != "" {
+			name = t
+		}
+	}
 	p.Meta.Title = name
 }
 
 // ReadResult is the paginated Markdown rendering of a page.
 type ReadResult struct {
-	Markdown    string `json:"-"`
-	Mode        string `json:"mode"`
-	Page        int    `json:"page"`
-	TotalPages  int    `json:"total_pages"`
+	Markdown   string `json:"-"`
+	Mode       string `json:"mode"`
+	Page       int    `json:"page"`
+	TotalPages int    `json:"total_pages"`
+	// TotalTokens estimates the whole document across every page, set when the
+	// content is paginated, so the caller can see how much lies beyond this page
+	// before deciding to follow the cursor.
+	TotalTokens int    `json:"total_tokens,omitempty"`
 	NextCursor  string `json:"next_cursor,omitempty"`
 	Truncated   bool   `json:"truncated"`
 	ContentType string `json:"content_type,omitempty"`
 	Kind        string `json:"kind,omitempty"`
 	Bytes       int    `json:"bytes,omitempty"`
 
-	// ArticleFallback is true when mode=article was requested but readability found
-	// no distinct article body, so the whole reduced page was returned instead
-	// (Mode then reports "full"). The agent asked for an article and didn't get one.
-	ArticleFallback bool `json:"article_fallback,omitempty"`
+	// ArticleFallback is true when mode=article was requested but the page did not
+	// yield one, so a wider reduction was returned instead. Mode then reports what
+	// that was — "main" (the page's main landmark) or "full" (the whole reduced
+	// page) — and ArticleFallbackReason why: "no_article" (readability found no
+	// article body) or "partial_article" (it found one holding only a small part
+	// of the page's content: a hub, listing or index). The agent asked for an
+	// article and didn't get one.
+	ArticleFallback       bool   `json:"article_fallback,omitempty"`
+	ArticleFallbackReason string `json:"article_fallback_reason,omitempty"`
+	// ArticleCoverage is set when mode=article returned a real article that
+	// nevertheless holds only part of the page's main content: the share it holds
+	// (under 0.85). The rest did not look like part of the article — a second
+	// section, an index, briefs beside the lead — and mode=full returns it. Absent
+	// when the article is essentially the page, and on any fallback.
+	ArticleCoverage float64 `json:"article_coverage,omitempty"`
 
 	// WaitMet is set only when the request carried a wait_for/wait_text gate: true if
 	// the condition appeared before the render returned, false if it never did (the
@@ -916,6 +1012,18 @@ type ReadResult struct {
 	RenderBudgetHit bool  `json:"render_budget_hit,omitempty"`
 	DOMBusy         bool  `json:"dom_busy,omitempty"`
 	TimersPending   int   `json:"timers_pending,omitempty"`
+
+	// RenderDiscarded is true when the page's JavaScript ran but left almost none
+	// of a substantial server-rendered page (a hydration crash, an error or
+	// consent shell), so its DOM was discarded and this content comes from the
+	// server's HTML, as with render=false (ADR 0023). The other render
+	// diagnostics still describe the render that ran.
+	RenderDiscarded bool `json:"render_discarded,omitempty"`
+
+	// RenderTiming is where the JavaScript render's wall clock went. It is for
+	// harnesses and benchmarks (the corpus latency breakdown); it is never part
+	// of tool output. Nil when no render ran for this read.
+	RenderTiming *RenderTiming `json:"-"`
 
 	// ImageBytes/ImageMIME carry the raw image for the MCP layer to base64-encode,
 	// set only when the page is an image and the request asked for include_bytes.
@@ -951,9 +1059,13 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	default:
 		return nil, errf(ErrBadInput, "invalid mode %q (valid: article, full)", mode)
 	}
+	req.negotiateMarkdown = b.negotiatesMarkdown(req, format)
 	t0 := time.Now()
 	p, _, err := b.resolve(ctx, req)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkCurrentRepresentation(req, format, p); err != nil {
 		return nil, err
 	}
 	resolveDur := time.Since(t0)
@@ -966,11 +1078,12 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	var memo *pageMemo
 	if req.SessionID == "" && req.URL != "" && req.Auth == nil && len(req.Headers) == 0 {
 		if ro := req.renderOpts(); ro.wait == nil {
-			memo = b.cache.memoFor(cacheKey(req.URL, ro.render), p)
+			memo = b.cache.memoFor(cacheKeyFor(req.URL, ro), p)
 		}
 	}
 
-	articleFallback := false
+	articleFallback, fallbackReason := false, ""
+	coverage := 0.0
 	pc := *p
 	switch format {
 	case "raw_html", "text":
@@ -998,7 +1111,8 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		if v, ok := memo.lookup(mkey); ok {
 			// Repeat read or pagination cursor page within the cache TTL: the
 			// reduced+emitted Markdown is already known for this exact page.
-			pc.Markdown, mode, articleFallback = v.markdown, v.mode, v.articleFallback
+			pc.Markdown, mode, articleFallback, fallbackReason = v.markdown, v.mode, v.articleFallback, v.fallbackReason
+			coverage = v.coverage
 		} else {
 			switch pc.Kind {
 			case "", page.KindHTML:
@@ -1013,10 +1127,14 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 					return nil, fmt.Errorf("reduce: %w", err)
 				}
 				reduceDur = time.Since(tr)
-				// Report what actually ran: readability finding no article falls back to
-				// the full reduction, and pretending otherwise misleads the agent.
-				if mode == "article" && pc.Article != nil && pc.Article.Source == "full" {
-					mode, articleFallback = "full", true
+				// Report what actually ran: an article request that fell back to the
+				// main region or the full reduction (no article, or only a fragment of a
+				// hub page) says so, since pretending otherwise misleads the agent.
+				if mode == "article" && pc.Article != nil && pc.Article.Fallback != "" {
+					mode, articleFallback, fallbackReason = pc.Article.Source, true, pc.Article.Fallback
+				}
+				if mode == "article" && pc.Article != nil {
+					coverage = pc.Article.Coverage
 				}
 				te := time.Now()
 				if err := emit.Markdown(&pc); err != nil {
@@ -1035,7 +1153,7 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 			if b.safeOutput {
 				pc.Markdown = emit.DefangImages(pc.Markdown)
 			}
-			memo.store(mkey, memoVal{markdown: pc.Markdown, mode: mode, articleFallback: articleFallback})
+			memo.store(mkey, memoVal{markdown: pc.Markdown, mode: mode, articleFallback: articleFallback, fallbackReason: fallbackReason, coverage: coverage})
 		}
 	}
 
@@ -1060,18 +1178,23 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 	}
 
 	res := &ReadResult{
-		Markdown:        chunks[idx],
-		Mode:            mode,
-		ArticleFallback: articleFallback,
-		Page:            idx + 1,
-		TotalPages:      len(chunks),
-		ContentType:     pc.ContentType,
-		Kind:            kindString(pc.Kind),
-		Bytes:           len(pc.Raw),
+		Markdown:              chunks[idx],
+		Mode:                  mode,
+		ArticleFallback:       articleFallback,
+		ArticleFallbackReason: fallbackReason,
+		ArticleCoverage:       coverage,
+		Page:                  idx + 1,
+		TotalPages:            len(chunks),
+		ContentType:           pc.ContentType,
+		Kind:                  kindString(pc.Kind),
+		Bytes:                 len(pc.Raw),
 	}
 	if idx+1 < len(chunks) {
 		res.NextCursor = tokens.EncodeCursor(idx+1, fp)
 		res.Truncated = true
+	}
+	if len(chunks) > 1 {
+		res.TotalTokens = tokens.Estimate(pc.Markdown)
 	}
 	if d := pc.RenderDiag; d != nil {
 		if d.WaitRequested {
@@ -1089,6 +1212,11 @@ func (b *Browser) Read(ctx context.Context, req Request, mode string, maxTokens 
 		res.RenderBudgetHit = d.DeadlineHit
 		res.DOMBusy = d.DOMBusy
 		res.TimersPending = d.TimersPending
+		res.RenderDiscarded = d.Discarded
+		if d.TotalDur > 0 {
+			res.RenderTiming = &RenderTiming{Setup: d.SetupDur, Exec: d.ExecDur, Settle: d.SettleDur, Total: d.TotalDur,
+				SettledIdle: d.SettledIdle, TasksHeld: d.TasksHeld, TimersFastForwarded: d.TimersFastForwarded}
+		}
 	}
 	if req.IncludeBytes && pc.Kind == page.KindImage {
 		res.ImageBytes = pc.Raw
@@ -1214,6 +1342,9 @@ type BrowseResult struct {
 	// rendered (browse/click/submit with render=true) — same contract as read.
 	Framework string   `json:"framework,omitempty"`
 	JSErrors  []string `json:"js_errors,omitempty"`
+	// RenderDiscarded: the JavaScript render lost the server-rendered content, so
+	// this summary describes the server's HTML (ADR 0023) — same contract as read.
+	RenderDiscarded bool `json:"render_discarded,omitempty"`
 }
 
 // summarize builds a BrowseResult from a page.
@@ -1253,6 +1384,7 @@ func summarize(p *page.Page) *BrowseResult {
 	if d := p.RenderDiag; d != nil {
 		res.Framework = d.Framework
 		res.JSErrors = capErrors(d.Errors)
+		res.RenderDiscarded = d.Discarded
 	}
 	return res
 }
@@ -1648,6 +1780,13 @@ type InteractResult struct {
 	// location.href/assign/replace (interact never navigates itself); follow it with
 	// read/click. Empty when the interaction requested no cross-document navigation.
 	PendingNavigation string `json:"pending_navigation,omitempty"`
+	// RenderWasDiscarded is true when, before this interaction, the session's page
+	// was the server's HTML because its JavaScript render had lost the content
+	// (render_discarded on read/browse, ADR 0023). interact always runs against
+	// the live JavaScript DOM, so the page this call acted on — and the session's
+	// current page from here on, as Summary shows — is that live DOM, not the
+	// content earlier reads returned.
+	RenderWasDiscarded bool `json:"render_was_discarded,omitempty"`
 }
 
 // Interact dispatches a DOM event (event, default "click") at selector on the
@@ -1680,6 +1819,7 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 		event = "click"
 	}
 
+	wasDiscarded := cur.RenderDiag != nil && cur.RenderDiag.Discarded
 	lc, err := b.ensureLive(ctx, sess)
 	if err != nil {
 		return nil, err
@@ -1693,6 +1833,10 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 	// read, so first-interact bracketing still covers only the dispatch.
 	v0, v0err := lc.DOMVersion(ctx)
 	res, err := lc.Dispatch(ctx, js.Action{Selector: selector, Type: event, Value: value, Key: key})
+	if errors.Is(err, js.ErrRunaway) {
+		b.liveStopped(sess, lc)
+		return nil, errLiveStopped(sessionID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1705,16 +1849,25 @@ func (b *Browser) Interact(ctx context.Context, sessionID, selector, event, valu
 		return nil, err
 	}
 	v1, v1err := lc.DOMVersion(ctx)
+	// The runtime may have been stopped after the dispatch returned — while the
+	// page was being read back. The interaction's effect on the page is then
+	// unknowable and the runtime is gone, so this is the same answer as a stop
+	// found before the dispatch, not a success with a note attached.
+	if errors.Is(v1err, js.ErrRunaway) {
+		b.liveStopped(sess, lc)
+		return nil, errLiveStopped(sessionID)
+	}
 
 	return &InteractResult{
-		Summary:           summarize(np),
-		Selector:          selector,
-		Event:             event,
-		Matched:           res.Matched,
-		Changed:           v0err != nil || v1err != nil || v1 != v0,
-		Controls:          np.Meta.Controls,
-		JSErrors:          capErrors(res.Errors),
-		PendingNavigation: nav,
+		Summary:            summarize(np),
+		Selector:           selector,
+		Event:              event,
+		Matched:            res.Matched,
+		Changed:            v0err != nil || v1err != nil || v1 != v0,
+		Controls:           np.Meta.Controls,
+		JSErrors:           capErrors(res.Errors),
+		PendingNavigation:  nav,
+		RenderWasDiscarded: wasDiscarded,
 	}, nil
 }
 
@@ -1736,7 +1889,7 @@ func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.Liv
 		return nil, err
 	}
 	origin := originKey(renderPageURL(tmp)) // origin-partition storage (SOP, ADR 0015)
-	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(origin), SessionStorage: sess.SessionStorage(origin), AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: cur.Header}
+	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(origin), SessionStorage: sess.SessionStorage(origin), AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: cur.Header, ClockStart: b.pageClock}
 	if b.jsNetwork {
 		env.Transport = b.newLiveTransport(sess.Client())
 	}
@@ -1786,12 +1939,16 @@ func (b *Browser) trimLiveContexts(opening *session.Session) {
 // full path (SetLive resets the recorded version).
 func (b *Browser) refreshFromLive(ctx context.Context, sess *session.Session, lc js.LiveContext) (*page.Page, error) {
 	cur := sess.Current()
-	if v, err := lc.DOMVersion(ctx); err == nil {
+	v, verr := lc.DOMVersion(ctx)
+	if verr == nil {
 		if pv, ok := sess.LiveSyncVersion(); ok && pv == v {
 			return cur, nil
 		}
 	}
 	snap, ver, err := lc.Snapshot(ctx)
+	if errors.Is(verr, js.ErrRunaway) || errors.Is(err, js.ErrRunaway) {
+		return b.liveStopped(sess, lc), nil
+	}
 	if err != nil {
 		return cur, nil
 	}
@@ -1804,12 +1961,54 @@ func (b *Browser) refreshFromLive(ctx context.Context, sess *session.Session, lc
 	np.Article = nil
 	np.Markdown = ""
 	np.Rendered = true
+	np.RenderDiag = liveRenderDiag(cur.RenderDiag)
 	if err := dom.Extract(&np); err != nil {
 		return cur, nil
 	}
 	sess.ReplaceCurrentPage(&np)
 	sess.SetLiveSyncVersion(ver)
 	return &np, nil
+}
+
+// liveStoppedNote is the js_errors line a session page carries once its live
+// runtime has been stopped by the idle watchdog (js.ErrRunaway).
+const liveStoppedNote = "live JavaScript runtime stopped: the page's scripts kept running without yielding; this is the last page state captured before that"
+
+// liveStopped handles a live runtime the js idle watchdog shut down: the handle
+// is dropped (so the next interact opens a fresh runtime from the page's
+// original bytes) and the session's current page — the last state that was
+// snapshotted — is marked, so a read says its JavaScript is no longer running
+// instead of passing a frozen snapshot off as live.
+func (b *Browser) liveStopped(sess *session.Session, lc js.LiveContext) *page.Page {
+	sess.DropLive(lc)
+	cur := sess.Current()
+	if cur == nil {
+		return nil
+	}
+	if cur.RenderDiag != nil {
+		for _, e := range cur.RenderDiag.Errors {
+			if e == liveStoppedNote {
+				return cur
+			}
+		}
+	}
+	np := *cur
+	var d page.RenderDiag
+	if cur.RenderDiag != nil {
+		d = *cur.RenderDiag
+	}
+	d.Errors = append([]string{liveStoppedNote}, d.Errors...) // first: js_errors is capped
+	np.RenderDiag = &d
+	sess.ReplaceCurrentPage(&np)
+	return &np
+}
+
+// errLiveStopped is interact's answer when the runtime it was about to drive (or
+// was driving) has been stopped. Retryable: the next interact reloads the page's
+// scripts from scratch — which the message says, since in-page state is gone.
+func errLiveStopped(sessionID string) *Error {
+	return &Error{Code: ErrLiveStopped, Retryable: true, Err: js.ErrRunaway,
+		Message: fmt.Sprintf("session %q: the page's JavaScript kept running without yielding and its live runtime was shut down; in-page state (variables, timers, listeners) is lost. The session's page is the last state captured. Calling interact again reloads the page's scripts from the start", sessionID)}
 }
 
 func selectForm(forms []page.Form, ref string) (page.Form, bool) {
@@ -2054,4 +2253,18 @@ func (b *Browser) Forward(id string) (*BrowseResult, error) {
 // CloseSession removes a session, reporting whether one existed.
 func (b *Browser) CloseSession(id string) bool {
 	return b.sessions.Close(id)
+}
+
+// RenderTiming breaks a JavaScript render's wall clock into its phases: Setup
+// (runtime acquisition, bridge, preludes, binding), Exec (scripts, modules and
+// lifecycle events) and Settle (waiting for the page to go quiet).
+type RenderTiming struct {
+	Setup, Exec, Settle, Total time.Duration
+	// SettledIdle: the settle closed on the provable-idle tier (ADR 0004).
+	SettledIdle bool
+	// TasksHeld is how long queued scheduler tasks held the quiet window.
+	TasksHeld time.Duration
+	// TimersFastForwarded counts long one-shot timers run early because the
+	// page had otherwise gone quiet.
+	TimersFastForwarded int
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/christopherdavenport/unblink/internal/browser"
 )
@@ -132,3 +133,33 @@ func BenchmarkReadPaginatedCursor(b *testing.B) {
 		}
 	}
 }
+
+// benchRenderedRead reads a unique URL per iteration with JavaScript on: fetch
+// -> parse -> render -> extract -> reduce -> emit. The fixture has no scripts,
+// so the render settles on the provably-idle tier and the guard's own cost —
+// two sizing walks of the document — is as large a share as it can be.
+func benchRenderedRead(b *testing.B, guard bool) {
+	srv := benchFixtureServer(b)
+	defer srv.Close()
+	br, err := browser.New(browser.WithAllowPrivate(true), browser.WithRateLimit(0, 0),
+		browser.WithJS(2*time.Second), browser.WithRenderCollapseGuard(guard))
+	if err != nil {
+		b.Fatalf("browser.New: %v", err)
+	}
+	defer br.Close()
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		url := fmt.Sprintf("%s/post/%d", srv.URL, i)
+		if _, err := br.Read(ctx, browser.Request{URL: url, Render: true}, "article", 6000, ""); err != nil {
+			b.Fatalf("read: %v", err)
+		}
+	}
+}
+
+// BenchmarkReadRenderedCold is the rendered read with the render-collapse guard
+// (ADR 0023) on, as shipped; ...NoGuard is the same read with it off. Compare
+// them with benchstat to see what the guard costs.
+func BenchmarkReadRenderedCold(b *testing.B)        { benchRenderedRead(b, true) }
+func BenchmarkReadRenderedColdNoGuard(b *testing.B) { benchRenderedRead(b, false) }

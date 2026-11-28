@@ -350,7 +350,13 @@ func TestFind(t *testing.T) {
 
 func TestCacheReusesFetch(t *testing.T) {
 	srv, hits := serveFixture(t, "structured.input.html")
-	b := newBrowser(t)
+	// browse and read share one fetch only when the read asks for the same (HTML)
+	// representation browse uses; a Markdown-negotiating read is its own cache
+	// entry (ADR 0021), so pin negotiation off whatever the default is.
+	b, err := browser.New(browser.WithAllowPrivate(true), browser.WithPreferMarkdown(false))
+	if err != nil {
+		t.Fatalf("new browser: %v", err)
+	}
 	ctx := context.Background()
 	if _, err := b.Browse(ctx, req(srv.URL)); err != nil {
 		t.Fatalf("browse: %v", err)

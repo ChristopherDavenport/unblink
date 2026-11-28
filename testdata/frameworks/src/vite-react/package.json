@@ -1,0 +1,8 @@
+{
+  "name": "unblink-fixture-vite-react",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "vite build" },
+  "dependencies": { "react": "19.3.1", "react-dom": "19.3.1" },
+  "devDependencies": { "vite": "8.4.0", "@vitejs/plugin-react": "6.3.0" }
+}

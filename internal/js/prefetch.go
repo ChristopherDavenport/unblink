@@ -108,7 +108,7 @@ func (b *bridge) warmConcurrent(urls []string) {
 			defer wg.Done()
 			for j := range queue {
 				ctx, cancel := context.WithTimeout(scriptCtx(b.ctx), b.reqTimeout)
-				res, err := b.transport.Do(ctx, "GET", j.url, nil, nil)
+				res, err := b.scriptDo(ctx, j.url)
 				cancel()
 				if err == nil && res != nil && res.Status < 400 {
 					j.e.body = res.Body

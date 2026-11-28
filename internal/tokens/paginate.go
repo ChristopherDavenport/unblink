@@ -15,9 +15,15 @@ import (
 var ErrStaleCursor = errors.New("cursor is stale: the content changed since it was issued")
 
 // Paginate splits markdown into chunks that each fit within maxTokens, breaking
-// only at blank-line block boundaries. A single block larger than the budget is
-// hard-split on line boundaries. Joining the returned chunks with "\n\n"
-// reproduces the document's blocks in order (round-trip invariant).
+// at blank-line block boundaries. A single block larger than the budget (a long
+// table, a code listing, a list with no blank lines) is split on its line
+// boundaries instead, and is packed like any other content: its first lines fill
+// what is left of the current chunk and its last lines share a chunk with the
+// blocks that follow. It used to be flushed around — whatever preceded it became
+// a chunk of its own, however small, so a page whose body is one long list
+// opened with a first chunk holding only the site menu. For a document with no
+// oversized block, joining the chunks with "\n\n" reproduces its blocks in
+// order (round-trip invariant).
 func Paginate(markdown string, maxTokens int) []string {
 	blocks := splitBlocks(markdown)
 	if len(blocks) == 0 {
@@ -41,8 +47,25 @@ func Paginate(markdown string, maxTokens int) []string {
 	for _, blk := range blocks {
 		bt := Estimate(blk)
 		if bt > maxTokens {
-			flush()
-			chunks = append(chunks, hardSplit(blk, maxTokens)...)
+			// Pack the block line by line into the running chunk. piece holds the
+			// lines of this block that belong to the current chunk.
+			var piece []string
+			closePiece := func() {
+				if len(piece) > 0 {
+					cur = append(cur, strings.Join(piece, "\n"))
+					piece = nil
+				}
+			}
+			for _, ln := range strings.Split(blk, "\n") {
+				lt := Estimate(ln)
+				if curTokens > 0 && curTokens+lt > maxTokens {
+					closePiece()
+					flush()
+				}
+				piece = append(piece, ln)
+				curTokens += lt
+			}
+			closePiece()
 			continue
 		}
 		if curTokens > 0 && curTokens+bt > maxTokens {
@@ -65,26 +88,6 @@ func splitBlocks(md string) []string {
 		if t := strings.Trim(p, "\n"); strings.TrimSpace(t) != "" {
 			out = append(out, t)
 		}
-	}
-	return out
-}
-
-func hardSplit(block string, maxTokens int) []string {
-	var out []string
-	var cur []string
-	ct := 0
-	for _, ln := range strings.Split(block, "\n") {
-		lt := Estimate(ln)
-		if ct > 0 && ct+lt > maxTokens {
-			out = append(out, strings.Join(cur, "\n"))
-			cur = nil
-			ct = 0
-		}
-		cur = append(cur, ln)
-		ct += lt
-	}
-	if len(cur) > 0 {
-		out = append(out, strings.Join(cur, "\n"))
 	}
 	return out
 }

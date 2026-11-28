@@ -51,6 +51,14 @@ type Case struct {
 	Scorers  []Scorer
 	Floor    float64 // case passes if its mean score >= Floor
 	MustPass bool    // a failing must-pass case fails the whole gate
+
+	// KnownGap, when non-empty, says this case asserts behaviour the engine does
+	// not have yet and why. The case still runs and is reported — loudly, in its
+	// own section of the scorecard — but it neither gates nor counts toward the
+	// overall score, so the fixture can state what is correct without being
+	// weakened to what works today. When such a case starts passing the scorecard
+	// says so: delete the marker and it becomes a gate.
+	KnownGap string
 }
 
 // Axis groups scorers by the quality dimension they validate, for the rollup.

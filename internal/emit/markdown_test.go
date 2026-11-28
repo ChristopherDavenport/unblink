@@ -96,3 +96,43 @@ func TestDefangImages(t *testing.T) {
 		}
 	}
 }
+
+// A data table is a Markdown table: a header, a row per line, cells delimited.
+func TestMarkdownDataTable(t *testing.T) {
+	p := &page.Page{Article: &page.Article{ContentHTML: `<table>
+		<thead><tr><th>Attribute</th><th>Description</th></tr></thead>
+		<tbody><tr><td><a href="/hx-get">hx-get</a></td><td>Issues a <code>GET</code> request</td></tr>
+		<tr><td>a|b</td><td>pipe in a cell</td></tr></tbody></table>`}}
+	if err := emit.Markdown(p); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"| Attribute | Description |\n|---|---|\n",
+		"| [hx-get](/hx-get) | Issues a `GET` request |\n",
+		`| a\|b | pipe in a cell |`,
+	} {
+		if !strings.Contains(p.Markdown, want) {
+			t.Errorf("Markdown missing %q:\n%s", want, p.Markdown)
+		}
+	}
+}
+
+// A table that cannot be one — a layout table, a cell holding paragraphs —
+// falls back to its rows as paragraphs and is not forced into a grid.
+func TestMarkdownLayoutTableFallsBack(t *testing.T) {
+	for _, html := range []string{
+		`<table role="presentation"><tr><td>left</td> <td>right</td></tr><tr><td>l2</td> <td>r2</td></tr></table>`,
+		`<table><tr><td>left</td> <td><p>right</p><p>more</p></td></tr></table>`,
+	} {
+		p := &page.Page{Article: &page.Article{ContentHTML: html}}
+		if err := emit.Markdown(p); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(p.Markdown, "|") {
+			t.Errorf("layout table rendered as a grid:\n%s", p.Markdown)
+		}
+		if !strings.Contains(p.Markdown, "left") || !strings.Contains(p.Markdown, "right") {
+			t.Errorf("content lost:\n%s", p.Markdown)
+		}
+	}
+}

@@ -239,6 +239,7 @@ func (s *Server) registerTools() {
 			"unreduced page source (optionally scoped by a CSS selector) when reduction strips what " +
 			"you need — scripts, forms, or SSR-embedded JSON; format=text returns visible plain text. " +
 			"Non-HTML content is handled transparently: PDFs and plain text return their text, " +
+			"a Markdown response (text/markdown) is returned as-is, " +
 			"RSS/Atom/JSON feeds return an item list, JSON is pretty-printed, and images return a " +
 			"manifest (type/dimensions/size) — set include_bytes=true to also get the raw image as base64.",
 	}, s.handleRead)

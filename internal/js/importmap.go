@@ -54,7 +54,6 @@ type importScope struct {
 // it fails to resolve instead of falling through to a less specific mapping.
 type specifierMap struct {
 	addrs map[string]string
-	keys  []string // sorted; only for the deterministic serialization (writeTo)
 	// prefixLens holds the length of every trailing-slash key and maxPrefix the
 	// longest, so a prefix match probes only the specifier's own "/" positions that
 	// some key could end at, never the key set.
@@ -204,15 +203,12 @@ func normalizeSpecifierMap(members []jsonMember, base *urlpkg.Url, entries *int)
 		}
 		sm.addrs[key] = addr
 	}
-	sm.keys = make([]string, 0, len(sm.addrs))
 	for k := range sm.addrs {
-		sm.keys = append(sm.keys, k)
 		if strings.HasSuffix(k, "/") {
 			sm.prefixLens[len(k)] = struct{}{}
 			sm.maxPrefix = max(sm.maxPrefix, len(k))
 		}
 	}
-	sort.Strings(sm.keys)
 	return sm, nil
 }
 
@@ -315,27 +311,6 @@ func (sm *specifierMap) match(ctx context.Context, normalized string, asURL *url
 		return out, true, nil
 	}
 	return "", false, nil
-}
-
-// writeTo feeds a deterministic serialization of the map to w (bundleKey's hash).
-func (m *importMap) writeTo(w io.Writer) {
-	if m == nil {
-		return
-	}
-	m.imports.writeTo(w)
-	for _, sc := range m.scopes {
-		_, _ = io.WriteString(w, "\x03"+sc.prefix+"\x03")
-		sc.imports.writeTo(w)
-	}
-}
-
-func (sm *specifierMap) writeTo(w io.Writer) {
-	if sm == nil {
-		return
-	}
-	for _, k := range sm.keys {
-		_, _ = io.WriteString(w, k+"\x01"+sm.addrs[k]+"\x02")
-	}
 }
 
 // resolveURLLike implements "resolve a URL-like module specifier": a specifier
