@@ -228,8 +228,11 @@ func jsBudget() time.Duration {
 // fetches and page-JS subrequests alike — is answered by rt. Retries are off so
 // a replay miss is counted once, and site hints are off because their
 // robots.txt/llms.txt probes are requests Chromium never makes.
-func newBrowser(rt *replay, js bool) (*browser.Browser, error) {
+func newBrowser(rt *replay, js bool, capturedAt time.Time) (*browser.Browser, error) {
 	opts := []browser.Option{
+		// The page's clock reads as it did when Chromium recorded the oracle, so
+		// "3 hours ago" is computed against the same instant in both.
+		browser.WithPageClock(capturedAt),
 		browser.WithFetchOptions(fetch.WithSharedTransport(rt)),
 		browser.WithJSRoundTripper(rt),
 		browser.WithRetries(0),
@@ -286,7 +289,7 @@ func runPage(ctx context.Context, p manifestPage, dir string) (res pageResult) {
 	// Rendered pass: one session so the page is fetched and rendered once and
 	// every tool reads that same page, exactly as an agent's session would.
 	rt := newReplay(dir, a)
-	b, err := newBrowser(rt, true)
+	b, err := newBrowser(rt, true, o.capturedTime())
 	if err != nil {
 		return harnessFail(err)
 	}
@@ -352,7 +355,7 @@ func runPage(ctx context.Context, p manifestPage, dir string) (res pageResult) {
 
 	// Static pass (render=false) on a separate browser and replay, so its
 	// requests never blur the rendered pass's replay statistics.
-	if sb, err := newBrowser(newReplay(dir, a), false); err == nil {
+	if sb, err := newBrowser(newReplay(dir, a), false, o.capturedTime()); err == nil {
 		if md, _, err := readAll(pctx, sb, browser.Request{URL: p.URL}, "full"); err == nil {
 			if res.Scored {
 				res.StaticRecall = shingleRecall(want, tokenize(stripMarkdown(md)))

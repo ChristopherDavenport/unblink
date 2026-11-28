@@ -128,6 +128,7 @@ type Browser struct {
 	jsReqTimeout       time.Duration
 	jsMaxLive          int               // cap on concurrent live JS runtimes (LRU torn down)
 	jsRT               http.RoundTripper // shared conn pool for all JS subrequest clients (SSRF guard baked in)
+	pageClock          time.Time         // pinned page-visible clock for replay harnesses (WithPageClock); zero = real time
 
 	limiter *ratelimit.Limiter // shared per-host rate limiter (nil = disabled)
 	retries int                // fetch retries, threaded into JS subrequest clients
@@ -172,6 +173,7 @@ type options struct {
 	extensionPaths     []string
 	extensionDirs      []string
 	jsRoundTripper     http.RoundTripper // see WithJSRoundTripper (replay.go)
+	pageClock          time.Time         // see WithPageClock (replay.go)
 }
 
 // WithFetchOptions forwards options to the underlying fetch clients (default and
@@ -463,6 +465,7 @@ func New(opts ...Option) (*Browser, error) {
 		retries: o.retries,
 		search:  o.search,
 	}
+	b.pageClock = o.pageClock
 	if o.jsRoundTripper != nil {
 		b.jsRT = cookieStripper{inner: o.jsRoundTripper}
 	}
@@ -800,7 +803,7 @@ func (b *Browser) processFetched(ctx context.Context, client *fetch.Client, p *p
 		if ro.storageFor != nil {
 			localStore, sessStore = ro.storageFor(originKey(renderPageURL(p)))
 		}
-		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: localStore, SessionStorage: sessStore, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout, AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: p.Header}
+		env := js.Env{Cookies: cookieAdapter{jar: client.Jar()}, Storage: localStore, SessionStorage: sessStore, Diag: &diag, Wait: ro.wait, Timeout: ro.timeout, AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: p.Header, ClockStart: b.pageClock}
 		if b.jsNetwork {
 			env.Transport = b.newRenderTransport(client, ro.timeout)
 		}
@@ -1886,7 +1889,7 @@ func (b *Browser) ensureLive(ctx context.Context, sess *session.Session) (js.Liv
 		return nil, err
 	}
 	origin := originKey(renderPageURL(tmp)) // origin-partition storage (SOP, ADR 0015)
-	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(origin), SessionStorage: sess.SessionStorage(origin), AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: cur.Header}
+	env := js.Env{Cookies: cookieAdapter{jar: sess.Client().Jar()}, Storage: sess.Storage(origin), SessionStorage: sess.SessionStorage(origin), AllowCrossOrigin: b.jsAllowCrossOrigin, DisableSRI: b.jsDisableSRI, DisableCSP: b.jsDisableCSP, ResponseHeaders: cur.Header, ClockStart: b.pageClock}
 	if b.jsNetwork {
 		env.Transport = b.newLiveTransport(sess.Client())
 	}

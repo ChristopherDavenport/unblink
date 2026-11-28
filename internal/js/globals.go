@@ -351,9 +351,9 @@ const preludeJS = `
     var nativeSet = window.setTimeout, nativeClear = window.clearTimeout;
     var nativeSetI = window.setInterval, nativeClearI = window.clearInterval;
     var seq = 1, live = {}, fires = {};
-    // The clamp compares against the real clock, captured here before anything
-    // can replace Date.now: the page-visible clock may be pinned by a harness
-    // (Env.Now) and page code may patch Date; the render budget is real time.
+    // The clamp reads the clock through the Date.now captured here, before
+    // page code can patch Date. The engine expresses its deadlines on that same
+    // clock, so a pinned page clock (Env.ClockStart) shifts both alike.
     var realNow = Date.now;
     // A one-shot timer whose delay would fire it after the render budget never
     // runs before the snapshot, so content behind it (deferred hydration, splash

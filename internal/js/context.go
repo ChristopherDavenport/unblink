@@ -158,6 +158,7 @@ func (e *Engine) Open(ctx context.Context, doc *html.Node, base *url.URL, env En
 		if b == nil {
 			b = e.prepare(vm, loop)
 		}
+		pinClock(vm, env.ClockStart)
 		b.bind(doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, c.ctx, e.timeout)
 		b.allowCrossOrigin = env.AllowCrossOrigin
 		b.sriEnabled = !env.DisableSRI

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 )
 
 // The capture format (version 1) is written by scripts/corpus — a separate
@@ -81,6 +82,9 @@ type oracle struct {
 	UserAgent      string   `json:"user_agent"`
 	Viewport       string   `json:"viewport"`
 	CapturedAt     string   `json:"captured_at"`
+	// CapturedAtUnixMs is the snapshot instant to the millisecond, when the
+	// capture recorded it; CapturedAt (RFC 3339, to the second) is the fallback.
+	CapturedAtUnixMs int64 `json:"capturedAtUnixMs,omitempty"`
 	// SettleRule names the settle rule the capture ran under, and SettledAfterMS
 	// how long it watched. Captures made before the fields existed leave them
 	// empty: which rule produced those cannot be recovered from the archive.
@@ -228,4 +232,16 @@ func loadOracle(dir string) (*oracle, error) {
 		return nil, fmt.Errorf("oracle.json: %w", err)
 	}
 	return &o, nil
+}
+
+// capturedTime is the instant the oracle was recorded, or the zero time when
+// the capture does not say (the replay then runs on the real clock).
+func (o *oracle) capturedTime() time.Time {
+	if o.CapturedAtUnixMs > 0 {
+		return time.UnixMilli(o.CapturedAtUnixMs)
+	}
+	if t, err := time.Parse(time.RFC3339, o.CapturedAt); err == nil {
+		return t
+	}
+	return time.Time{}
 }

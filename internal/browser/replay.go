@@ -1,6 +1,9 @@
 package browser
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 // WithJSRoundTripper replaces the shared connection pool that every page-JS
 // subrequest client (one-shot renders and live sessions) sends through.
@@ -14,4 +17,13 @@ import "net/http"
 // still applies in front of rt.
 func WithJSRoundTripper(rt http.RoundTripper) Option {
 	return func(o *options) { o.jsRoundTripper = rt }
+}
+
+// WithPageClock pins the clock every page rendered by this Browser sees: its
+// Date and performance time origin start at t and advance in real time (see
+// js.Env.ClockStart). Like WithJSRoundTripper it exists for offline replay
+// harnesses — a recorded page computes "3 hours ago" against the moment it was
+// recorded — and is not wired to any flag.
+func WithPageClock(t time.Time) Option {
+	return func(o *options) { o.pageClock = t }
 }

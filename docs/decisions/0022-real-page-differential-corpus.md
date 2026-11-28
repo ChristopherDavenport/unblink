@@ -146,3 +146,15 @@ Seven load-bearing choices:
   between a browser's tree and a reduced one.
 - **Fold real pages into `make eval`.** The gate must be hermetic, small and
   stable; a corpus that cannot be committed cannot gate.
+
+## Amendment (2026-11-28): the replay clock is the capture's
+
+A replayed page ran on today's clock while its oracle was recorded at capture
+time, so every relative timestamp ("3 hours ago", "Yesterday") disagreed and the
+gap grew as captures aged. Replay now pins the page-visible clock to the
+capture instant (`browser.WithPageClock` → `js.Env.ClockStart`, harness-only):
+`Date` and the performance time origin read as they did when Chromium took the
+snapshot and advance in real time; timers, the timer clamp and the settle stay
+on the real clock. The instant is `capturedAtUnixMs` when the capture has it,
+else `captured_at` (to the second). bbc.com went from 0.881 to 0.940 and
+lobste.rs from 0.688 to 0.821 on the same captures.

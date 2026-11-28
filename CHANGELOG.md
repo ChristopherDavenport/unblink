@@ -105,6 +105,14 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Added
 
+- **The corpus replay runs each page at the moment it was captured.**
+  `browser.WithPageClock` (harness-only, no flag; `js.Env.ClockStart`
+  underneath) pins what page code reads as the time — `Date` and the
+  performance time origin — while timers and the settle stay on the real clock.
+  A page that prints "3 hours ago" now computes it against the capture instant,
+  as Chromium did for the oracle: bbc.com 0.881 to 0.940, lobste.rs 0.688 to
+  0.821.
+
 - **Named access on forms and the document.** `form.fieldname`, `form[0]`,
   `form.elements.fieldname` (an `HTMLFormControlsCollection`, with a
   `RadioNodeList` and its `.value` where several controls share a name) and

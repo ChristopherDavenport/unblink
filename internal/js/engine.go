@@ -334,6 +334,7 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 		if b = warm.b; b == nil {
 			b = e.prepare(vm, loop)
 		}
+		clockOffset := pinClock(vm, env.ClockStart)
 		b.bind(doc, base, env.Transport, env.Cookies, env.Storage, env.SessionStorage, ctx, budget)
 		b.allowCrossOrigin = env.AllowCrossOrigin
 		b.sriEnabled = !env.DisableSRI
@@ -361,8 +362,10 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 			clamp = 0
 		}
 		renderStart := time.Now()
-		_ = vm.Set("__unblinkTimerDeadlineMs", renderStart.Add(clamp).UnixMilli())
-		_ = vm.Set("__unblinkTimerBudgetEndMs", renderStart.Add(budget).UnixMilli())
+		// The timer wrapper compares these against Date.now(), so they are
+		// expressed on the page's clock (the real one unless Env.ClockStart).
+		_ = vm.Set("__unblinkTimerDeadlineMs", renderStart.Add(clamp+clockOffset).UnixMilli())
+		_ = vm.Set("__unblinkTimerBudgetEndMs", renderStart.Add(budget+clockOffset).UnixMilli())
 		b.finishBind()
 		setupDone = time.Now()
 		// Tell the extension background this tab navigated to the page, before any
@@ -521,4 +524,16 @@ func interruptUntil(vm *goja.Runtime, reason string, stop <-chan struct{}) {
 		case <-t.C:
 		}
 	}
+}
+
+// pinClock makes the runtime's clock read start-relative time (Env.ClockStart)
+// and returns the offset it applied; a zero start leaves the real clock. Must
+// run before the bridge is bound, which is when the page's time origin is taken.
+func pinClock(vm *goja.Runtime, start time.Time) time.Duration {
+	if start.IsZero() {
+		return 0
+	}
+	off := time.Until(start)
+	vm.SetTimeSource(func() time.Time { return time.Now().Add(off) })
+	return off
 }

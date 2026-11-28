@@ -417,7 +417,8 @@ not `doFetch`).
   captures each `corpus/manifest.json` page's network responses and Chromium's
   rendered text into the gitignored `testdata/corpus/`; replay runs the full
   pipeline offline over an archive-backed transport (`browser.WithJSRoundTripper`,
-  test-only in intent — it replaces the pool carrying the SSRF dial guard) and
+  test-only in intent — it replaces the pool carrying the SSRF dial guard) with
+  the page clock pinned to the capture instant (`browser.WithPageClock`) and
   scores main-content recall per feature-matrix cell; only a *consequential* replay
   loss — script, document, data, style — excuses a low score, an unusable oracle is
   refused rather than scored, and `CORPUS_ONLY`/`CORPUS_DEBUG`/`CORPUS_DUMP`/
