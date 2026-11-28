@@ -45,7 +45,10 @@ type MapResult struct {
 	URLs      []MapEntry `json:"urls"`                // discovered URLs (dedup, same-origin)
 	Sitemaps  []string   `json:"sitemaps,omitempty"`  // sitemap documents consulted
 	Truncated bool       `json:"truncated,omitempty"` // a cap/budget stopped the walk
-	Note      string     `json:"note,omitempty"`      // why the walk stopped, when truncated
+	// SkippedByRobots counts the pages and sitemap files the walk did not fetch
+	// because robots.txt disallows them. Only ever non-zero under --respect-robots.
+	SkippedByRobots int    `json:"skipped_by_robots,omitempty"`
+	Note            string `json:"note,omitempty"` // why the walk stopped, when truncated
 }
 
 // MapProgress reports a Map walk's progress: URLs discovered so far, the
@@ -61,9 +64,13 @@ const mapProgressInterval = 500 * time.Millisecond
 
 // Map discovers a site's URLs: it harvests sitemap.xml (from robots.txt and the
 // /sitemap.xml convention, following sitemap indexes) and then crawls same-origin
-// links breadth-first from req.URL. It is exposure-grade — it surfaces robots.txt
-// context but never skips disallowed paths — and returns a bounded, deduplicated
-// list. Budgets (max_urls/max_depth, sitemap fetch/depth caps, a wall-clock) yield
+// links breadth-first from req.URL. By default it is exposure-grade — it surfaces
+// robots.txt context but never skips disallowed paths. Under --respect-robots
+// (ADR 0020) every page and sitemap file is checked before it is fetched: a
+// disallowed seed fails the call, any other disallowed URL is skipped and counted
+// in SkippedByRobots (it can still be listed when a fetched page links to it —
+// listing a URL is not fetching it). It returns a bounded, deduplicated list.
+// Budgets (max_urls/max_depth, sitemap fetch/depth caps, a wall-clock) yield
 // a partial result with Truncated set rather than an error; only a missing seed
 // origin or an unreachable seed is a hard error. Fetches go through the default
 // client, so the SSRF dial guard and per-host rate limiter apply automatically.
@@ -173,21 +180,22 @@ func (b *Browser) harvestSitemaps(ctx context.Context, origin string, maxURLs in
 	type smItem struct {
 		url   string
 		depth int
+		probe bool // the /sitemap.xml convention guess, not a declared sitemap
 	}
 	var queue []smItem
 	seen := map[string]bool{}
-	enqueue := func(u string, depth int) {
+	enqueue := func(u string, depth int, probe bool) {
 		n := normalizeMapURL(u)
 		if n == "" || seen[n] {
 			return
 		}
 		seen[n] = true
-		queue = append(queue, smItem{url: n, depth: depth})
+		queue = append(queue, smItem{url: n, depth: depth, probe: probe})
 	}
 	for _, sm := range pol.Sitemaps {
-		enqueue(sm, 0)
+		enqueue(sm, 0, false)
 	}
-	enqueue(origin+"/sitemap.xml", 0)
+	enqueue(origin+"/sitemap.xml", 0, true)
 
 	fetches := 0
 	for len(queue) > 0 {
@@ -205,11 +213,25 @@ func (b *Browser) harvestSitemaps(ctx context.Context, origin string, maxURLs in
 		}
 		item := queue[0]
 		queue = queue[1:]
+		// Under --respect-robots every sitemap file is checked like any URL the
+		// walk fetches: one declared by robots.txt Sitemap:, a sitemap-index child,
+		// and the /sitemap.xml convention guess alike. A site that disallows
+		// /sitemap.xml has said not to fetch it (ADR 0020).
+		if err := b.gateURL(ctx, item.url); err != nil {
+			if errors.Is(err, ErrRobotsDisallowed) && !item.probe {
+				res.SkippedByRobots++ // the guess was never a listed URL; don't count it
+			}
+			continue
+		}
+		fetchCtx := b.navContext(ctx)
 		fetches++
 		notify("harvesting sitemap " + item.url)
 
-		r, err := b.client.Fetch(ctx, http.MethodGet, item.url, nil, nil)
+		r, err := b.client.Fetch(fetchCtx, http.MethodGet, item.url, nil, nil)
 		if err != nil {
+			if errors.Is(err, ErrRobotsDisallowed) {
+				res.SkippedByRobots++ // a redirect hop was disallowed
+			}
 			continue // best-effort; a bad sitemap URL is skipped
 		}
 		if r.Status < 200 || r.Status >= 300 {
@@ -225,7 +247,7 @@ func (b *Browser) harvestSitemaps(ctx context.Context, origin string, maxURLs in
 		case sitemap.KindIndex:
 			if item.depth < maxSitemapDepth {
 				for _, c := range doc.Sitemaps {
-					enqueue(c.URL, item.depth+1) // children are declared by this origin
+					enqueue(c.URL, item.depth+1, false) // children are declared by this origin
 				}
 			}
 		case sitemap.KindURLSet:
@@ -279,6 +301,14 @@ func (b *Browser) crawlSameOrigin(ctx context.Context, seed *page.Page, origin s
 
 		p := item.page
 		if p == nil {
+			// Checked before the politeness wait so a skipped URL costs no delay;
+			// fetchPage checks again and also covers each redirect hop.
+			if err := b.gateURL(ctx, item.url); err != nil {
+				if errors.Is(err, ErrRobotsDisallowed) {
+					res.SkippedByRobots++
+				}
+				continue
+			}
 			if crawlDelay > 0 {
 				wait := time.Duration(crawlDelay*float64(time.Second)) - time.Since(lastFetch)
 				if wait > 0 {
@@ -294,6 +324,9 @@ func (b *Browser) crawlSameOrigin(ctx context.Context, seed *page.Page, origin s
 			fetched, err := b.fetchPage(ctx, b.client, item.url, renderOpts{})
 			lastFetch = time.Now()
 			if err != nil {
+				if errors.Is(err, ErrRobotsDisallowed) {
+					res.SkippedByRobots++ // a redirect hop was disallowed
+				}
 				continue // best-effort; skip an unreachable page
 			}
 			p = fetched

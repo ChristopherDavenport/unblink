@@ -10,6 +10,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -214,6 +215,32 @@ func New(opts ...Option) (*Client, error) {
 	return c, nil
 }
 
+type redirectCheckKey struct{}
+
+// WithRedirectCheck returns a context under which every redirect hop a Client
+// follows is first passed to check. A non-nil error stops the chain before that
+// hop is requested and fails the fetch with a *RedirectRefusedError wrapping it.
+// The policy is the caller's (fetch does not know why a hop is refused);
+// carrying it on the context scopes it to one request, so a client shared with
+// other traffic (metadata probes, page-JS subrequests) is not affected.
+func WithRedirectCheck(ctx context.Context, check func(*url.URL) error) context.Context {
+	return context.WithValue(ctx, redirectCheckKey{}, check)
+}
+
+// RedirectRefusedError reports that a WithRedirectCheck hook refused a redirect
+// hop. It is a policy decision, not a network failure: it is never retried and
+// is logged at debug, not as a fetch error.
+type RedirectRefusedError struct {
+	URL *url.URL // the redirect target that was refused (never requested)
+	Err error    // the hook's error
+}
+
+func (e *RedirectRefusedError) Error() string {
+	return fmt.Sprintf("redirect to %s refused: %v", redactURL(e.URL), e.Err)
+}
+
+func (e *RedirectRefusedError) Unwrap() error { return e.Err }
+
 // checkRedirect enforces the standard redirect limit and strips origin-scoped
 // credentials when a redirect leaves the credential origin. The stdlib already
 // drops Authorization/Cookie on cross-*domain* hops, but not custom headers and
@@ -221,6 +248,11 @@ func New(opts ...Option) (*Client, error) {
 func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return fmt.Errorf("fetch: stopped after 10 redirects")
+	}
+	if check, ok := req.Context().Value(redirectCheckKey{}).(func(*url.URL) error); ok && check != nil {
+		if err := check(req.URL); err != nil {
+			return &RedirectRefusedError{URL: req.URL, Err: err}
+		}
 	}
 	if !c.originMatches(req.URL) {
 		req.Header.Del("Authorization")
@@ -522,6 +554,11 @@ func (c *Client) roundTrip(req *http.Request) (int, string, http.Header, []byte,
 		}
 	}
 	if lastErr != nil {
+		var refused *RedirectRefusedError
+		if errors.As(lastErr, &refused) {
+			slog.Debug("fetch: redirect refused by policy", "method", req.Method, "url", redactURL(req.URL), "err", lastErr.Error())
+			return 0, "", nil, nil, nil, nil, fmt.Errorf("fetch: %s %s: %w", req.Method, redactURL(req.URL), lastErr)
+		}
 		slog.Warn("fetch error", "method", req.Method, "url", redactURL(req.URL), "err", lastErr.Error())
 		return 0, "", nil, nil, nil, nil, fmt.Errorf("fetch: %s %s: %w", req.Method, redactURL(req.URL), lastErr)
 	}

@@ -99,8 +99,12 @@ type Browser struct {
 	siteCache     *siteCache                                  // per-origin robots.txt/llms.txt cache
 	sessions      *session.Manager
 
-	siteHints  bool // fold robots.txt/llms.txt presence hints into Browse output
-	safeOutput bool // strip hidden content + defang image beacons in emitted content
+	siteHints bool // fold robots.txt/llms.txt presence hints into Browse output
+	// respectRobots refuses agent-directed navigations the target origin's
+	// robots.txt disallows (--respect-robots, ADR 0020; see robotsgate.go). Off by
+	// default: robots.txt is then context only.
+	respectRobots bool
+	safeOutput    bool // strip hidden content + defang image beacons in emitted content
 
 	renderer       Renderer     // nil when JavaScript rendering is disabled
 	liveEngine     liveRenderer // non-nil when the renderer supports persistent per-session runtimes
@@ -150,6 +154,7 @@ type options struct {
 	retries            int
 	tlsMimic           bool
 	siteHints          bool
+	respectRobots      bool
 	safeOutput         bool
 	allowPrivate       bool
 	search             search.Provider
@@ -305,6 +310,15 @@ func WithSessionLimits(ttl time.Duration, capacity int) Option {
 // probe on the first browse of each host. The site tool is unaffected.
 func WithSiteHints(enabled bool) Option { return func(o *options) { o.siteHints = enabled } }
 
+// WithRespectRobots makes the browser obey robots.txt (off by default): every
+// agent-directed navigation — a page tool's fetch, a click, a form submission,
+// each URL the map tool fetches, and every redirect hop of those — is checked
+// against the target origin's robots.txt "*" group first and refused with a
+// *RobotsError (errors.Is ErrRobotsDisallowed) when disallowed. A page's own
+// subresources, page-JS subrequests, and the robots.txt/llms.txt probes are not
+// gated; Crawl-delay is not enforced. Independent of WithSiteHints. See ADR 0020.
+func WithRespectRobots(enabled bool) Option { return func(o *options) { o.respectRobots = enabled } }
+
 // WithSafeOutput toggles the untrusted-content safety pass on emitted content:
 // stripping human-hidden text and defanging Markdown image beacons. On by default;
 // disable to get the raw, unmodified reduction.
@@ -395,6 +409,7 @@ func New(opts ...Option) (*Browser, error) {
 		siteCache:          newSiteCache(DefaultSiteCacheTTL, DefaultSiteCacheCap),
 		sessions:           mgr,
 		siteHints:          o.siteHints,
+		respectRobots:      o.respectRobots,
 		safeOutput:         o.safeOutput,
 		renderer:           o.renderer,
 		jsNetwork:          o.jsNetwork,
@@ -610,8 +625,17 @@ func (b *Browser) fetchStateless(ctx context.Context, url string, ro renderOpts)
 	if ro.wait != nil {
 		return b.fetchPage(ctx, b.client, url, ro)
 	}
+	// Under --respect-robots a cached page is refused like a fresh fetch would
+	// be: the request URL here (which also covers revalidation below), and on a
+	// hit the URL the cached response finally came from.
+	if err := b.gateURL(ctx, url); err != nil {
+		return nil, err
+	}
 	key := cacheKey(url, ro.render)
 	if p, ok := b.cache.get(key); ok {
+		if err := b.checkRobots(ctx, p.FinalURL); err != nil {
+			return nil, err
+		}
 		return p, nil
 	}
 	if stale, ok := b.cache.getStale(key); ok {
@@ -638,7 +662,7 @@ func (b *Browser) revalidate(ctx context.Context, key, url string, stale *page.P
 	if etag == "" && lastMod == "" {
 		return nil, false, nil
 	}
-	p, err := b.client.GetConditional(ctx, url, etag, lastMod)
+	p, err := b.client.GetConditional(b.navContext(ctx), url, etag, lastMod)
 	if err != nil {
 		// The conditional GET is a plain GET plus validator headers, so this is the
 		// same failure a normal fetch would hit — report it rather than refetching.
@@ -667,8 +691,17 @@ func cacheKey(url string, render bool) string {
 // fetchPage runs fetch -> parse -> [render] -> extract. When render is requested
 // and a renderer is configured, the page's scripts mutate the canonical tree in
 // place before extraction, so Meta/links/etc. reflect the post-script DOM.
+//
+// Every caller is an agent-directed navigation (a page tool's fetch, a click, a
+// map crawl step), so this is the main robots.txt gate under --respect-robots:
+// the URL is checked before the request and each redirect hop before it is
+// followed. Only the document request carries the check — the render's
+// subrequests run under the plain ctx.
 func (b *Browser) fetchPage(ctx context.Context, client *fetch.Client, url string, ro renderOpts) (*page.Page, error) {
-	p, err := client.Get(ctx, url)
+	if err := b.gateURL(ctx, url); err != nil {
+		return nil, err
+	}
+	p, err := client.Get(b.navContext(ctx), url)
 	if err != nil {
 		return nil, err
 	}
@@ -1568,14 +1601,27 @@ func (b *Browser) Submit(ctx context.Context, sessionID, formRef string, values 
 		vals.Set(k, v)
 	}
 
-	var p *page.Page
-	if len(files) > 0 || strings.Contains(form.Enctype, "multipart/form-data") {
-		if !strings.EqualFold(form.Method, "POST") {
-			return nil, errf(ErrBadInput, "multipart submission requires a POST form (form method is %s)", form.Method)
+	multipart := len(files) > 0 || strings.Contains(form.Enctype, "multipart/form-data")
+	if multipart && !strings.EqualFold(form.Method, "POST") {
+		return nil, errf(ErrBadInput, "multipart submission requires a POST form (form method is %s)", form.Method)
+	}
+	// A submission navigates to the form's action: under --respect-robots check
+	// the URL that will actually be requested (a GET form's values are its query).
+	if b.respectRobots {
+		if target, perr := url.Parse(form.Action); perr == nil {
+			if m := strings.TrimSpace(form.Method); m == "" || strings.EqualFold(m, "GET") {
+				target.RawQuery = vals.Encode()
+			}
+			if err := b.checkRobots(ctx, target); err != nil {
+				return nil, err
+			}
 		}
-		p, err = sess.Client().SubmitMultipart(ctx, form.Action, vals, files)
+	}
+	var p *page.Page
+	if multipart {
+		p, err = sess.Client().SubmitMultipart(b.navContext(ctx), form.Action, vals, files)
 	} else {
-		p, err = sess.Client().Submit(ctx, form.Method, form.Action, vals)
+		p, err = sess.Client().Submit(b.navContext(ctx), form.Method, form.Action, vals)
 	}
 	if err != nil {
 		return nil, err

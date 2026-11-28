@@ -184,7 +184,7 @@ decision drives everything distinctive about it, good and bad.
   any cross-origin redirect. The other tools secure the *browser*; unblink
   also hardens the *content boundary* between the web and the model.
 - **Discovery built in.** `map` (sitemap harvest + bounded same-origin
-  crawl), `site` (robots.txt/llms.txt surfaced as context, never enforced),
+  crawl), `site` (robots.txt/llms.txt surfaced as context; enforced only with `--respect-robots`),
   and opt-in `search` make it a research tool, not only a page loader.
 - **Optional real ad-blocking (ADR 0010).** unblink can runtime-load a
   WebExtension — uBlock Origin Lite is verified working: its 18,249
