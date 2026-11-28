@@ -50,7 +50,9 @@ commit, apply the change, `make bench > /tmp/new.txt`, then
 `go run golang.org/x/perf/cmd/benchstat@latest /tmp/base.txt /tmp/new.txt`.
 Include the benchstat table in the PR. JS renders settle on two tiers (ADR
 0004): provably-idle pages (no in-flight network, no live timers) close in
-~1-3ms; anything armed pays the ~60ms quiet window after its last activity.
+~1-3ms; anything armed pays the ~60ms quiet window after its last activity
+(a DOM mutation, a request, or a pending queued task — a scheduler's
+`setImmediate`/`MessageChannel` continuation).
 
 **Go-version gotcha:** the module needs Go ≥ 1.27 (`whatwg-url` 0.9 requires it). The Makefile exports
 `GOTOOLCHAIN=auto` so `go` downloads the toolchain pinned in `go.mod`
@@ -233,7 +235,11 @@ not `doFetch`).
   change); 0003 is the JS memory guard (process-level heap watchdog +
   `debug.SetMemoryLimit`, because goja has no per-runtime accounting); 0004 is the
   provable-idle settle invariant (every new async primitive must route through the
-  timer audit / `pending` bracket); 0005 is the composed Shadow DOM (flattened tree
+  timer audit / `pending` bracket; per the 2026-11-27 amendment a primitive that
+  means "continue as soon as possible" — `setImmediate`, `MessageChannel`,
+  `postMessage` — goes through the prelude's `queueTask`, whose pending tasks hold
+  the quiet window for up to `settleTaskHoldMax` = 2s so time-sliced hydration is
+  not cut off; `setTimeout(fn, 0)` and rAF loops deliberately do not); 0005 is the composed Shadow DOM (flattened tree
   + cross-boundary events); 0006 is the broad Go-backed `crypto.subtle` (reversing
   the earlier "leave undefined", since real pages call it on first paint); 0007 is
   the semantic-only structured representation (computed from the node tree, never a

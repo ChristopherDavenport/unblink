@@ -363,8 +363,25 @@ const preludeJS = `
       return id;
     };
     window.clearTimeout = function (id) {
-      var h = live[id]; if (h !== undefined) { delete live[id]; delete clamped[id]; nativeClear(h); }
+      var h = live[id]; if (h !== undefined) { delete live[id]; delete clamped[id]; delete tasks[id]; nativeClear(h); }
     };
+    // A queued task: a callback with no delay semantics at all, queued to run
+    // as soon as the current one returns. setImmediate, MessageChannel and
+    // window.postMessage are how schedulers yield and continue (React's work
+    // loop, any "yield to the event loop" helper), so a pending one means the
+    // page is in the middle of work it has split into slices — even when no
+    // DOM mutation or request marks it. The settle poll holds its quiet window
+    // while any is pending, up to a bound (ADR 0004, amended). A timer with a
+    // delay, even zero, is not one: setTimeout(fn, 0) and requestAnimationFrame
+    // loops are how pages idle and animate.
+    var tasks = {};
+    function queueTask(cb, args) {
+      var id = seq++;
+      tasks[id] = true;
+      live[id] = nativeSet(function () { delete live[id]; delete tasks[id]; run(cb, args || []); }, 0);
+      return id;
+    }
+    window.__unblinkQueueTask = function (fn) { return queueTask(fn); }; // consumed by the API prelude
     if (nativeSetI) {
       window.setInterval = function (fn, ms) {
         var args = Array.prototype.slice.call(arguments, 2), cb = toFn(fn), id = seq++;
@@ -382,22 +399,22 @@ const preludeJS = `
     // exists — an unwrapped one would hide work-loop continuations from the
     // provable-idle check.
     window.setImmediate = function (fn) {
-      var args = Array.prototype.slice.call(arguments, 1);
-      return window.setTimeout.apply(undefined, [fn, 0].concat(args));
+      return queueTask(toFn(fn), Array.prototype.slice.call(arguments, 1));
     };
     window.clearImmediate = window.clearTimeout;
     // Audit hook: {c: clamped one-shot timers still unfired, t: all live wrapped
-    // timers (one-shots, intervals, immediates)}. The settle poll reads this
+    // timers (one-shots, intervals, immediates), q: queued tasks pending}. The settle poll reads this
     // every tick: non-zero c holds the poll open (deferred content pending) and
     // is reported at close as timers_pending; t==0 combined with zero in-flight
     // network is the provable-idle signal — no mechanism left to run more JS —
     // that lets the settle close without waiting out the quiet window.
     if (typeof window.__unblinkRegisterTimerAudit === 'function') {
       window.__unblinkRegisterTimerAudit(function () {
-        var c = 0, t = 0, k;
+        var c = 0, t = 0, q = 0, k;
         for (k in clamped) c++;
         for (k in live) t++;
-        return { c: c, t: t };
+        for (k in tasks) q++;
+        return { c: c, t: t, q: q };
       });
       delete window.__unblinkRegisterTimerAudit;
     }

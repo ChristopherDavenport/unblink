@@ -87,6 +87,17 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **A render no longer closes in the middle of time-sliced work.** React hydrates in
+  ~5 ms slices, yielding through `setImmediate`, and changes nothing in the page
+  until it commits; with no request in flight that looked like a quiet page, and the
+  render closed 60 ms in. `setImmediate`, `MessageChannel` and `window.postMessage`
+  — the ways a scheduler yields and continues — now hold the settle open while one is
+  pending, for at most 2 s per render. `setTimeout(fn, 0)` and
+  `requestAnimationFrame` loops do not. See the amendment to
+  [ADR 0004](docs/decisions/0004-provable-idle-settle.md).
+- **A `MessagePort` delivers a message posted from inside a handler in a later
+  task,** as a browser does, instead of in the same synchronous drain.
+
 - **A self-rearming timer no longer becomes a busy loop at the end of a render.** A
   one-shot timer longer than the render budget is pulled in so the content behind it
   still appears. Once that deadline had passed, *every* new timer was pulled in to

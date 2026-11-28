@@ -1565,6 +1565,11 @@ const preludeAPIJS = `
 
   // ---- messaging: postMessage / MessageChannel / BroadcastChannel ----
 
+  // Message delivery is a queued task (see the timer wrapper in the first
+  // prelude): the settle audit must tell it from a delayed timer.
+  var queueTask = window.__unblinkQueueTask || function (fn) { return setTimeout(fn, 0); };
+  delete window.__unblinkQueueTask;
+
   if (typeof window.MessageEvent === 'undefined') {
     window.MessageEvent = function (type, opts) {
       opts = opts || {};
@@ -1585,14 +1590,14 @@ const preludeAPIJS = `
   // synchronously per spec; delivery is async.
   window.postMessage = function (data) {
     var cloned = structuredClone(data);
-    setTimeout(function () {
+    queueTask(function () {
       var ev = new window.MessageEvent('message', {
         data: cloned,
         origin: (typeof location !== 'undefined' && location && location.origin) || '',
         source: window
       });
       window.dispatchEvent(ev); // window.onmessage runs as part of the dispatch
-    }, 0);
+    });
   };
 
   var MessagePort = function () {
@@ -1612,19 +1617,25 @@ const preludeAPIJS = `
     var a = this.__l.slice();
     for (var i = 0; i < a.length; i++) { try { a[i].call(this, ev); } catch (e) {} }
   };
-  // One async flush drains the whole queue in order — per-message timers are
-  // not ordering-safe (goja's same-deadline timers may fire out of scheduling
-  // order), a single FIFO drain is.
+  // One async flush drains the queue in order — per-message timers are not
+  // ordering-safe (goja's same-deadline timers may fire out of scheduling
+  // order), a single FIFO drain is. It delivers only the messages that were
+  // queued when the task began: a message posted from inside a handler belongs
+  // to a later task. Draining those too turned a scheduler's "post a message to
+  // myself to yield" into one unbroken synchronous run, and an endless
+  // ping-pong into a loop only the render watchdog could stop.
   MessagePort.prototype.__flush = function () {
     var self = this;
     if (!self.__started || self.__flushing) return;
     self.__flushing = true;
-    setTimeout(function () {
+    queueTask(function () {
       self.__flushing = false;
-      while (self.__started && self.__q.length) {
+      var n = self.__q.length;
+      while (self.__started && n-- > 0 && self.__q.length) {
         self.__deliver(new window.MessageEvent('message', { data: self.__q.shift() }));
       }
-    }, 0);
+      if (self.__q.length) self.__flush();
+    });
   };
   MessagePort.prototype.__receive = function (data) { this.__q.push(data); this.__flush(); };
   MessagePort.prototype.start = function () {

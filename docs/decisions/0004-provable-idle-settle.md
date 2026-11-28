@@ -90,3 +90,61 @@ template regression test for this class of leak.
 - The settle constants stay compile-time (no flags): the fast path is safe by
   construction, and the heuristic window remains a measured correctness
   constant, not a tuning knob.
+
+## Amendment (2026-11-27): queued tasks hold the quiet window, up to a bound
+
+**What was wrong.** Decision 3 says unclamped live timers do not hold the quiet
+window. That is right for timers and wrong for one class of work that the
+prelude had folded into them: `setImmediate`, `MessageChannel` and
+`window.postMessage` were delivered through the wrapped `setTimeout(…, 0)`, so
+a scheduler's continuation looked like any other live timer. React's work loop
+yields every ~5 ms through `setImmediate` and, during hydration, mutates
+nothing until it commits. A hydration longer than the 60 ms window with no
+request in flight therefore read as quiet, and the render closed in the middle
+of it. The real-page corpus showed it on Docusaurus and Next.js pages that
+stopped at 16 requests and reached several hundred once the window was held.
+
+**Decision.** The prelude gives those three primitives their own entry point
+(`queueTask`): still a zero-delay native timer, still in the `live` table — so
+decision 2's proof is untouched, a pending task keeps the page from being
+provably idle exactly as before — and additionally counted in a `tasks` table.
+The audit reports `{c, t, q}`. In the quiet-window tier a tick that sees
+`q > 0` is not quiet, the same as a tick that sees a DOM mutation.
+
+The hold is bounded: pending tasks may keep the window open for
+`settleTaskHoldMax` (2 s) in total per settle, never past the budget. After
+that they are ignored and the window behaves as in decision 3. A page that
+re-queues itself forever through these primitives costs 2 s, not the budget;
+time-sliced work that needs longer is cut off, as all of it was before.
+`RenderResult.TasksHeld` reports the time held.
+
+**What is deliberately not a task.** `setTimeout(fn, 0)` and
+`requestAnimationFrame` keep decision 3's behaviour. Both have delay
+semantics and are how pages idle, poll and animate; a zero-delay timer loop or
+an animation loop must not hold a render. The three primitives chosen have no
+delay at all — "run this as soon as the current task returns" is their only
+meaning — which is what makes a pending one evidence of unfinished work rather
+than of a page ticking over. `requestIdleCallback` is also not one: it fires
+within a millisecond and inside the window regardless.
+
+**MessagePort delivery, corrected on the way.** A port's flush drained its
+whole queue in one task, including messages posted from inside a handler.
+"Post a message to myself to yield" therefore never yielded, and an endless
+ping-pong was a synchronous loop only the render watchdog could stop. A flush
+now delivers the messages queued when it began; later ones get the next task.
+
+**The invariant, restated.** A new primitive that means "continue as soon as
+possible" (`scheduler.postTask`, `scheduler.yield`, a real `queueMicrotask`
+replacement that defers to a task) must go through `queueTask`, or its
+continuation chains will be cut at the quiet window again. One with a delay
+goes through the wrapped `setTimeout` as before.
+
+**Evidence.** `TestSettleWaitsForTimeSlicedWork` (20 slices of 10 ms through
+each primitive complete; on the previous code the `setImmediate` and
+`postMessage` cases close after ~80 ms), `TestSettleBoundsAnEndlessTaskChain`
+(an endless chain settles just past the bound, not at an 8 s budget),
+`TestSettleDoesNotHoldForTimerLoops`, `TestSettleIdleTierUnaffectedByTaskHold`.
+`RenderMinimal` is unchanged (2.40 ms → 2.41 ms). On the corpus no page's
+score moved by more than 0.002; `jest-docs`, `tailwind-docs` and
+`storybook-docs` now run their hydration to the end (16 → 356, 16 → 344 and
+23 → 132 requests), and total replay time rose from 88.5 s to 91.9 s.

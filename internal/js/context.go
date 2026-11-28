@@ -38,7 +38,16 @@ const (
 	// surface within it. Documented as droppable with field evidence.
 	settleConfirm = 1 * time.Millisecond
 	settleGrace   = 500 * time.Millisecond // hard-watchdog margin past the settle budget
+	// settleTaskHoldMax bounds how long pending queued tasks (setImmediate,
+	// MessageChannel, postMessage — a scheduler's continuation chain) may hold
+	// the quiet window open in one settle. Time-sliced work that needs longer is
+	// cut off as it was before the hold existed; a page that re-queues itself
+	// forever costs this much instead of the whole budget.
+	settleTaskHoldMax = 2 * time.Second
 )
+
+// SettleTaskHoldMax is settleTaskHoldMax, exported for tests.
+const SettleTaskHoldMax = settleTaskHoldMax
 
 var errContextClosed = errors.New("js: live context is closed")
 
@@ -314,17 +323,20 @@ func (c *Context) interrupt(msg string) {
 // unfired (deferred content pending — holds the settle open) and all live wrapped
 // timers of any kind (the provable-idle signal). Runs on the loop goroutine; the
 // bridge's own runtime resolves the returned object.
-func auditTimers(b *bridge) (clamped, live int) {
+func auditTimers(b *bridge) (clamped, live, tasks int) {
 	if b == nil || b.timerAudit == nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	v, err := b.timerAudit(goja.Undefined())
 	if err != nil || v == nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	obj := v.ToObject(b.vm)
 	if obj == nil {
-		return 0, 0
+		return 0, 0, 0
+	}
+	if q := obj.Get("q"); q != nil {
+		tasks = int(q.ToInteger())
 	}
 	if c := obj.Get("c"); c != nil {
 		clamped = int(c.ToInteger())
@@ -332,7 +344,7 @@ func auditTimers(b *bridge) (clamped, live int) {
 	if t := obj.Get("t"); t != nil {
 		live = int(t.ToInteger())
 	}
-	return clamped, live
+	return clamped, live, tasks
 }
 
 // settlePoll closes done once the page has settled, on two tiers: immediately
@@ -363,6 +375,8 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 	var quietSince time.Time    // zero while the page is (or was just) busy
 	var lastDOMChange time.Time // last check that observed a DOM mutation
 	idleArmed := false          // previous check was provably idle; this one confirms
+	var taskHeld time.Duration  // how long pending queued tasks have held the window
+	var lastTick time.Time
 	var tick func(*goja.Runtime)
 	tick = func(vm *goja.Runtime) {
 		if !condMet && b != nil && cond.satisfied(b, b.doc) {
@@ -382,7 +396,17 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 				lastDOMChange = now
 			}
 		}
-		clamped, liveTimers := auditTimers(b)
+		clamped, liveTimers, queuedTasks := auditTimers(b)
+		// A pending queued task is a scheduler's continuation: the page yielded
+		// in the middle of work and will pick it up again at once. That is
+		// activity — it resets the quiet window like a DOM mutation does — for
+		// at most settleTaskHoldMax in total, so an endless chain cannot pin the
+		// settle to the budget.
+		working := queuedTasks > 0 && taskHeld < settleTaskHoldMax
+		if working && !lastTick.IsZero() {
+			taskHeld += now.Sub(lastTick)
+		}
+		lastTick = now
 		// Provable idleness needs a real bridge (only then is every work source
 		// instrumented) and an audit-registered prelude; liveTimers==0 without a
 		// bridge proves nothing, so b==nil stays on the heuristic tier.
@@ -393,7 +417,7 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 		// hold the quiet window open (within the budget) so it lands before the
 		// snapshot. Unclamped live timers do NOT hold it — an interval must not
 		// pin the settle to the budget (matches the pre-idle-tier behavior).
-		if condMet && netIdle && domQuiet && clamped == 0 {
+		if condMet && netIdle && domQuiet && clamped == 0 && !working {
 			if quietSince.IsZero() {
 				quietSince = now
 			}
@@ -415,6 +439,7 @@ func settlePoll(vm *goja.Runtime, loop *eventloop.EventLoop, b *bridge, budget t
 					(!settled && !lastDOMChange.IsZero() && now.Sub(lastDOMChange) < settleQuietWindow)
 				stats.timersPending = clamped
 				stats.timersLive = liveTimers
+				stats.taskHeld = taskHeld
 				stats.idleExit = settledIdle
 				if b != nil {
 					stats.pending = b.pending.Load()
