@@ -515,6 +515,9 @@ func (b *bridge) installElementProto() {
 		key := call.Argument(0).String()
 		had := hasAttr(n, key)
 		removeAttr(n, key)
+		if had && len(key) > 2 && key[0] == 'o' && key[1] == 'n' {
+			b.handlerAttrRemoved(n, key[2:])
+		}
 		if had {
 			b.onMutate(mutationRecord{typ: "attributes", target: n, attr: key})
 		}

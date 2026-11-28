@@ -221,20 +221,11 @@ func (b *bridge) submitForm(form *html.Node, fireEvent bool) {
 	b.navigate(target.String())
 }
 
-// fireSubmitEvent dispatches a cancelable, bubbling submit event at the form and
-// invokes its onsubmit property handler, returning false if submission was canceled
-// (preventDefault called, or the onsubmit handler returned false — the classic
-// content-attribute cancel convention).
+// fireSubmitEvent dispatches a cancelable, bubbling submit event at the form,
+// returning false if submission was canceled: preventDefault was called, or the
+// form's onsubmit handler (property or content attribute, run by the dispatch
+// like any other listener) returned false.
 func (b *bridge) fireSubmitEvent(form *html.Node) bool {
-	wrapper := b.wrap(form)
-	ev := b.newEvent("submit", true, true, wrapper)
-	notCanceled := b.dispatchOnNode(form, ev)
-	if obj := wrapper.ToObject(b.vm); obj != nil {
-		if fn, ok := goja.AssertFunction(obj.Get("onsubmit")); ok {
-			if ret, err := fn(wrapper, ev.js); err == nil && ret != nil && !ret.ToBoolean() {
-				return false
-			}
-		}
-	}
-	return notCanceled && !ev.defaultPrevented
+	ev := b.newEvent("submit", true, true, b.wrap(form))
+	return b.dispatchOnNode(form, ev) && !ev.defaultPrevented
 }

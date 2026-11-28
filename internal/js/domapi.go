@@ -143,6 +143,9 @@ func namespaceURIFor(label string) string {
 func (b *bridge) setAttrMut(n *html.Node, key, val string) {
 	old := getAttr(n, key)
 	setAttr(n, key, val)
+	if len(key) > 2 && key[0] == 'o' && key[1] == 'n' {
+		b.handlerAttrSet(n, key[2:])
+	}
 	b.onMutate(mutationRecord{typ: "attributes", target: n, attr: key, oldValue: old})
 	b.afterAttr(n, key, old, val)
 }

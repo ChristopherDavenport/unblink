@@ -988,6 +988,25 @@ scoping (`:host`/`::slotted`/`::part`) and slot reprojection stay out of scope.
 `IntersectionObserver`/`ResizeObserver` report one synthetic "visible / zero-size"
 entry so lazy content renders.
 
+**Event handlers** (`internal/js/eventhandlers.go`): the `on<type>` IDL
+properties and content attributes are the HTML Standard's event handlers, not
+expando properties. The first time a target gets a handler for a type, one entry
+joins that target's ordinary listener list and stays at that position; assigning
+again swaps the value, and `null` leaves a dead entry. Dispatch therefore needs no
+second pass and the ordering against `addEventListener` listeners is the
+standard's. A content attribute costs nothing until an event of its type reaches
+the element or its property is read: it is then compiled as a function body whose
+scope chain is the element, its form owner and the document, after the CSP
+inline-handler check (`script-src-attr` → `script-src` → `default-src`; allowed by
+`'unsafe-inline'` when no nonce/hash/`'strict-dynamic'` neutralises it, or by
+`'unsafe-hashes'` plus a matching hash — never by a nonce). `<body>`/`<frameset>`
+forward the window-reflecting names (`onload`, `onerror`, `onhashchange`, …) to the
+window. An exception that escapes a script, a listener or a timer callback is
+*reported*: an `ErrorEvent` at the window (`window.onerror` in its five-argument
+form), guarded against a handler that throws, and — unless a handler cancels it —
+recorded in the render diagnostics, which are read when the render settles rather
+than after the first script pass.
+
 **Programmatic form submission** (`internal/js/forms.go`): `document.forms`,
 `form.elements`, `.namedItem`, and `form.submit()`/`requestSubmit()` are modelled.
 A render never performs the cross-document fetch, so a submit is treated like a

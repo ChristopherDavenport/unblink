@@ -87,6 +87,26 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **Event-handler properties and attributes run.** `window.onload = fn`,
+  `el.onclick = fn`, `document.onreadystatechange = fn` and `onclick="…"` in markup
+  were stored and never called; only `addEventListener` listeners ran. They are now
+  real event handlers: one entry in the target's listener list at the position the
+  handler was first set, `this` and `event` bound, `return false` cancelling the
+  event, `<body onload>` and friends forwarded to the window. An attribute's text is
+  compiled on first use, with the element, its form owner and the document in scope,
+  and is gated by the page's Content-Security-Policy as inline script
+  (`script-src-attr`, `'unsafe-inline'`, `'unsafe-hashes'`; a nonce never covers an
+  attribute). `interact` clicks and submits run them.
+- **Uncaught exceptions reach `window.onerror` and `error` listeners.** An exception
+  that escapes a script, an event listener or a timer callback fires an `ErrorEvent`
+  at the window (`onerror` gets the five-argument form, and returning `true` handles
+  it). Listener and timer exceptions used to vanish without a trace; they are now in
+  `js_errors` unless a handler took them.
+- **`js_errors` covers the whole render.** It was filled once, after the initial
+  script pass, so an error raised later — from a timer, a lazily loaded chunk, a
+  `console.error` in an async callback, a promise rejected after load — was never
+  reported by a one-shot `read`. It is now read when the render settles.
+
 - **JavaScript engine: DOM and Web API gaps found by the real-page corpus.** Each
   of these stopped a mainstream framework from booting or hydrating, or made a page
   update the engine could not see:

@@ -399,8 +399,11 @@ func (e *Engine) Render(ctx context.Context, doc *html.Node, base *url.URL, env 
 				env.Diag.PendingNavigation = b.pendingNav.String()
 			}
 			// Post-Terminate (settle complete + loop joined): the request/console
-			// logs now include everything the settle waited on.
+			// logs now include everything the settle waited on — and so do the
+			// errors: an exception thrown from a timer, a late chunk or an async
+			// callback happens after the script pass that first filled Diag.
 			b.fillCaptureLogs(env.Diag)
+			env.Diag.Errors = b.collectDiagnostics().Errors
 		}
 	}
 	return rerr

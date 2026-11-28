@@ -1591,10 +1591,7 @@ const preludeAPIJS = `
         origin: (typeof location !== 'undefined' && location && location.origin) || '',
         source: window
       });
-      window.dispatchEvent(ev);
-      if (typeof window.onmessage === 'function') {
-        try { window.onmessage(ev); } catch (e) {}
-      }
+      window.dispatchEvent(ev); // window.onmessage runs as part of the dispatch
     }, 0);
   };
 

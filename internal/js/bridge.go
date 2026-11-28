@@ -95,6 +95,12 @@ type bridge struct {
 	documentObj *goja.Object
 	windowObj   *goja.Object
 
+	// handlerSlots holds the on<type> event handlers (eventhandlers.go), one slot
+	// per (target, type); reportingError guards "report an exception" against an
+	// error handler that itself throws.
+	handlerSlots   map[handlerKey]*handlerSlot
+	reportingError bool
+
 	// activeEl is the currently focused element (nil ⇒ <body>), tracked by
 	// focus()/blur() and the interact press gesture so focus-driven reveals work.
 	activeEl *html.Node
@@ -365,6 +371,7 @@ func (b *bridge) install() {
 	_ = win.Set("document", doc)
 
 	b.installGlobals(win)
+	b.installEventHandlers()
 	b.installNodeFilter()
 	b.installMutationObserver()
 	b.installCustomElements(win)

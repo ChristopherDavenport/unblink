@@ -21,6 +21,9 @@ type listenerEntry struct {
 	capture bool
 	once    bool
 	passive bool
+	// handler marks the entry that stands for the target's on<type> event
+	// handler (eventhandlers.go); fn/jsFn are unset and the slot holds the value.
+	handler *handlerSlot
 }
 
 // listenerOpts is the parsed addEventListener 3rd argument.
@@ -423,7 +426,11 @@ func (b *bridge) invokePhase(entry pathEntry, ev *domEvent, filter phaseFilter) 
 		// recovers a throwing listener, so the restore below always runs.
 		prevPassive := ev.passiveActive
 		ev.passiveActive = le.passive
-		b.callSafe(le.fn, entry.jsValue, ev.js)
+		if le.handler != nil {
+			b.invokeHandler(le.handler, entry.jsValue, ev)
+		} else {
+			b.callReporting(le.fn, entry.jsValue, ev.js)
+		}
 		ev.passiveActive = prevPassive
 		if le.once {
 			removeEntryByFn(entry.listeners, ev.typ, le.jsFn, le.capture)
@@ -444,7 +451,8 @@ func (b *bridge) invokePhase(entry pathEntry, ev *domEvent, filter phaseFilter) 
 // target. bubbles plays no part here — it gates only the bubble phase in dispatch(),
 // never path construction or the anchors. For a node in the light DOM this yields exactly
 // the old [window, document, ...ancestors..., target] with target = the dispatched node.
-func (b *bridge) elementTargetPath(target *html.Node, composed bool) []pathEntry {
+func (b *bridge) elementTargetPath(target *html.Node, composed bool, typ string) []pathEntry {
+	attrName := "on" + typ
 	type hop struct {
 		listeners map[string][]listenerEntry
 		jsValue   goja.Value
@@ -457,6 +465,7 @@ func (b *bridge) elementTargetPath(target *html.Node, composed bool) []pathEntry
 		var next *html.Node
 		for n := cur; n != nil; n = n.Parent {
 			if n.Type == html.ElementNode {
+				b.primeNodeHandler(n, typ, attrName)
 				hops = append(hops, hop{b.nodeListeners[n], b.wrap(n), curTarget})
 			}
 			if n.Parent != nil {
@@ -486,6 +495,7 @@ func (b *bridge) elementTargetPath(target *html.Node, composed bool) []pathEntry
 	// retargeted target.
 	var path []pathEntry
 	if reachedDoc {
+		b.primeWindowHandler(typ)
 		path = append(path,
 			pathEntry{listeners: b.winListeners, jsValue: b.windowObj, target: curTarget},
 			pathEntry{listeners: b.docListeners, jsValue: b.documentObj, target: curTarget})
@@ -497,7 +507,7 @@ func (b *bridge) elementTargetPath(target *html.Node, composed bool) []pathEntry
 }
 
 func (b *bridge) dispatchOnNode(target *html.Node, ev *domEvent) bool {
-	path := b.elementTargetPath(target, ev.composed)
+	path := b.elementTargetPath(target, ev.composed, ev.typ)
 	if ev.typ == "load" {
 		path = b.withoutWindow(path)
 	}
@@ -508,6 +518,7 @@ func (b *bridge) dispatchOnDocument(ev *domEvent) bool {
 	if ev.typ == "load" {
 		return b.dispatch([]pathEntry{{listeners: b.docListeners, jsValue: b.documentObj}}, ev)
 	}
+	b.primeWindowHandler(ev.typ)
 	return b.dispatch([]pathEntry{
 		{listeners: b.winListeners, jsValue: b.windowObj},
 		{listeners: b.docListeners, jsValue: b.documentObj},
@@ -515,6 +526,7 @@ func (b *bridge) dispatchOnDocument(ev *domEvent) bool {
 }
 
 func (b *bridge) dispatchOnWindow(ev *domEvent) bool {
+	b.primeWindowHandler(ev.typ)
 	return b.dispatch([]pathEntry{{listeners: b.winListeners, jsValue: b.windowObj}}, ev)
 }
 

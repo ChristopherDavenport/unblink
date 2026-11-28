@@ -167,18 +167,11 @@ func (b *bridge) loadExternalScript(n *html.Node, src string) {
 	}()
 }
 
-// fireScriptEvent dispatches a non-bubbling load/error event at the script element and
-// also invokes its on<type> property handler — webpack sets script.onload/onerror
-// directly, and the generic dispatch only runs addEventListener listeners.
+// fireScriptEvent dispatches a non-bubbling load/error event at the script
+// element. Its on<type> handler — webpack sets script.onload/onerror directly —
+// runs as part of the dispatch (eventhandlers.go).
 func (b *bridge) fireScriptEvent(n *html.Node, typ string) {
-	wrapper := b.wrap(n)
-	ev := b.newEvent(typ, false, false, wrapper)
-	b.dispatchOnNode(n, ev)
-	if obj := wrapper.ToObject(b.vm); obj != nil {
-		if fn, ok := goja.AssertFunction(obj.Get("on" + typ)); ok {
-			b.callSafe(fn, wrapper, ev.js)
-		}
-	}
+	b.dispatchOnNode(n, b.newEvent(typ, false, false, b.wrap(n)))
 }
 
 // scriptText returns the concatenated text content of a <script> node.
@@ -281,7 +274,7 @@ func (b *bridge) compileAndRun(name, src string) {
 		return
 	}
 	if _, err := b.vm.RunProgram(prog); err != nil {
-		b.recordError(err)
+		b.reportException(err) // window.onerror / "error" listeners, then diagnostics
 	}
 }
 

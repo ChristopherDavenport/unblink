@@ -30,6 +30,14 @@ func (b *bridge) installGlobals(win *goja.Object) {
 		b.recordConsole(level, msg)
 	})
 
+	// Uncaught-exception sink for the prelude's timer wrapper (consumed and
+	// deleted by it): a throw that escapes a timer callback is reported like one
+	// that escapes a script.
+	_ = vm.Set("__unblinkReportUncaught", func(call goja.FunctionCall) goja.Value {
+		b.reportThrown(call.Argument(0))
+		return goja.Undefined()
+	})
+
 	// The prelude's timer wrapper registers its live-timer audit here (consumed
 	// and deleted like __unblinkConsoleError); settlePoll reads it on close.
 	_ = vm.Set("__unblinkRegisterTimerAudit", func(call goja.FunctionCall) goja.Value {
@@ -236,12 +244,7 @@ func (b *bridge) historyGo(delta int) {
 	} else {
 		_ = ev.js.Set("state", goja.Null())
 	}
-	b.dispatchOnWindow(ev)
-	if h := b.windowObj.Get("onpopstate"); h != nil {
-		if fn, ok := goja.AssertFunction(h); ok {
-			b.callSafe(fn, b.windowObj, ev.js)
-		}
-	}
+	b.dispatchOnWindow(ev) // window.onpopstate runs as part of the dispatch
 }
 
 // navigate handles location.href/assign/replace. A render never performs the real
@@ -262,12 +265,7 @@ func (b *bridge) navigate(raw string) {
 		ev := b.newEvent("hashchange", false, false, b.windowObj)
 		_ = ev.js.Set("oldURL", old.String())
 		_ = ev.js.Set("newURL", u.String())
-		b.dispatchOnWindow(ev)
-		if h := b.windowObj.Get("onhashchange"); h != nil {
-			if fn, ok := goja.AssertFunction(h); ok {
-				b.callSafe(fn, b.windowObj, ev.js)
-			}
-		}
+		b.dispatchOnWindow(ev) // window.onhashchange runs as part of the dispatch
 	}
 }
 
@@ -332,6 +330,15 @@ const preludeJS = `
     // fires). Cleared when the timer runs or is cleared.
     var clamped = {};
     function toFn(fn) { return typeof fn === 'function' ? fn : new Function(String(fn)); }
+    // An exception that escapes a timer callback is uncaught: report it
+    // (window.onerror, "error" listeners, diagnostics) instead of losing it in
+    // the event loop.
+    var reportUncaught = window.__unblinkReportUncaught;
+    delete window.__unblinkReportUncaught;
+    function run(cb, args) {
+      if (!reportUncaught) { cb.apply(undefined, args); return; }
+      try { cb.apply(undefined, args); } catch (e) { reportUncaught(e); }
+    }
     window.setTimeout = function (fn, ms) {
       var args = Array.prototype.slice.call(arguments, 2), cb = toFn(fn), id = seq++;
       ms = +ms || 0;
@@ -341,7 +348,7 @@ const preludeJS = `
         if (remaining < 0) remaining = 0;
         if (ms > remaining) { ms = remaining; wasClamped = true; clamped[id] = true; }
       }
-      live[id] = nativeSet(function () { delete live[id]; delete clamped[id]; cb.apply(undefined, args); }, ms);
+      live[id] = nativeSet(function () { delete live[id]; delete clamped[id]; run(cb, args); }, ms);
       return id;
     };
     window.clearTimeout = function (id) {
@@ -350,7 +357,7 @@ const preludeJS = `
     if (nativeSetI) {
       window.setInterval = function (fn, ms) {
         var args = Array.prototype.slice.call(arguments, 2), cb = toFn(fn), id = seq++;
-        live[id] = nativeSetI(function () { cb.apply(undefined, args); }, ms);
+        live[id] = nativeSetI(function () { run(cb, args); }, ms);
         return id;
       };
       window.clearInterval = function (id) {
@@ -609,6 +616,12 @@ const preludeJS = `
     e.storageArea = (o.storageArea != null) ? o.storageArea : null;
   });
   defEvent('PromiseRejectionEvent', function (e, o) { e.promise = o.promise; e.reason = o.reason; });
+  defEvent('ErrorEvent', function (e, o) {
+    e.message = (o.message != null) ? String(o.message) : '';
+    e.filename = (o.filename != null) ? String(o.filename) : '';
+    e.lineno = o.lineno >>> 0; e.colno = o.colno >>> 0;
+    e.error = o.error;
+  });
 
   // Minimal EventTarget + AbortController/AbortSignal (self-contained JS).
   function ETShim() { this.__l = {}; }
