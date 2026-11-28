@@ -179,6 +179,15 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **Clicking a checkbox or radio button changes it.** A click — from the
+  `interact` tool or `element.click()` — dispatched the event and nothing else,
+  so `interact` on a checkbox reported `changed: false` and left it unchecked.
+  The click now carries the element's activation behaviour: a checkbox toggles
+  and a radio button takes over its group before the event is dispatched (a
+  listener reads the new `checked`), a canceled click restores the previous
+  state, `input` and `change` follow an uncanceled one, a click on a `<label>`
+  reaches its control, and a disabled control ignores it.
+
 - **Dates, times and relative times format as a browser's do, in English.**
   `Date.prototype.toLocaleString`/`toLocaleDateString`/`toLocaleTimeString`
   ignored their arguments and printed 24-hour ISO-like text ("13:37:00" where a

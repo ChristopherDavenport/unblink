@@ -743,7 +743,10 @@ func (b *bridge) installHTMLElementProto() {
 	b.protoGetter(p, "style", func(n *html.Node) goja.Value { return b.styleFor(n) })
 
 	b.protoMethod(p, "click", func(n *html.Node, call goja.FunctionCall) goja.Value {
-		b.dispatchOnNode(n, b.newEvent("click", true, true, call.This))
+		if controlDisabled(n) && isFormControlTag(n) {
+			return goja.Undefined() // click() on a disabled control does nothing
+		}
+		b.clickActivate(n, func() bool { return b.dispatchOnNode(n, b.newEvent("click", true, true, call.This)) })
 		return goja.Undefined()
 	})
 	b.protoMethod(p, "focus", func(n *html.Node, _ goja.FunctionCall) goja.Value { b.focusNode(n); return goja.Undefined() })
