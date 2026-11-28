@@ -69,7 +69,11 @@ func TestMutationAPIsBumpDOMVersion(t *testing.T) {
 		{"input value property", "document.getElementById('inp').value = 'v';"},
 		{"textarea value property", "document.getElementById('ta').value = 'v2';"},
 		{"checked property", "document.getElementById('chk').checked = true;"},
-		{"template content access", "void document.getElementById('tpl').content;"},
+		// Reading template.content used to move the template's children out of the
+		// live tree on first access. They are moved when the page is bound now
+		// (sealTemplates), so the read no longer mutates anything; writing the
+		// template's markup still does.
+		{"template innerHTML write", "document.getElementById('tpl').innerHTML = '<b>n</b>';"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

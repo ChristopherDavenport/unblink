@@ -385,6 +385,7 @@ func (b *bridge) bindInstalled() {
 	// document object.
 	b.cache[b.doc] = b.documentObj
 	b.objNode[b.documentObj] = b.doc
+	b.sealTemplates(b.doc) // template contents are inert before any script runs
 	b.installStorage()
 	if b.locationObj != nil {
 		b.currentURL = b.base
@@ -504,6 +505,7 @@ func (b *bridge) installParsers() {
 			if err != nil {
 				docNode = &html.Node{Type: html.DocumentNode}
 			}
+			b.sealTemplates(docNode)
 			return b.documentFacade(docNode)
 		})
 		return nil
@@ -718,7 +720,7 @@ func (b *bridge) documentObject() *goja.Object {
 		if src == nil {
 			return goja.Null()
 		}
-		return b.wrap(cloneNode(src, call.Argument(1).ToBoolean()))
+		return b.wrap(b.cloneTree(src, call.Argument(1).ToBoolean()))
 	})
 	_ = d.Set("adoptNode", func(call goja.FunctionCall) goja.Value { return call.Argument(0) })
 	_ = d.Set("createDocumentFragment", func(goja.FunctionCall) goja.Value {

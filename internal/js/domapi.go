@@ -200,6 +200,7 @@ func (b *bridge) insertAdjacentHTML(n *html.Node, position, markup string) {
 		return
 	}
 	for _, c := range frag {
+		b.sealTemplates(c)
 		b.insertAdjacentNode(n, position, c)
 	}
 }

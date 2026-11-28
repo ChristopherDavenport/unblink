@@ -1117,6 +1117,17 @@ a long delay (a poll loop, a retry backoff) became a busy loop against the page'
 origin for the rest of the budget. `TestTimerClampDoesNotSpinSelfRearmingTimer`
 holds it.
 
+**Template contents** (`internal/js/templates.go`): the x/net/html tree keeps a
+`<template>`'s contents under the element; a browser keeps them in the content
+`DocumentFragment`, where no child accessor, selector query or tree walk on the
+document reaches them. `sealTemplates` makes that true before any script runs
+(at bind) and for every tree parsed afterwards, moving the children into the
+fragment `templateContent` hands out; `cloneTree` copies that fragment on a
+deep clone and `withTemplateContents` puts it back for the duration of an
+`innerHTML`/`outerHTML` serialization. `<template shadowrootmode>` is left in
+place for the extraction-side composer. New code that parses markup into nodes
+page JS can reach must call `sealTemplates` on the result.
+
 **Named access** (`internal/js/formnamed.go`): `form.fieldname`, `form[0]`,
 `form.elements.fieldname` (`HTMLFormControlsCollection`; `RadioNodeList` with a
 working `.value` when several controls share a name) and

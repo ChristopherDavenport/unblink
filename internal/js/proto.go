@@ -399,7 +399,7 @@ func (b *bridge) installNodeProto() {
 	})
 	b.protoMethod(p, "cloneNode", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		deep := call.Argument(0).ToBoolean()
-		return b.wrap(cloneNode(n, deep))
+		return b.wrap(b.cloneTree(n, deep))
 	})
 	b.protoMethod(p, "contains", func(n *html.Node, call goja.FunctionCall) goja.Value {
 		other := b.unwrap(call.Argument(0))
@@ -466,7 +466,7 @@ func (b *bridge) contentHolder(n *html.Node) *html.Node {
 func (b *bridge) installInnerHTML(p *goja.Object) {
 	vm := b.vm
 	b.protoProp(p, "innerHTML",
-		func(n *html.Node) goja.Value { return vm.ToValue(innerHTML(b.contentHolder(n))) },
+		func(n *html.Node) goja.Value { return vm.ToValue(b.innerHTMLOf(b.contentHolder(n))) },
 		func(n *html.Node, v goja.Value) {
 			if holder := b.contentHolder(n); holder != n {
 				// A <template>'s markup lives in its content fragment once that
@@ -481,10 +481,12 @@ func (b *bridge) installInnerHTML(p *goja.Object) {
 					n.RemoveChild(c)
 					holder.AppendChild(c)
 				}
+				b.sealTemplates(holder)
 				b.onMutate(mutationRecord{typ: "childList", target: n})
 				return
 			}
 			setInnerHTML(n, v.String())
+			b.sealTemplates(n)
 			// Parsed-in custom elements upgrade like inserted ones — when the
 			// markup lands in a connected tree (a shadow root's included); a
 			// detached parent's or a <template>'s stays inert until inserted.
@@ -524,7 +526,7 @@ func (b *bridge) installElementProto() {
 		func(n *html.Node, v goja.Value) { b.setAttrMut(n, "class", v.String()) })
 
 	b.installInnerHTML(p)
-	b.protoGetter(p, "outerHTML", func(n *html.Node) goja.Value { return vm.ToValue(outerHTML(n)) })
+	b.protoGetter(p, "outerHTML", func(n *html.Node) goja.Value { return vm.ToValue(b.outerHTMLOf(n)) })
 
 	b.protoGetter(p, "children", func(n *html.Node) goja.Value { return b.htmlCollection(childElements(n)) })
 	b.protoGetter(p, "firstElementChild", func(n *html.Node) goja.Value {

@@ -143,6 +143,17 @@ All notable changes are recorded here. Earlier history lives in the phase log of
 
 ### Fixed
 
+- **A `<template>`'s contents are inert from the start.** They were moved into
+  the content fragment only when page code first read `.content`; until then
+  they were the element's children, reachable by `firstElementChild`,
+  `querySelector` and `document.querySelectorAll`. A library that walks the
+  document before reading `.content` (Alpine, for every `x-teleport`/`x-if`
+  template) initialised nodes that were then pulled out from under it, and each
+  expression inside threw a `ReferenceError` — 50 of them on arstechnica.com.
+  Contents are now sealed when the page is bound and whenever markup is parsed
+  (`innerHTML`, `insertAdjacentHTML`, `DOMParser`); `cloneNode(true)` and
+  `importNode` copy a template's content, and `innerHTML`/`outerHTML` serialize
+  it, nested templates included. Declarative shadow roots are unchanged.
 - **A connected `<style>` element has a `sheet`** that stores inserted rules in
   order (`insertRule`, `deleteRule`, `cssRules`). It is a store, not a CSSOM —
   nothing is parsed or applied — but styled-components and Emotion in production
